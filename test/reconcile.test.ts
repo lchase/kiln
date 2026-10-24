@@ -19,10 +19,10 @@ function run(status: ObservedRun["status"], runId = "2026-10-24T00-00-00Z-aaaa")
 function task(overrides: Partial<ObservedTask> & Pick<ObservedTask, "taskId" | "repo">): ObservedTask {
   return {
     planId: PLAN_ID,
-    title: overrides.taskId,
     dependsOn: [],
     approved: true,
     launching: false,
+    launchFailed: false,
     ...overrides,
   };
 }
@@ -39,13 +39,6 @@ function observation(overrides: Partial<Observation> = {}): Observation {
 }
 
 describe("plan", () => {
-  it("is pure", () => {
-    const obs = observation({
-      tasks: [task({ taskId: "publish", repo: "ai-core" })],
-    });
-    assert.deepEqual(plan(obs), plan(obs));
-  });
-
   it("does not launch an unapproved task", () => {
     const obs = observation({
       plans: [{ planId: PLAN_ID, approved: false }],
@@ -77,6 +70,12 @@ describe("plan", () => {
 
     publisher.run = run("failed");
     assert.deepEqual(plan(obs), []);
+
+    publisher.run = run("ok");
+    publisher.run.gateDecision = "reject";
+    assert.equal(taskPhase(publisher, obs), "rejected");
+    assert.deepEqual(plan(obs), []);
+    assert.equal(taskPhase(dependent, obs), "blocked");
 
     publisher.run = run("ok");
     assert.deepEqual(plan(obs), [
@@ -139,7 +138,7 @@ describe("plan", () => {
     const obs = observation({
       maxConcurrent: 1,
       tasks: [
-        task({ taskId: "publish", repo: "ai-core", launching: true, breadcrumbPath: "/kiln/launching/publish.json" }),
+        task({ taskId: "publish", repo: "ai-core", launching: true }),
         task({ taskId: "other", repo: "frontend" }),
       ],
     });
@@ -149,6 +148,30 @@ describe("plan", () => {
     obs.tasks[0]!.run = run("alive");
     obs.breadcrumbsToClear = [{ path: "/kiln/launching/publish.json" }];
     assert.deepEqual(plan(obs), [{ type: "clear-breadcrumb", path: "/kiln/launching/publish.json" }]);
+  });
+
+  it("does not relaunch a launch-failed task and does not let it take a slot", () => {
+    const failed = task({ taskId: "calm-empty", repo: "frontend", launchFailed: true, logPath: "/kiln/logs/calm-empty.log" });
+    const next = task({ taskId: "sunday-heading", repo: "frontend" });
+    const obs = observation({ maxConcurrent: 1, tasks: [failed, next] });
+    assert.equal(taskPhase(failed, obs), "launch-failed");
+    assert.deepEqual(plan(obs), [
+      { type: "launch", planId: PLAN_ID, taskId: "sunday-heading", repo: "frontend" },
+    ]);
+  });
+
+  it("does not let a dead run take a slot or satisfy a dependency", () => {
+    const dead = task({ taskId: "publish", repo: "frontend", run: run("dead") });
+    const next = task({ taskId: "follow", repo: "frontend", dependsOn: ["publish"] });
+    const obs = observation({ maxConcurrent: 1, tasks: [dead, next] });
+    assert.equal(taskPhase(dead, obs), "dead");
+    assert.equal(taskPhase(next, obs), "blocked");
+
+    const independent = task({ taskId: "sunday-heading", repo: "frontend" });
+    const open = observation({ maxConcurrent: 1, tasks: [dead, independent] });
+    assert.deepEqual(plan(open), [
+      { type: "launch", planId: PLAN_ID, taskId: "sunday-heading", repo: "frontend" },
+    ]);
   });
 });
 

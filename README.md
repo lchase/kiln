@@ -52,7 +52,7 @@ Copy the shape from `examples/kiln.config.json` and replace the paths. Leave `"e
 }
 ```
 
-`test` is the shell command yak runs to verify a task in that repo. `maxConcurrent` caps how many yak runs may be in flight (default 2). A single `kiln tick` still launches at most one task. `adapter` is `claude-code` (default) or `mock`.
+`test` is the shell command yak runs to verify a task in that repo. An empty command is refused. `maxConcurrent` caps how many yak runs may be in flight (default 2). A single `kiln tick` still launches at most one task. `adapter` is `claude-code` (default) or `mock`.
 
 If neither local config exists, Kiln uses `examples/kiln.config.json` only for a file under `examples/requirements/`. Any other requirement without a local config is refused.
 
@@ -111,13 +111,13 @@ npm run kiln -- status EX-202
 
 `approve` writes `<kiln-dir>/plans/<id>.approved.json`. Unapproved plans are skipped.
 
-`tick` is one stateless pass: read approved plans and the yak journals under each checkout's `.runs/`, decide actions, apply them, exit. It launches at most one ready task, and only when running-plus-suspended runs are below `maxConcurrent`. The launch is `yak run workflows/feature.yaml` in that task's checkout, tagged `kiln:<planId>/<taskId>`. A contract dependency is satisfied when the task that publishes the contract has a journal that finished ok. A task that already has a run is not launched again. A failed run stays failed.
+`tick` is one stateless pass: read approved plans and the yak journals under each checkout's `.runs/`, decide actions, apply them, exit. It launches at most one ready task, and only when running-plus-suspended runs are below `maxConcurrent`. The launch is detached: `yak run --isolation worktree workflows/feature.yaml` in that task's checkout, tagged `kiln:<planId>/<taskId>`, with stdout in `<kiln-dir>/logs/<plan>/<task>.log`. The child pid is recorded in a breadcrumb until a journal with that tag appears. If the child dies before writing a journal, the task is `launch-failed` and is not launched again. A contract dependency is satisfied when the task that publishes the contract finished ok and its approve gate was not rejected. A task that already has a run is not launched again. A failed run stays failed. A run whose process is gone and whose journal has no `run.finished` is `dead` and does not take a slot.
 
-`status` prints each task's state, the yak run id, and, for a run suspended on a gate, the command that writes the answer file and runs `yak resume`.
+`status` prints each task's state and the yak run id. A suspended gate prints both an approve and a reject command. Those commands use the node binary and the yak entrypoint from `@lchase/yak`'s `package.json` `bin`, so `yak` does not need to be on `PATH`. An ok task prints its `yak/<run-id>` branch. A dead run prints the `cancel` command to run from the checkout. A launch-failed task prints its log path.
 
-The feature workflow is the factory loop (spec, build, verify, security/ux/code review, approver, human gate), ported onto yak. Verify runs the repo's `test` command. The default adapter is `claude-code`. `adapter: "mock"` uses fixture files in the checkout at `test/fixtures/kiln-feature/<step>.json` and does not call a model.
+The feature workflow is the factory loop (spec, build, verify, security/ux/code review, approver, human gate, then a commit), ported onto yak. Agent steps include the `Skill` tool. Verify runs the repo's `test` command. After the gate is approved, the run commits its changes on the worktree branch `yak/<run-id>` with message `kiln: <task title>`. A reject skips that commit. The default adapter is `claude-code`. `adapter: "mock"` uses fixture files in the checkout at `test/fixtures/kiln-feature/<step>.json` and does not call a model. Kiln does not push.
 
-Kiln also writes a tick lock and, only while a launch is in progress, a breadcrumb under `<kiln-dir>/launching/`. yak writes `.runs/` and `.yak/` inside the checkout. None of that is committed.
+Kiln writes a tick lock and, while a launch has not yet produced a journal, a breadcrumb under `<kiln-dir>/launching/`. yak writes `.runs/` and `.yak/` inside the checkout. The first launch adds both paths to that checkout's `.git/info/exclude`.
 
 ## Not in this slice
 

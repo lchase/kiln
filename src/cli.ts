@@ -36,8 +36,9 @@ function usage(): never {
       "a .kiln directory. Questions and valid plans both exit 0.",
       "",
       "approve records human approval of a plan. tick launches at most one ready",
-      "task per invocation, via yak, and only for an approved plan. status shows",
-      "each task's state, yak run id, and the command that answers an open gate.",
+      "task per invocation, in a yak worktree, and only for an approved plan.",
+      "status shows each task's state, the yak run id, and both approve and",
+      "reject commands for an open gate.",
     ].join("\n"),
   );
   process.exit(2);

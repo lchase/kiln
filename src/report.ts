@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { packageRoot } from "./paths.js";
 import {
   inFlightCount,
   taskPhase,
@@ -16,14 +19,37 @@ export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-/** The command a person runs to answer one open gate and continue the yak run. */
-export function gateAnswerCommand(checkout: string, runId: string, gate: ObservedGate): string {
+/** Absolute path of the yak CLI, from the installed package's `bin` field. */
+export function yakCliPath(): string {
+  const yakRoot = join(packageRoot(), "node_modules", "@lchase", "yak");
+  const pkg = JSON.parse(readFileSync(join(yakRoot, "package.json"), "utf8")) as {
+    bin?: string | Record<string, string>;
+  };
+  const relative = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.yak;
+  if (!relative) {
+    throw new Error(`@lchase/yak at ${yakRoot} has no "yak" bin in package.json.`);
+  }
+  return join(yakRoot, relative);
+}
+
+export function yakInvocation(subcommand: "resume" | "cancel", runId: string): string {
+  return `${shellQuote(process.execPath)} ${shellQuote(yakCliPath())} ${subcommand} ${shellQuote(runId)}`;
+}
+
+/** One variant of the command that answers an open gate and continues the run. */
+export function gateAnswerCommand(
+  checkout: string,
+  runId: string,
+  gate: ObservedGate,
+  choice: string,
+  taskTitle?: string,
+): string {
   const pendingDir = shellQuote(`.runs/${runId}/pending`);
   const answerFile = shellQuote(`.runs/${runId}/pending/${gate.stepId}.answer.json`);
-  const write = gate.answerJson
-    ? `printf '%s\\n' ${shellQuote(gate.answerJson)} > ${answerFile} && `
-    : "";
-  return `cd ${shellQuote(checkout)} && mkdir -p ${pendingDir} && ${write}yak resume ${shellQuote(runId)}`;
+  const field = gate.answerField ?? "decision";
+  const answer = JSON.stringify({ [field]: choice });
+  const title = taskTitle ? `KILN_TASK_TITLE=${shellQuote(taskTitle)} ` : "";
+  return `cd ${shellQuote(checkout)} && mkdir -p ${pendingDir} && printf '%s\\n' ${shellQuote(answer)} > ${answerFile} && ${title}${yakInvocation("resume", runId)}`;
 }
 
 export function renderStatus(observation: Observation, planId?: string): string {
@@ -44,15 +70,23 @@ export function renderStatus(observation: Observation, planId?: string): string 
     for (const task of observation.tasks.filter((candidate) => candidate.planId === plan.planId)) {
       const phase = taskPhase(task, observation);
       const run = task.run ? `  run ${task.run.runId}` : "";
-      lines.push(`  ${task.taskId}  ${task.repo}  ${phase}${run}`);
-      if (phase === "launching" && task.breadcrumbPath) {
-        lines.push(`    breadcrumb ${task.breadcrumbPath}`);
-        lines.push("    delete that file to retry if no yak process is running");
+      const branch = phase === "ok" && task.run ? `  branch yak/${task.run.runId}` : "";
+      lines.push(`  ${task.taskId}  ${task.repo}  ${phase}${run}${branch}`);
+      if (phase === "launch-failed" && task.logPath) {
+        lines.push(`    log ${task.logPath}`);
+      }
+      if (phase === "dead" && task.run) {
+        lines.push(`    fix: cd ${shellQuote(task.run.checkout)} && ${yakInvocation("cancel", task.run.runId)}`);
       }
       if (task.run?.status === "suspended") {
         for (const gate of task.run.gates) {
           lines.push(`    gate ${gate.stepId}: ${gate.prompt}`);
-          lines.push(`    answer: ${gateAnswerCommand(task.run.checkout, task.run.runId, gate)}`);
+          const choices = gate.choices?.length ? gate.choices : [];
+          for (const choice of choices) {
+            lines.push(
+              `    answer ${choice}: ${gateAnswerCommand(task.run.checkout, task.run.runId, gate, choice, task.run.taskTitle)}`,
+            );
+          }
         }
       }
     }

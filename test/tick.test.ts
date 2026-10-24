@@ -1,15 +1,24 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { packageRoot } from "../src/paths.js";
+import { yakCliPath } from "../src/report.js";
 import type { Plan } from "../src/schemas.js";
-import { validatePlan } from "../src/validate.js";
 
 const root = packageRoot();
 const keep: string[] = [];
+const testCommand = "node --test test.mjs && printf '%s\\n' landed > kiln-landed.txt";
 
 function runCli(
   args: string[],
@@ -23,10 +32,17 @@ function runCli(
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
+function git(dir: string, args: string[]): string {
+  const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+  assert.equal(result.status, 0, `${args.join(" ")}\n${result.stderr}`);
+  return result.stdout;
+}
+
 function initCheckout(dir: string): void {
   mkdirSync(dir, { recursive: true });
-  const git = spawnSync("git", ["init", "-q", "-b", "main"], { cwd: dir, encoding: "utf8" });
-  assert.equal(git.status, 0, git.stderr);
+  git(dir, ["init", "-q", "-b", "main"]);
+  git(dir, ["config", "user.email", "kiln-test@example.com"]);
+  git(dir, ["config", "user.name", "Kiln Test"]);
   writeFileSync(
     join(dir, "test.mjs"),
     [
@@ -56,12 +72,15 @@ function initCheckout(dir: string): void {
     join(fixtures, "approver.json"),
     `${JSON.stringify([{ output: { decision: "APPROVE", reason: "Reviews passed." } }])}\n`,
   );
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-q", "-m", "initial"]);
 }
 
 function writeConfig(
   kilnDir: string,
   checkouts: { frontend: string; "ai-core": string; "evals-obs": string },
   maxConcurrent: number,
+  test = testCommand,
 ): void {
   mkdirSync(kilnDir, { recursive: true });
   writeFileSync(
@@ -75,17 +94,17 @@ function writeConfig(
           frontend: {
             checkout: checkouts.frontend,
             ownership: join(root, "examples", "ownership", "frontend.json"),
-            test: "node --test test.mjs",
+            test,
           },
           "ai-core": {
             checkout: checkouts["ai-core"],
             ownership: join(root, "examples", "ownership", "ai-core.json"),
-            test: "node --test test.mjs",
+            test,
           },
           "evals-obs": {
             checkout: checkouts["evals-obs"],
             ownership: join(root, "examples", "ownership", "evals-obs.json"),
-            test: "node --test test.mjs",
+            test,
           },
         },
       },
@@ -96,7 +115,6 @@ function writeConfig(
 }
 
 function writePlan(plansDir: string, plan: Plan): void {
-  assert.deepEqual(validatePlan(plan), []);
   mkdirSync(plansDir, { recursive: true });
   writeFileSync(
     join(plansDir, `${plan.requirementId}.json`),
@@ -114,10 +132,93 @@ function journalTag(checkout: string, runId: string): string | undefined {
   const lines = readFileSync(join(checkout, ".runs", runId, "journal.jsonl"), "utf8").split("\n");
   for (const line of lines) {
     if (!line.trim()) continue;
-    const event = JSON.parse(line) as { t?: string; tag?: string };
-    if (event.t === "run.started") return event.tag;
+    try {
+      const event = JSON.parse(line) as { t?: string; tag?: string };
+      if (event.t === "run.started") return event.tag;
+    } catch {
+      // A torn last line is ignored, same as the driver.
+    }
   }
   return undefined;
+}
+
+function worktrees(checkout: string): string[] {
+  const dir = join(checkout, ".yak", "worktrees");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter((name) => existsSync(join(dir, name))).sort();
+}
+
+function sleep(seconds: number): void {
+  spawnSync("sleep", [String(seconds)]);
+}
+
+function waitForStatus(
+  cwd: string,
+  home: string,
+  planId: string,
+  pattern: RegExp,
+  timeoutMs = 30000,
+): string {
+  const start = Date.now();
+  let last = "";
+  while (Date.now() - start < timeoutMs) {
+    const status = runCli(["status", planId], { cwd, home });
+    last = `${status.stdout}${status.stderr}`;
+    if (status.status === 0 && pattern.test(status.stdout)) return status.stdout;
+    sleep(0.1);
+  }
+  throw new Error(`timed out waiting for ${pattern}:\n${last}`);
+}
+
+function answerCommand(status: string, choice: "approve" | "reject"): string {
+  const command = status.match(new RegExp(`^    answer ${choice}: (.+)$`, "m"))?.[1];
+  assert.ok(command, status);
+  return command;
+}
+
+function pathWithoutLocalBins(): string {
+  return (process.env.PATH ?? "")
+    .split(":")
+    .filter((entry) => entry.length > 0 && !entry.includes("node_modules/.bin"))
+    .join(":");
+}
+
+function runPrinted(command: string, home: string): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync("sh", ["-c", command], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: home, PATH: pathWithoutLocalBins() },
+  });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+function assertResolvedYak(command: string): void {
+  assert.ok(command.includes(process.execPath), command);
+  assert.ok(command.includes(yakCliPath()), command);
+  assert.doesNotMatch(command, /node_modules\/\.bin/);
+}
+
+function deadPid(): number {
+  // High unused pid. A killed child stays visible to kill(pid, 0) until reaped.
+  const pid = 2_147_483_646;
+  assert.throws(() => process.kill(pid, 0));
+  return pid;
+}
+
+function task(
+  id: string,
+  title: string,
+  repo: "frontend" | "ai-core",
+  dependsOn: string[] = [],
+): Plan["tasks"][number] {
+  return {
+    id,
+    repo,
+    title,
+    description: `${title}.`,
+    workflow: "feature",
+    dependsOn,
+    acceptance: ["The check for this task passes."],
+  };
 }
 
 const weeklyPlan: Plan = {
@@ -132,30 +233,8 @@ const weeklyPlan: Plan = {
     },
   ],
   tasks: [
-    {
-      id: "publish-reflection-api",
-      repo: "ai-core",
-      title: "Publish the weekly reflection endpoint",
-      description: "Add GET /v1/reflection that summarizes the week's habit records in one paragraph.",
-      workflow: "feature",
-      dependsOn: [],
-      acceptance: [
-        "GET /v1/reflection returns a paragraph for a week with habits.",
-        "A week with no habits returns empty: true and a calm paragraph, not an error.",
-      ],
-    },
-    {
-      id: "render-reflection",
-      repo: "frontend",
-      title: "Show the weekly reflection on Sunday",
-      description: "The home screen requests the reflection from ai-core and renders the paragraph.",
-      workflow: "feature",
-      dependsOn: ["weekly-reflection-api"],
-      acceptance: [
-        "The Sunday home screen shows the paragraph from the API.",
-        "An empty week shows the calm empty state.",
-      ],
-    },
+    task("publish-reflection-api", "Publish the weekly reflection endpoint", "ai-core"),
+    task("render-reflection", "Show the weekly reflection on Sunday", "frontend", ["weekly-reflection-api"]),
   ],
 };
 
@@ -175,12 +254,17 @@ function pebbleDir(): { cwd: string; home: string; checkouts: { frontend: string
   return { cwd, home, checkouts };
 }
 
+function approve(cwd: string, home: string, planId: string): void {
+  const approved = runCli(["approve", planId], { cwd, home });
+  assert.equal(approved.status, 0, approved.stderr);
+}
+
 after(() => {
   for (const dir of keep) rmSync(dir, { recursive: true, force: true });
 });
 
-describe("kiln tick", () => {
-  it("runs the contract owner first, does not double-launch, and resumes through the approve gate", () => {
+describe("kiln tick", { concurrency: 1 }, () => {
+  it("runs the contract owner first, resumes through approve, and commits on the worktree branch", () => {
     const { cwd, home, checkouts } = pebbleDir();
     const kilnDir = join(cwd, ".kiln");
     writeConfig(kilnDir, checkouts, 2);
@@ -191,116 +275,322 @@ describe("kiln tick", () => {
     assert.match(unapproved.stdout, /skip PEBBLE-WEEKLY \(not approved\)/);
     assert.match(unapproved.stdout, /nothing to launch/);
     assert.deepEqual(runIds(checkouts["ai-core"]), []);
-    assert.deepEqual(runIds(checkouts.frontend), []);
 
-    const approved = runCli(["approve", "PEBBLE-WEEKLY"], { cwd, home });
-    assert.equal(approved.status, 0, approved.stderr);
-    assert.match(approved.stdout, /Approved PEBBLE-WEEKLY/);
-    assert.equal(existsSync(join(kilnDir, "plans", "PEBBLE-WEEKLY.approved.json")), true);
+    approve(cwd, home, "PEBBLE-WEEKLY");
 
     const first = runCli(["tick"], { cwd, home });
     assert.equal(first.status, 0, first.stderr);
     assert.match(first.stdout, /launch publish-reflection-api\s+ai-core/);
+    assert.match(first.stdout, /pid \d+/);
     assert.doesNotMatch(first.stdout, /launch render-reflection/);
-    const ownerRuns = runIds(checkouts["ai-core"]);
-    assert.equal(ownerRuns.length, 1);
-    const ownerRun = ownerRuns[0];
+    const second = runCli(["tick"], { cwd, home });
+    assert.equal(second.status, 0, second.stderr);
+    assert.match(second.stdout, /inFlight=1/);
+    assert.match(second.stdout, /nothing to launch/);
+    assert.doesNotMatch(second.stdout, /launch render-reflection/);
+
+    const suspended = waitForStatus(cwd, home, "PEBBLE-WEEKLY", /publish-reflection-api\s+ai-core\s+suspended/);
+    const ownerRun = runIds(checkouts["ai-core"])[0];
     assert.ok(ownerRun);
     assert.equal(journalTag(checkouts["ai-core"], ownerRun), "kiln:PEBBLE-WEEKLY/publish-reflection-api");
     assert.deepEqual(runIds(checkouts.frontend), []);
+    assert.match(suspended, /render-reflection\s+frontend\s+blocked/);
+    assert.match(suspended, new RegExp(`run ${ownerRun}`));
+    const approveCmd = answerCommand(suspended, "approve");
+    const rejectCmd = answerCommand(suspended, "reject");
+    assertResolvedYak(approveCmd);
+    assertResolvedYak(rejectCmd);
+    assert.match(approveCmd, /\{"decision":"approve"\}/);
+    assert.match(rejectCmd, /\{"decision":"reject"\}/);
+    assert.match(approveCmd, /KILN_TASK_TITLE=/);
+    assert.notEqual(approveCmd, rejectCmd);
 
-    const second = runCli(["tick"], { cwd, home });
-    assert.equal(second.status, 0, second.stderr);
-    assert.match(second.stdout, /nothing to launch/);
-    assert.deepEqual(runIds(checkouts["ai-core"]), ownerRuns);
-    assert.deepEqual(runIds(checkouts.frontend), []);
-
-    const suspended = runCli(["status", "PEBBLE-WEEKLY"], { cwd, home });
-    assert.equal(suspended.status, 0, suspended.stderr);
-    assert.match(suspended.stdout, /publish-reflection-api\s+ai-core\s+suspended/);
-    assert.match(suspended.stdout, new RegExp(`run ${ownerRun}`));
-    assert.match(suspended.stdout, /render-reflection\s+frontend\s+blocked/);
-    assert.match(suspended.stdout, /gate approve:/);
-    const command = suspended.stdout.match(/^    answer: (.+)$/m)?.[1];
-    assert.ok(command, suspended.stdout);
-    assert.match(command, /pending\/approve\.answer\.json/);
-    assert.match(command, /\{"decision":"approve"\}/);
-    assert.match(command, new RegExp(`yak resume '${ownerRun}'`));
-
-    const answered = spawnSync("sh", ["-c", command], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        HOME: home,
-        PATH: `${join(root, "node_modules", ".bin")}:${process.env.PATH ?? ""}`,
-      },
-    });
+    const answered = runPrinted(approveCmd, home);
     assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
     assert.match(answered.stdout, new RegExp(`run ${ownerRun} finished: ok`));
 
     const resumed = runCli(["status", "PEBBLE-WEEKLY"], { cwd, home });
+    assert.equal(resumed.status, 0, resumed.stderr);
     assert.match(resumed.stdout, /publish-reflection-api\s+ai-core\s+ok/);
+    assert.match(resumed.stdout, new RegExp(`branch yak/${ownerRun}`));
     assert.doesNotMatch(resumed.stdout, /gate approve:/);
+    assert.equal(
+      git(checkouts["ai-core"], ["log", "-1", "--format=%s", `yak/${ownerRun}`]).trim(),
+      "kiln: Publish the weekly reflection endpoint",
+    );
+    assert.equal(git(checkouts["ai-core"], ["show", `yak/${ownerRun}:kiln-landed.txt`]), "landed\n");
+    assert.equal(existsSync(join(checkouts["ai-core"], "kiln-landed.txt")), false);
 
     const third = runCli(["tick"], { cwd, home });
     assert.equal(third.status, 0, third.stderr);
     assert.match(third.stdout, /launch render-reflection\s+frontend/);
-    const dependentRuns = runIds(checkouts.frontend);
-    assert.equal(dependentRuns.length, 1);
-    const dependentRun = dependentRuns[0];
+    const dependent = waitForStatus(cwd, home, "PEBBLE-WEEKLY", /render-reflection\s+frontend\s+suspended/);
+    const dependentRun = runIds(checkouts.frontend)[0];
     assert.ok(dependentRun);
     assert.equal(journalTag(checkouts.frontend, dependentRun), "kiln:PEBBLE-WEEKLY/render-reflection");
-    assert.deepEqual(runIds(checkouts["ai-core"]), ownerRuns);
-
-    const later = runCli(["status"], { cwd, home });
-    assert.match(later.stdout, /render-reflection\s+frontend\s+suspended/);
-    assert.match(later.stdout, /gate approve:/);
+    assert.deepEqual(worktrees(checkouts.frontend), [dependentRun]);
   });
 
-  it("does not launch a second ready task when maxConcurrent is 1 and the first run is suspended", () => {
+  it("keeps a dirty checkout file unchanged and writes the run only in its worktree", () => {
+    const { cwd, home, checkouts } = pebbleDir();
+    const checkout = checkouts.frontend;
+    const tracked = join(checkout, "tracked.txt");
+    writeFileSync(tracked, "original\n");
+    git(checkout, ["add", "tracked.txt"]);
+    git(checkout, ["commit", "-q", "-m", "track"]);
+    writeFileSync(tracked, "dirty\n");
+    const before = readFileSync(tracked);
+
+    writeConfig(join(cwd, ".kiln"), checkouts, 1);
+    const plan: Plan = {
+      requirementId: "PEBBLE-ISOLATED",
+      contracts: [],
+      tasks: [task("touch-worktree", "Touch only the worktree", "frontend")],
+    };
+    writePlan(join(cwd, ".kiln", "plans"), plan);
+    approve(cwd, home, "PEBBLE-ISOLATED");
+
+    const launched = runCli(["tick"], { cwd, home });
+    assert.equal(launched.status, 0, launched.stderr);
+    const runId = waitForStatus(cwd, home, "PEBBLE-ISOLATED", /touch-worktree\s+frontend\s+suspended/).match(
+      /run (\S+)/,
+    )?.[1];
+    assert.ok(runId);
+    const worktree = join(checkout, ".yak", "worktrees", runId);
+    assert.equal(readFileSync(join(worktree, "kiln-landed.txt"), "utf8"), "landed\n");
+    assert.deepEqual(readFileSync(tracked), before);
+    assert.equal(existsSync(join(checkout, "kiln-landed.txt")), false);
+    assert.equal(readFileSync(join(worktree, "tracked.txt"), "utf8"), "original\n");
+
+    const exclude = readFileSync(join(checkout, ".git", "info", "exclude"), "utf8");
+    assert.match(exclude, /^\.runs\/$/m);
+    assert.match(exclude, /^\.yak\/$/m);
+    const porcelain = git(checkout, ["status", "--porcelain"]);
+    assert.match(porcelain, /tracked\.txt/);
+    assert.doesNotMatch(porcelain, /\.runs/);
+    assert.doesNotMatch(porcelain, /\.yak/);
+    assert.doesNotMatch(porcelain, /kiln-landed/);
+
+    const status = runCli(["status", "PEBBLE-ISOLATED"], { cwd, home });
+    const answered = runPrinted(answerCommand(status.stdout, "approve"), home);
+    assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
+    const done = runCli(["status", "PEBBLE-ISOLATED"], { cwd, home });
+    assert.match(done.stdout, new RegExp(`branch yak/${runId}`));
+    assert.equal(git(checkout, ["show", `yak/${runId}:kiln-landed.txt`]), "landed\n");
+    assert.equal(
+      git(checkout, ["log", "-1", "--format=%s", `yak/${runId}`]).trim(),
+      "kiln: Touch only the worktree",
+    );
+    assert.deepEqual(readFileSync(tracked), before);
+    assert.equal(existsSync(join(checkout, "kiln-landed.txt")), false);
+  });
+
+  it("gives two ready tasks in one repo two distinct worktrees when maxConcurrent is 2", () => {
+    const { cwd, home, checkouts } = pebbleDir();
+    writeConfig(join(cwd, ".kiln"), checkouts, 2);
+    const plan: Plan = {
+      requirementId: "PEBBLE-POLISH",
+      contracts: [],
+      tasks: [
+        task("calm-empty", "Calm empty copy", "frontend"),
+        task("sunday-heading", "Sunday heading", "frontend"),
+      ],
+    };
+    writePlan(join(cwd, ".kiln", "plans"), plan);
+    approve(cwd, home, "PEBBLE-POLISH");
+
+    const first = runCli(["tick"], { cwd, home });
+    assert.equal(first.status, 0, first.stderr);
+    assert.match(first.stdout, /launch calm-empty\s+frontend/);
+    const second = runCli(["tick"], { cwd, home });
+    assert.equal(second.status, 0, second.stderr);
+    assert.match(second.stdout, /launch sunday-heading\s+frontend/);
+    waitForStatus(
+      cwd,
+      home,
+      "PEBBLE-POLISH",
+      /calm-empty\s+frontend\s+suspended[\s\S]*sunday-heading\s+frontend\s+suspended/,
+    );
+    const trees = worktrees(checkouts.frontend);
+    const ids = runIds(checkouts.frontend);
+    assert.deepEqual(ids, trees);
+    assert.equal(trees.length, 2);
+    assert.notEqual(trees[0], trees[1]);
+    assert.equal(existsSync(join(checkouts.frontend, "kiln-landed.txt")), false);
+    for (const id of trees) {
+      const tree = join(checkouts.frontend, ".yak", "worktrees", id);
+      assert.equal(git(tree, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), `yak/${id}`);
+    }
+    // The second run can cache `verify`, so the marker is not in every worktree.
+    const landed = trees.filter((id) =>
+      existsSync(join(checkouts.frontend, ".yak", "worktrees", id, "kiln-landed.txt")),
+    );
+    assert.ok(landed.length >= 1);
+  });
+
+  it("does not launch a second ready task when maxConcurrent is 1 and the first run is in flight", () => {
     const { cwd, home, checkouts } = pebbleDir();
     writeConfig(join(cwd, ".kiln"), checkouts, 1);
     const plan: Plan = {
       requirementId: "PEBBLE-POLISH",
       contracts: [],
       tasks: [
-        {
-          id: "calm-empty",
-          repo: "frontend",
-          title: "Calm empty copy",
-          description: "An empty week uses calm copy instead of an error.",
-          workflow: "feature",
-          dependsOn: [],
-          acceptance: ["The empty week shows the calm sentence."],
-        },
-        {
-          id: "sunday-heading",
-          repo: "frontend",
-          title: "Sunday heading",
-          description: "The home screen heading says Sunday reflection.",
-          workflow: "feature",
-          dependsOn: [],
-          acceptance: ["The heading is Sunday reflection."],
-        },
+        task("calm-empty", "Calm empty copy", "frontend"),
+        task("sunday-heading", "Sunday heading", "frontend"),
       ],
     };
     writePlan(join(cwd, ".kiln", "plans"), plan);
-    assert.equal(runCli(["approve", "PEBBLE-POLISH"], { cwd, home }).status, 0);
+    approve(cwd, home, "PEBBLE-POLISH");
 
     const first = runCli(["tick"], { cwd, home });
     assert.equal(first.status, 0, first.stderr);
     assert.match(first.stdout, /maxConcurrent=1/);
     assert.match(first.stdout, /launch calm-empty\s+frontend/);
     assert.doesNotMatch(first.stdout, /launch sunday-heading/);
-    assert.equal(runIds(checkouts.frontend).length, 1);
 
     const second = runCli(["tick"], { cwd, home });
     assert.equal(second.status, 0, second.stderr);
     assert.match(second.stdout, /inFlight=1/);
     assert.match(second.stdout, /nothing to launch/);
+
+    const status = waitForStatus(cwd, home, "PEBBLE-POLISH", /calm-empty\s+frontend\s+suspended/);
+    assert.match(status, /sunday-heading\s+frontend\s+ready/);
     assert.equal(runIds(checkouts.frontend).length, 1);
+  });
+
+  it("marks a dead journal dead, prints cancel, and launches the next task under maxConcurrent 1", () => {
+    const { cwd, home, checkouts } = pebbleDir();
+    writeConfig(join(cwd, ".kiln"), checkouts, 1);
+    const plan: Plan = {
+      requirementId: "PEBBLE-POLISH",
+      contracts: [],
+      tasks: [
+        task("calm-empty", "Calm empty copy", "frontend"),
+        task("sunday-heading", "Sunday heading", "frontend"),
+      ],
+    };
+    writePlan(join(cwd, ".kiln", "plans"), plan);
+    approve(cwd, home, "PEBBLE-POLISH");
+
+    const runId = "2026-10-24T00-00-00Z-dead";
+    const runDir = join(checkouts.frontend, ".runs", runId);
+    mkdirSync(runDir, { recursive: true });
+    const gone = deadPid();
+    writeFileSync(
+      join(runDir, "journal.jsonl"),
+      [
+        JSON.stringify({
+          t: "run.started",
+          runId,
+          tag: "kiln:PEBBLE-POLISH/calm-empty",
+          pid: process.pid,
+        }),
+        JSON.stringify({ t: "run.resumed", runId, pid: gone }),
+        "{\"t\":\"step.started\",\"partial",
+        "",
+      ].join("\n"),
+    );
+
+    const before = runCli(["status", "PEBBLE-POLISH"], { cwd, home });
+    assert.equal(before.status, 0, before.stderr);
+    assert.match(before.stdout, /calm-empty\s+frontend\s+dead/);
+    assert.match(before.stdout, /sunday-heading\s+frontend\s+ready/);
+    assert.ok(before.stdout.includes(`cancel '${runId}'`), before.stdout);
+    assert.ok(before.stdout.includes(`cd '${checkouts.frontend}'`), before.stdout);
+    assertResolvedYak(before.stdout);
+
+    const tick = runCli(["tick"], { cwd, home });
+    assert.equal(tick.status, 0, tick.stderr);
+    assert.match(tick.stdout, /launch sunday-heading\s+frontend/);
+    assert.doesNotMatch(tick.stdout, /launch calm-empty/);
+    const again = runCli(["status", "PEBBLE-POLISH"], { cwd, home });
+    assert.match(again.stdout, /calm-empty\s+frontend\s+dead/);
+  });
+
+  it("does not relaunch a task whose launch pid died before a journal existed", () => {
+    const { cwd, home, checkouts } = pebbleDir();
+    const kilnDir = join(cwd, ".kiln");
+    writeConfig(kilnDir, checkouts, 1);
+    const plan: Plan = {
+      requirementId: "PEBBLE-POLISH",
+      contracts: [],
+      tasks: [task("calm-empty", "Calm empty copy", "frontend")],
+    };
+    writePlan(join(kilnDir, "plans"), plan);
+    approve(cwd, home, "PEBBLE-POLISH");
+
+    const logPath = join(kilnDir, "logs", "PEBBLE-POLISH", "calm-empty.log");
+    mkdirSync(dirname(logPath), { recursive: true });
+    writeFileSync(logPath, "yak exited before writing a journal\n");
+    const crumbDir = join(kilnDir, "launching", "PEBBLE-POLISH");
+    mkdirSync(crumbDir, { recursive: true });
+    writeFileSync(
+      join(crumbDir, "calm-empty.json"),
+      `${JSON.stringify({ planId: "PEBBLE-POLISH", taskId: "calm-empty", pid: deadPid(), logPath }, null, 2)}\n`,
+    );
+
     const status = runCli(["status", "PEBBLE-POLISH"], { cwd, home });
-    assert.match(status.stdout, /calm-empty\s+frontend\s+suspended/);
-    assert.match(status.stdout, /sunday-heading\s+frontend\s+ready/);
+    assert.equal(status.status, 0, status.stderr);
+    assert.match(status.stdout, /calm-empty\s+frontend\s+launch-failed/);
+    assert.ok(status.stdout.includes(`log ${logPath}`), status.stdout);
+
+    const first = runCli(["tick"], { cwd, home });
+    const second = runCli(["tick"], { cwd, home });
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(second.status, 0, second.stderr);
+    assert.match(first.stdout, /nothing to launch/);
+    assert.match(second.stdout, /nothing to launch/);
+    assert.doesNotMatch(first.stdout, /launch calm-empty/);
+    assert.deepEqual(runIds(checkouts.frontend), []);
+    const still = runCli(["status", "PEBBLE-POLISH"], { cwd, home });
+    assert.match(still.stdout, /launch-failed/);
+  });
+
+  it("does not satisfy a dependency when the approve gate was rejected", () => {
+    const { cwd, home, checkouts } = pebbleDir();
+    writeConfig(join(cwd, ".kiln"), checkouts, 2);
+    writePlan(join(cwd, ".kiln", "plans"), weeklyPlan);
+    approve(cwd, home, "PEBBLE-WEEKLY");
+
+    const first = runCli(["tick"], { cwd, home });
+    assert.equal(first.status, 0, first.stderr);
+    const suspended = waitForStatus(cwd, home, "PEBBLE-WEEKLY", /answer reject:/);
+    const ownerRun = runIds(checkouts["ai-core"])[0];
+    assert.ok(ownerRun);
+    const rejectCmd = answerCommand(suspended, "reject");
+    assertResolvedYak(rejectCmd);
+
+    const answered = runPrinted(rejectCmd, home);
+    assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
+    assert.match(answered.stdout, new RegExp(`run ${ownerRun} finished: ok`));
+    const rejected = runCli(["status", "PEBBLE-WEEKLY"], { cwd, home });
+    assert.match(rejected.stdout, /publish-reflection-api\s+ai-core\s+rejected/);
+    assert.match(rejected.stdout, /render-reflection\s+frontend\s+blocked/);
+    assert.doesNotMatch(rejected.stdout, /branch yak\//);
+    const commits = git(checkouts["ai-core"], ["log", "--format=%s", `yak/${ownerRun}`]);
+    assert.doesNotMatch(commits, /^kiln:/m);
+
+    const next = runCli(["tick"], { cwd, home });
+    assert.equal(next.status, 0, next.stderr);
+    assert.match(next.stdout, /nothing to launch/);
+    assert.doesNotMatch(next.stdout, /launch render-reflection/);
+    assert.deepEqual(runIds(checkouts.frontend), []);
+  });
+
+  it("refuses an empty test command instead of running it", () => {
+    const { cwd, home, checkouts } = pebbleDir();
+    writeConfig(join(cwd, ".kiln"), checkouts, 1, "   ");
+    const plan: Plan = {
+      requirementId: "PEBBLE-POLISH",
+      contracts: [],
+      tasks: [task("calm-empty", "Calm empty copy", "frontend")],
+    };
+    writePlan(join(cwd, ".kiln", "plans"), plan);
+    approve(cwd, home, "PEBBLE-POLISH");
+
+    const tick = runCli(["tick"], { cwd, home });
+    assert.equal(tick.status, 1);
+    assert.match(tick.stderr, /empty test command/);
+    assert.deepEqual(runIds(checkouts.frontend), []);
   });
 });

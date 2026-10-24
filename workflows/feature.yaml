@@ -18,7 +18,10 @@
 #   not write into product checkouts, so the builder is told to address
 #   CHANGES from the previous round without those artifacts inlined.
 # - command.run is not templated. The verify step executes $KILN_TEST, which
-#   `kiln tick` sets from repos.<repo>.test in the kiln config.
+#   `kiln tick` sets from repos.<repo>.test. An empty value fails the step.
+#   After an approved gate, land commits on the worktree branch with
+#   `git commit -m "kiln: $KILN_TASK_TITLE"`. The status resume command sets
+#   that variable. land is skipped when the gate answer is reject.
 # - UI review is not a separate step. The factory skips it when no UI paths
 #   changed, and Kiln has no per-repo UI path list. security, ux, and code
 #   are the minimum.
@@ -57,7 +60,7 @@ steps:
             design: { type: string }
             acceptance: { type: string }
           required: [goal, design, acceptance]
-      tools: [Read, Grep, Glob]
+      tools: [Read, Grep, Glob, Skill]
     produces: spec
 
   - id: revise
@@ -88,13 +91,13 @@ steps:
                   summary: { type: string }
                   status: { type: string, enum: [READY, BLOCKED] }
                 required: [summary, status]
-            tools: [Read, Grep, Glob, Edit, Write, Bash]
+            tools: [Read, Grep, Glob, Edit, Write, Bash, Skill]
           produces: build
 
         - id: verify
           needs: [build]
           command:
-            run: 'sh -c "$KILN_TEST"'
+            run: 'sh -c "${KILN_TEST:?KILN_TEST is empty}"'
             capture: [stdout, stderr, exitCode]
           produces: verify
 
@@ -115,7 +118,7 @@ steps:
                   verdict: { type: string, enum: [PASS, CHANGES] }
                   findings: { type: string }
                 required: [verdict, findings]
-            tools: [Read, Grep, Glob, Bash]
+            tools: [Read, Grep, Glob, Bash, Skill]
           produces: security
 
         - id: ux
@@ -136,7 +139,7 @@ steps:
                   verdict: { type: string, enum: [PASS, CHANGES] }
                   findings: { type: string }
                 required: [verdict, findings]
-            tools: [Read, Grep, Glob, Bash]
+            tools: [Read, Grep, Glob, Bash, Skill]
           produces: ux
 
         - id: code
@@ -157,7 +160,7 @@ steps:
                   verdict: { type: string, enum: [PASS, CHANGES] }
                   findings: { type: string }
                 required: [verdict, findings]
-            tools: [Read, Grep, Glob, Bash]
+            tools: [Read, Grep, Glob, Bash, Skill]
           produces: code
     produces: rounds
 
@@ -177,7 +180,7 @@ steps:
             decision: { type: string, enum: [APPROVE, ESCALATE] }
             reason: { type: string }
           required: [decision, reason]
-      tools: [Read, Grep, Glob, Bash]
+      tools: [Read, Grep, Glob, Bash, Skill]
     produces: decision
 
   - id: approve
@@ -193,3 +196,9 @@ steps:
       render:
         inline: 'Approve "{{input.title}}"? Agent decision: {{decision.decision}}. {{decision.reason}}'
     produces: approval
+
+  - id: land
+    needs: [approval]
+    skipIf: 'approval.decision == "reject"'
+    command:
+      run: 'git add -A && git commit -m "kiln: $KILN_TASK_TITLE"'
