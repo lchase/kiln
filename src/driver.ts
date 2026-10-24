@@ -27,8 +27,8 @@ import {
   type RunStatus,
 } from "./reconcile.js";
 import { PlanSchema, type Plan, type Task } from "./schemas.js";
-import { packageRoot } from "./paths.js";
 import { validatePlan } from "./validate.js";
+import { materializeFeatureWorkflow } from "./workflow.js";
 
 interface JournalEvent {
   t: string;
@@ -169,10 +169,7 @@ function launchTask(config: LoadedKilnConfig, planFile: Plan, task: Task): Launc
       `Repo ${task.repo} has an empty test command. Set repos.${task.repo}.test in the kiln config. The feature workflow refuses to run an empty KILN_TEST.`,
     );
   }
-  const workflow = join(packageRoot(), "workflows", "feature.yaml");
-  if (!existsSync(workflow)) {
-    throw new Error(`Feature workflow not found at ${workflow}.`);
-  }
+  const workflow = materializeFeatureWorkflow(config.kilnDir, planFile.requirementId, task.id);
   const logPath = join(
     config.kilnDir,
     "logs",

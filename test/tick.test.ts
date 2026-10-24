@@ -22,12 +22,12 @@ const testCommand = "node --test test.mjs && printf '%s\\n' landed > kiln-landed
 
 function runCli(
   args: string[],
-  options: { cwd: string; home: string },
+  options: { cwd: string; home: string; env?: Record<string, string> },
 ): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync(process.execPath, [join(root, "dist", "cli.js"), ...args], {
     cwd: options.cwd,
     encoding: "utf8",
-    env: { ...process.env, HOME: options.home },
+    env: { ...process.env, HOME: options.home, ...options.env },
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
@@ -62,7 +62,7 @@ function initCheckout(dir: string): void {
     join(fixtures, "build.json"),
     `${JSON.stringify([{ output: { summary: "Mock build for the Pebble task.", status: "READY" } }])}\n`,
   );
-  for (const step of ["security", "ux", "code"]) {
+  for (const step of ["security", "ux", "ui", "code"]) {
     writeFileSync(
       join(fixtures, `${step}.json`),
       `${JSON.stringify([{ output: { verdict: "PASS", findings: "No must-fix findings." } }])}\n`,
@@ -617,4 +617,215 @@ describe("kiln tick", { concurrency: 1 }, () => {
     assert.match(tick.stderr, /empty test command/);
     assert.deepEqual(runIds(checkouts.frontend), []);
   });
+
+  it("feeds a failing review back to the builder and still approves", () => {
+    const { cwd, home, checkouts } = pebbleDir();
+    const kilnDir = join(cwd, ".kiln");
+    const promptLog = join(cwd, "prompt-log");
+    mkdirSync(promptLog);
+    writeConfig(kilnDir, checkouts, 1);
+    const checkout = checkouts.frontend;
+    const findings = "MUSTFIX pebble-week-id: the Sunday heading drops the week id";
+    commitFeatureFixtures(checkout, {
+      spec: [{ output: { goal: "Show the weekly reflection.", design: "Touch the named module.", acceptance: "The task's checks pass." } }],
+      build: [{ output: { summary: "Mock build for the Pebble task.", status: "READY" } }],
+      security: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
+      ux: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
+      ui: [{ output: { verdict: "PASS", findings: "Checked: no UI changes." } }],
+      code: [
+        { output: { verdict: "CHANGES", findings } },
+        { output: { verdict: "PASS", findings: "The week id is covered." } },
+      ],
+      approver: [{ output: { decision: "APPROVE", reason: "Round 2 reviews passed." } }],
+    });
+    const plan: Plan = {
+      requirementId: "PEBBLE-REVIEW",
+      contracts: [],
+      tasks: [task("sunday-heading", "Sunday heading", "frontend")],
+    };
+    writePlan(join(kilnDir, "plans"), plan);
+    approve(cwd, home, "PEBBLE-REVIEW");
+
+    const launched = runCli(["tick"], { cwd, home, env: promptEnv(promptLog) });
+    assert.equal(launched.status, 0, launched.stderr);
+    const suspended = waitForStatus(cwd, home, "PEBBLE-REVIEW", /sunday-heading\s+frontend\s+suspended/, 60000);
+    const runId = runIdOf(suspended, "sunday-heading");
+    assert.deepEqual(stepIterations(checkout, runId, "build"), [1, 2]);
+    assert.deepEqual(stepIterations(checkout, runId, "ui"), [1, 2]);
+    assert.deepEqual(stepIterations(checkout, runId, "code"), [1, 2]);
+    assert.equal(readArtifact(checkout, runId, "code.1.json").verdict, "CHANGES");
+    assert.equal(readArtifact(checkout, runId, "code.2.json").verdict, "PASS");
+    assert.equal(readArtifact(checkout, runId, "verify.1.json").exitCode, 0);
+    assert.equal(readArtifact(checkout, runId, "verify.2.json").exitCode, 0);
+    assertAbsoluteFactoryPrompts(checkout, runId, kilnDir);
+
+    const prompts = readPrompts(promptLog);
+    const build1 = prompts.find((entry) => entry.stepId === "build" && entry.callIndex === 0);
+    const build2 = prompts.find((entry) => entry.stepId === "build" && entry.callIndex === 1);
+    assert.ok(build1, JSON.stringify(prompts.map((entry) => [entry.stepId, entry.callIndex])));
+    assert.ok(build2);
+    assert.match(build1.prompt, /\(round 1: no prior review\)/);
+    assert.doesNotMatch(build1.prompt, /MUSTFIX pebble-week-id/);
+    assert.match(build2.prompt, new RegExp(findings.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(build2.prompt, /<job folder>\/build\.md/);
+    const codePrompt = prompts.find((entry) => entry.stepId === "code" && entry.callIndex === 0);
+    assert.ok(codePrompt);
+    assert.match(codePrompt.prompt, /smart-review:smart-review/);
+
+    const answered = runPrinted(answerCommand(suspended, "approve"), home);
+    assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
+    const done = runCli(["status", "PEBBLE-REVIEW"], { cwd, home });
+    assert.match(done.stdout, /sunday-heading\s+frontend\s+ok/);
+    assert.equal(git(checkout, ["log", "-1", "--format=%s", `yak/${runId}`]).trim(), "kiln: Sunday heading");
+  });
+
+  it("loops a red verify back to the builder instead of failing the run", () => {
+    const { cwd, home, checkouts } = pebbleDir();
+    const kilnDir = join(cwd, ".kiln");
+    const promptLog = join(cwd, "prompt-log");
+    mkdirSync(promptLog);
+    const checkout = checkouts.frontend;
+    writeFileSync(
+      join(checkout, "verify-once.mjs"),
+      [
+        "import { existsSync, readFileSync, writeFileSync } from 'node:fs';",
+        "const path = 'verify-attempt.txt';",
+        "const n = existsSync(path) ? Number(readFileSync(path, 'utf8')) : 0;",
+        "writeFileSync(path, String(n + 1));",
+        "if (n === 0) {",
+        "  console.error('verify failed round 1');",
+        "  process.exit(1);",
+        "}",
+        "console.log('verify ok round 2');",
+        "",
+      ].join("\n"),
+    );
+    git(checkout, ["add", "verify-once.mjs"]);
+    git(checkout, ["commit", "-q", "-m", "red then green verify"]);
+    writeConfig(kilnDir, checkouts, 1, "node verify-once.mjs");
+    const plan: Plan = {
+      requirementId: "PEBBLE-RED",
+      contracts: [],
+      tasks: [task("calm-empty", "Calm empty copy", "frontend")],
+    };
+    writePlan(join(kilnDir, "plans"), plan);
+    approve(cwd, home, "PEBBLE-RED");
+
+    const launched = runCli(["tick"], { cwd, home, env: promptEnv(promptLog) });
+    assert.equal(launched.status, 0, launched.stderr);
+    const suspended = waitForStatus(cwd, home, "PEBBLE-RED", /calm-empty\s+frontend\s+suspended/, 60000);
+    const runId = runIdOf(suspended, "calm-empty");
+    const journal = readFileSync(join(checkout, ".runs", runId, "journal.jsonl"), "utf8");
+    assert.doesNotMatch(journal, /"t":"step.failed"/);
+    assert.deepEqual(stepIterations(checkout, runId, "build"), [1, 2]);
+    assert.deepEqual(stepIterations(checkout, runId, "verify"), [1, 2]);
+    assert.deepEqual(stepIterations(checkout, runId, "ui"), [1, 2]);
+    const redVerify = readArtifact(checkout, runId, "verify.1.json");
+    assert.equal(redVerify.exitCode, 1);
+    assert.match(redVerify.stderr ?? "", /verify failed round 1/);
+    assert.equal(readArtifact(checkout, runId, "verify.2.json").exitCode, 0);
+    assert.equal(readArtifact(checkout, runId, "security.1.json").verdict, "PASS");
+    assert.equal(readArtifact(checkout, runId, "ui.2.json").verdict, "PASS");
+
+    const prompts = readPrompts(promptLog);
+    const build2 = prompts.find((entry) => entry.stepId === "build" && entry.callIndex === 1);
+    assert.ok(build2, JSON.stringify(prompts.map((entry) => [entry.stepId, entry.callIndex])));
+    assert.match(build2.prompt, /verify failed round 1/);
+    assert.match(build2.prompt, /Previous verify exit code: 1/);
+    const approver = prompts.find((entry) => entry.stepId === "approver");
+    assert.ok(approver);
+    assert.match(approver.prompt, /Latest verify exit code: 0/);
+
+    const answered = runPrinted(answerCommand(suspended, "approve"), home);
+    assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
+    const done = runCli(["status", "PEBBLE-RED"], { cwd, home });
+    assert.match(done.stdout, /calm-empty\s+frontend\s+ok/);
+    assert.match(done.stdout, new RegExp(`branch yak/${runId}`));
+  });
 });
+
+function promptEnv(promptLog: string): Record<string, string> {
+  const hook = join(root, "test", "hooks", "register-record-mock-prompts.mjs");
+  return {
+    NODE_OPTIONS: `--import ${hook}`,
+    KILN_PROMPT_LOG: promptLog,
+  };
+}
+
+function commitFeatureFixtures(checkout: string, fixtures: Record<string, unknown[]>): void {
+  const dir = join(checkout, "test", "fixtures", "kiln-feature");
+  mkdirSync(dir, { recursive: true });
+  for (const [name, body] of Object.entries(fixtures)) {
+    writeFileSync(join(dir, `${name}.json`), `${JSON.stringify(body)}\n`);
+  }
+  git(checkout, ["add", "test/fixtures"]);
+  git(checkout, ["commit", "-q", "-m", "fixtures"]);
+}
+
+function stepIterations(checkout: string, runId: string, stepId: string): number[] {
+  const lines = readFileSync(join(checkout, ".runs", runId, "journal.jsonl"), "utf8").split("\n");
+  const found: number[] = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line) as { t?: string; stepId?: string; iteration?: number };
+      if (event.t === "step.started" && event.stepId === stepId && typeof event.iteration === "number") {
+        found.push(event.iteration);
+      }
+    } catch {
+      // A torn last line is ignored, same as the driver.
+    }
+  }
+  return found;
+}
+
+function readArtifact(
+  checkout: string,
+  runId: string,
+  name: string,
+): { verdict?: string; exitCode?: number; stderr?: string; stdout?: string } {
+  return JSON.parse(readFileSync(join(checkout, ".runs", runId, "artifacts", name), "utf8")) as {
+    verdict?: string;
+    exitCode?: number;
+    stderr?: string;
+    stdout?: string;
+  };
+}
+
+interface PromptRecord {
+  stepId: string;
+  callIndex: number;
+  prompt: string;
+}
+
+function readPrompts(promptLog: string): PromptRecord[] {
+  return readFileSync(join(promptLog, "prompts.jsonl"), "utf8")
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as PromptRecord);
+}
+
+function assertAbsoluteFactoryPrompts(checkout: string, runId: string, kilnDir: string): void {
+  const workflow = JSON.parse(readFileSync(join(checkout, ".runs", runId, "workflow.json"), "utf8")) as {
+    steps: Array<{ kind?: string; model?: string; prompt?: { file?: string }; body?: unknown[] }>;
+  };
+  const files: string[] = [];
+  const visit = (step: { kind?: string; prompt?: { file?: string }; body?: unknown[] }): void => {
+    if (step.prompt?.file) files.push(step.prompt.file);
+    if (Array.isArray(step.body)) {
+      for (const child of step.body) visit(child as { kind?: string; prompt?: { file?: string }; body?: unknown[] });
+    }
+  };
+  for (const step of workflow.steps) visit(step);
+  assert.equal(files.length, 7);
+  for (const file of files) {
+    assert.equal(file.startsWith("/"), true, file);
+    assert.equal(file.startsWith(kilnDir + "/"), true, file);
+    assert.equal(existsSync(file), true, file);
+    const text = readFileSync(file, "utf8");
+    assert.match(text, /Return JSON/);
+    assert.match(text, /The factory agent instructions follow/);
+    assert.match(text, /MIT License/);
+    assert.doesNotMatch(file, /^prompts\//);
+  }
+}
