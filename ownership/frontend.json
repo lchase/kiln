@@ -1,0 +1,12 @@
+{
+  "note": "PLACEHOLDER EXAMPLE. Invented ownership for the fictional habit tracker Pebble. Not a real repository and not a real company.",
+  "repo": "frontend",
+  "owns": [
+    "Pebble web screens: the habit list, the day view, and the weekly reflection",
+    "Client-side routing and form state for the Pebble browser app"
+  ],
+  "exposes": [
+    "Calls the Pebble assistant HTTP API on ai-core for generated text",
+    "Shows a trace id returned by that API and does not define the trace"
+  ]
+}
