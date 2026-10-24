@@ -1,7 +1,7 @@
 # One Kiln plan task, run by yak (@lchase/yak).
 #
 # Faithful to Lawrence Chase's factory plugin v0.7.0 (MIT):
-# https://github.com/lchase/coding-agent-plugins/tree/main/plugins/factory
+# https://github.com/lchase/coding-agent-plugins/tree/4c84a2ce7fbde5ac298c0de9f0b90141eac4ed98/plugins/factory
 #   skills/factory/SKILL.md          (the loop: spec, build, 4 reviews, approver)
 #   agents/spec-writer.md            model opus
 #   agents/builder.md                model opus
@@ -19,17 +19,24 @@
 # (yak src/steps/agent.ts, path.resolve(cwd, file)).
 #
 # yak 0.5 limits this file still works inside:
-# - command.run is not templated. verify runs $KILN_TEST, which `kiln tick`
-#   sets from repos.<repo>.test. An empty value fails the step. land commits
-#   with `git commit -m "kiln: $KILN_TASK_TITLE"`. verify and land need
-#   `input` (it carries a per-launch runNonce) so one task cannot cache-hit
-#   another. land runs only when approval.decision is approve, and it does
-#   not fail when the index is empty.
+# - command.run is not templated. verify runs $KILN_TEST through
+#   dist/truncate-output.js ($KILN_VERIFY_WRAPPER). `kiln tick` sets
+#   KILN_TEST from repos.<repo>.test. An empty value fails the step. The
+#   wrapper keeps the test's exit code and cuts stdout/stderr to the last
+#   200 lines or 20KB, with a leading `[truncated:` line when it cuts.
+#   land commits with `git commit -m "kiln: $KILN_TASK_TITLE"`. verify and
+#   land need `input` (it carries a per-launch runNonce) so one task cannot
+#   cache-hit another. land runs only when approval.decision is approve,
+#   and it does not fail when the index is empty. `git add -A` stages every
+#   uncommitted path in the worktree.
+# - input.baseRef is the checkout HEAD at launch (full SHA). Every preamble
+#   maps `<main branch>` to that SHA. The worktree branch is yak/<run-id>.
 # - A loop body does not evaluate skipIf, so the UI reviewer is a real step.
 #   review-ui.md itself returns PASS when no UI changed.
 # - A loop-body artifact is not a top-level producer. The approver reads the
 #   last verify on rounds.verify; needs: [verify] on the approver is rejected.
-#   Reviewers run inside the loop, so they need verify directly.
+#   Reviewers run inside the loop, so they need verify directly. They also
+#   need input, for baseRef.
 name: kiln-feature
 version: "1"
 inputSchema:
@@ -42,7 +49,8 @@ inputSchema:
       acceptance: { type: string }
       contracts: { type: string }
       runNonce: { type: string }
-    required: [title, description, acceptance, contracts, runNonce]
+      baseRef: { type: string }
+    required: [title, description, acceptance, contracts, runNonce, baseRef]
 steps:
   - id: spec
     needs: [input]
@@ -65,11 +73,12 @@ steps:
   - id: revise
     needs: [spec]
     loop:
-      # A red verify (exitCode != 0) or any CHANGES verdict sends the builder
-      # around again. failOn: never on verify is what keeps a red test from
-      # failing the run before that can happen. max 2 rounds, then the approver
-      # still runs (factory step 5: round 2 done goes to the approver).
-      until: 'security.verdict == "PASS" && ux.verdict == "PASS" && ui.verdict == "PASS" && code.verdict == "PASS" && verify.exitCode == 0'
+      # A BLOCKED build, a red verify (exitCode != 0), or any CHANGES verdict
+      # sends the builder around again. failOn: never on verify is what keeps
+      # a red test from failing the run before that can happen. max 2 rounds,
+      # then the approver still runs (factory step 5: round 2 done goes to
+      # the approver).
+      until: 'build.status == "READY" && security.verdict == "PASS" && ux.verdict == "PASS" && ui.verdict == "PASS" && code.verdict == "PASS" && verify.exitCode == 0'
       budget:
         maxIterations: 2
       onExhausted: continue
@@ -98,7 +107,7 @@ steps:
         - id: verify
           needs: [input, build]
           command:
-            run: 'sh -c "${KILN_TEST:?KILN_TEST is empty}"'
+            run: 'node "${KILN_VERIFY_WRAPPER:?KILN_VERIFY_WRAPPER is empty}"'
             failOn: never
             capture: [stdout, stderr, exitCode]
           produces: verify
@@ -106,10 +115,12 @@ steps:
         # Reviewers run one after another. A separate yak change adds an
         # opt-in loop `concurrency` field. Once that lands, setting
         # `concurrency: 4` here and making each reviewer need only
-        # [spec, build, verify] makes them parallel. This file does not
-        # set concurrency, and does not depend on that field.
+        # [input, spec, build, verify] makes them parallel. This file does
+        # not set concurrency, and does not depend on that field.
+        # Reviewers have no Write or Edit. Bash stays, because the factory
+        # prompts diff with git.
         - id: security
-          needs: [spec, build, verify]
+          needs: [input, spec, build, verify]
           agent:
             model: opus
             prompt:
@@ -122,11 +133,11 @@ steps:
                   verdict: { type: string, enum: [PASS, CHANGES] }
                   findings: { type: string }
                 required: [verdict, findings]
-            tools: [Read, Grep, Glob, Bash, Write, Skill]
+            tools: [Read, Grep, Glob, Bash, Skill]
           produces: security
 
         - id: ux
-          needs: [spec, build, verify]
+          needs: [input, spec, build, verify]
           agent:
             model: sonnet
             prompt:
@@ -139,11 +150,11 @@ steps:
                   verdict: { type: string, enum: [PASS, CHANGES] }
                   findings: { type: string }
                 required: [verdict, findings]
-            tools: [Read, Grep, Glob, Bash, Write, Skill]
+            tools: [Read, Grep, Glob, Bash, Skill]
           produces: ux
 
         - id: ui
-          needs: [spec, build, verify]
+          needs: [input, spec, build, verify]
           agent:
             model: sonnet
             prompt:
@@ -156,11 +167,11 @@ steps:
                   verdict: { type: string, enum: [PASS, CHANGES] }
                   findings: { type: string }
                 required: [verdict, findings]
-            tools: [Read, Grep, Glob, Bash, Write, Skill]
+            tools: [Read, Grep, Glob, Bash, Skill]
           produces: ui
 
         - id: code
-          needs: [spec, build, verify]
+          needs: [input, spec, build, verify]
           agent:
             model: sonnet
             prompt:
@@ -173,12 +184,12 @@ steps:
                   verdict: { type: string, enum: [PASS, CHANGES] }
                   findings: { type: string }
                 required: [verdict, findings]
-            tools: [Read, Grep, Glob, Bash, Write, Skill]
+            tools: [Read, Grep, Glob, Bash, Skill]
           produces: code
     produces: rounds
 
   - id: approver
-    needs: [spec, rounds]
+    needs: [input, spec, rounds]
     agent:
       model: opus
       prompt:

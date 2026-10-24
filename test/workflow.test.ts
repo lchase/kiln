@@ -42,6 +42,8 @@ describe("feature workflow", () => {
       assert.match(text, /MIT License/);
       assert.match(text, /Copyright \(c\) 2026 Lawrence Chase/);
       assert.match(text, new RegExp(`plugins/factory/agents/${name}\\.md`));
+      assert.match(text, /4c84a2ce7fbde5ac298c0de9f0b90141eac4ed98/);
+      assert.doesNotMatch(text, /blob\/main/);
       assert.match(text, /v0\.7\.0/);
       const body = text.slice(at + marker.length);
       assert.doesNotMatch(body, /Kiln/);
@@ -61,6 +63,7 @@ describe("feature workflow", () => {
     const source = yak(["run", "workflows/feature.yaml", "--adapter", "mock", "--isolation", "none"], root);
     assert.equal(source.status, 1, source.stderr);
     assert.match(source.stderr, /--input does not satisfy the workflow's inputSchema/);
+    assert.match(source.stderr, /baseRef/);
     assert.doesNotMatch(source.stderr, /prompt references/);
     assert.doesNotMatch(source.stderr, /needs artifact/);
     assert.doesNotMatch(source.stdout, /run .* started/);
@@ -84,9 +87,29 @@ describe("feature workflow", () => {
     assert.ok(specFile);
     const combined = readFileSync(specFile, "utf8");
     assert.match(combined, /Contracts this task publishes or depends on/);
+    assert.match(combined, /\{\{input\.baseRef\}\}/);
+    assert.match(combined, /git branch --show-current/);
     assert.match(combined, /Write exactly one file, `<job folder>\/spec\.md`/);
     const factory = readFileSync(join(root, "prompts", "factory", "spec-writer.md"), "utf8");
     assert.ok(combined.endsWith(factory.trimStart()));
+    assert.match(renderedText, /build\.status == "READY"/);
+    assert.match(renderedText, /KILN_VERIFY_WRAPPER/);
+    const toolLines = [...renderedText.matchAll(/tools: \[([^\]]+)\]/g)].map((match) => match[1]);
+    assert.deepEqual(toolLines, [
+      "Read, Grep, Glob, Bash, Write, Skill",
+      "Read, Grep, Glob, Bash, Write, Edit, Skill",
+      "Read, Grep, Glob, Bash, Skill",
+      "Read, Grep, Glob, Bash, Skill",
+      "Read, Grep, Glob, Bash, Skill",
+      "Read, Grep, Glob, Bash, Skill",
+      "Read, Grep, Glob, Bash, Write, Skill",
+    ]);
+    const buildFile = renderedText.match(/file: "([^"]*build-[0-9a-f]+\.md)"/)?.[1];
+    const approverFile = renderedText.match(/file: "([^"]*approver-[0-9a-f]+\.md)"/)?.[1];
+    assert.ok(buildFile);
+    assert.ok(approverFile);
+    assert.match(readFileSync(buildFile, "utf8"), /this is round 1/);
+    assert.match(readFileSync(approverFile, "utf8"), /Only the final round is provided/);
 
     const run = yak(
       [
@@ -106,6 +129,8 @@ describe("feature workflow", () => {
         "contracts=none",
         "--input",
         "runNonce=pebble-nonce",
+        "--input",
+        "baseRef=0123456789abcdef0123456789abcdef01234567",
       ],
       foreign,
     );

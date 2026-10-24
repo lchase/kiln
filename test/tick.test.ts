@@ -671,6 +671,17 @@ describe("kiln tick", { concurrency: 1 }, () => {
     const codePrompt = prompts.find((entry) => entry.stepId === "code" && entry.callIndex === 0);
     assert.ok(codePrompt);
     assert.match(codePrompt.prompt, /smart-review:smart-review/);
+    const base = headSha(checkout);
+    assert.equal(readInput(checkout, runId).baseRef, base);
+    assertBranchPreamble(build1.prompt, base);
+    assert.match(build1.prompt, /this is round 1/);
+    assert.match(build1.prompt, /Otherwise this is round 2/);
+    assertBranchPreamble(build2.prompt, base);
+    assertBranchPreamble(codePrompt.prompt, base);
+    const approverPrompt = prompts.find((entry) => entry.stepId === "approver");
+    assert.ok(approverPrompt);
+    assert.match(approverPrompt.prompt, /Only the final round is provided/);
+    assertBranchPreamble(approverPrompt.prompt, base);
 
     const answered = runPrinted(answerCommand(suspended, "approve"), home);
     assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
@@ -693,6 +704,7 @@ describe("kiln tick", { concurrency: 1 }, () => {
         "const n = existsSync(path) ? Number(readFileSync(path, 'utf8')) : 0;",
         "writeFileSync(path, String(n + 1));",
         "if (n === 0) {",
+        "  for (let i = 0; i < 250; i += 1) console.error('verify-line-' + i);",
         "  console.error('verify failed round 1');",
         "  process.exit(1);",
         "}",
@@ -723,6 +735,9 @@ describe("kiln tick", { concurrency: 1 }, () => {
     const redVerify = readArtifact(checkout, runId, "verify.1.json");
     assert.equal(redVerify.exitCode, 1);
     assert.match(redVerify.stderr ?? "", /verify failed round 1/);
+    assert.match(redVerify.stderr ?? "", /\[truncated: showing the last 200 lines or 20480 bytes of stderr\]/);
+    assert.doesNotMatch(redVerify.stderr ?? "", /(^|\n)verify-line-0\n/);
+    assert.match(redVerify.stderr ?? "", /(^|\n)verify-line-51\n/);
     assert.equal(readArtifact(checkout, runId, "verify.2.json").exitCode, 0);
     assert.equal(readArtifact(checkout, runId, "security.1.json").verdict, "PASS");
     assert.equal(readArtifact(checkout, runId, "ui.2.json").verdict, "PASS");
@@ -732,6 +747,7 @@ describe("kiln tick", { concurrency: 1 }, () => {
     assert.ok(build2, JSON.stringify(prompts.map((entry) => [entry.stepId, entry.callIndex])));
     assert.match(build2.prompt, /verify failed round 1/);
     assert.match(build2.prompt, /Previous verify exit code: 1/);
+    assert.match(build2.prompt, /\[truncated:/);
     const approver = prompts.find((entry) => entry.stepId === "approver");
     assert.ok(approver);
     assert.match(approver.prompt, /Latest verify exit code: 0/);
@@ -741,6 +757,179 @@ describe("kiln tick", { concurrency: 1 }, () => {
     const done = runCli(["status", "PEBBLE-RED"], { cwd, home });
     assert.match(done.stdout, /calm-empty\s+frontend\s+ok/);
     assert.match(done.stdout, new RegExp(`branch yak/${runId}`));
+  });
+
+  it("retries a BLOCKED build and escalates instead of approving", () => {
+    const { cwd, home, checkouts } = pebbleDir();
+    const kilnDir = join(cwd, ".kiln");
+    const promptLog = join(cwd, "prompt-log");
+    mkdirSync(promptLog);
+    const checkout = checkouts.frontend;
+    writeConfig(kilnDir, checkouts, 1);
+    commitFeatureFixtures(checkout, {
+      spec: [{ output: { goal: "Show the weekly reflection.", design: "Touch the named module.", acceptance: "The task's checks pass." } }],
+      build: [{ output: { summary: "Branch check failed.", status: "BLOCKED" } }],
+      security: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
+      ux: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
+      ui: [{ output: { verdict: "PASS", findings: "Checked: no UI changes." } }],
+      code: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
+      approver: [{ output: { decision: "ESCALATE", reason: "Build stayed BLOCKED." } }],
+    });
+    const plan: Plan = {
+      requirementId: "PEBBLE-BLOCK",
+      contracts: [],
+      tasks: [task("sunday-heading", "Sunday heading", "frontend")],
+    };
+    writePlan(join(kilnDir, "plans"), plan);
+    approve(cwd, home, "PEBBLE-BLOCK");
+
+    const launched = runCli(["tick"], { cwd, home, env: promptEnv(promptLog) });
+    assert.equal(launched.status, 0, launched.stderr);
+    const suspended = waitForStatus(cwd, home, "PEBBLE-BLOCK", /sunday-heading\s+frontend\s+suspended/, 60000);
+    const runId = runIdOf(suspended, "sunday-heading");
+    assert.deepEqual(stepIterations(checkout, runId, "build"), [1, 2]);
+    assert.equal(readArtifact(checkout, runId, "build.1.json").status, "BLOCKED");
+    assert.equal(readArtifact(checkout, runId, "build.2.json").status, "BLOCKED");
+    assert.equal(readArtifact(checkout, runId, "decision.json").decision, "ESCALATE");
+    assert.match(suspended, /Agent decision: ESCALATE/);
+    assert.doesNotMatch(suspended, /sunday-heading\s+frontend\s+ok/);
+    assert.doesNotMatch(git(checkout, ["log", "--format=%s", `yak/${runId}`]), /^kiln:/m);
+    assert.deepEqual(
+      journalRecords(checkout, runId).filter((event) => event.stepId === "land"),
+      [],
+    );
+
+    const base = headSha(checkout);
+    assert.equal(readInput(checkout, runId).baseRef, base);
+    const prompts = readPrompts(promptLog);
+    const build1 = prompts.find((entry) => entry.stepId === "build" && entry.callIndex === 0);
+    const build2 = prompts.find((entry) => entry.stepId === "build" && entry.callIndex === 1);
+    assert.ok(build1);
+    assert.ok(build2);
+    assertBranchPreamble(build1.prompt, base);
+    assert.match(build1.prompt, /\(round 1: no prior review\)/);
+    assert.match(build2.prompt, /No must-fix findings/);
+    assert.match(build2.prompt, /Otherwise this is round 2/);
+    const security = prompts.find((entry) => entry.stepId === "security" && entry.callIndex === 0);
+    assert.ok(security);
+    assertBranchPreamble(security.prompt, base);
+  });
+
+  it("lands when a human approves an ESCALATE decision", () => {
+    const { cwd, home, checkouts } = pebbleDir();
+    const kilnDir = join(cwd, ".kiln");
+    const checkout = checkouts.frontend;
+    writeConfig(kilnDir, checkouts, 1);
+    commitFeatureFixtures(checkout, {
+      spec: [{ output: { goal: "Show the weekly reflection.", design: "Touch the named module.", acceptance: "The task's checks pass." } }],
+      build: [{ output: { summary: "Mock build for the Pebble task.", status: "READY" } }],
+      security: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
+      ux: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
+      ui: [{ output: { verdict: "PASS", findings: "Checked: no UI changes." } }],
+      code: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
+      approver: [{ output: { decision: "ESCALATE", reason: "Needs a person." } }],
+    });
+    const plan: Plan = {
+      requirementId: "PEBBLE-ESC",
+      contracts: [],
+      tasks: [task("calm-empty", "Calm empty copy", "frontend")],
+    };
+    writePlan(join(kilnDir, "plans"), plan);
+    approve(cwd, home, "PEBBLE-ESC");
+
+    const launched = runCli(["tick"], { cwd, home });
+    assert.equal(launched.status, 0, launched.stderr);
+    const suspended = waitForStatus(cwd, home, "PEBBLE-ESC", /calm-empty\s+frontend\s+suspended/, 60000);
+    const runId = runIdOf(suspended, "calm-empty");
+    assert.deepEqual(stepIterations(checkout, runId, "build"), [1]);
+    assert.equal(readArtifact(checkout, runId, "decision.json").decision, "ESCALATE");
+    assert.match(suspended, /Agent decision: ESCALATE/);
+
+    const answered = runPrinted(answerCommand(suspended, "approve"), home);
+    assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
+    const done = runCli(["status", "PEBBLE-ESC"], { cwd, home });
+    assert.match(done.stdout, /calm-empty\s+frontend\s+ok/);
+    assert.equal(git(checkout, ["log", "-1", "--format=%s", `yak/${runId}`]).trim(), "kiln: Calm empty copy");
+    const landed = journalRecords(checkout, runId).filter(
+      (event) => event.t === "step.completed" && event.stepId === "land",
+    );
+    assert.equal(landed.length, 1);
+    assert.notEqual(landed[0]?.skipped, true);
+  });
+
+  it("skips land when the human rejects", () => {
+    const { cwd, home, checkouts } = pebbleDir();
+    const kilnDir = join(cwd, ".kiln");
+    const checkout = checkouts.frontend;
+    writeConfig(kilnDir, checkouts, 1);
+    const plan: Plan = {
+      requirementId: "PEBBLE-REJECT",
+      contracts: [],
+      tasks: [task("calm-empty", "Calm empty copy", "frontend")],
+    };
+    writePlan(join(kilnDir, "plans"), plan);
+    approve(cwd, home, "PEBBLE-REJECT");
+
+    const launched = runCli(["tick"], { cwd, home });
+    assert.equal(launched.status, 0, launched.stderr);
+    const suspended = waitForStatus(cwd, home, "PEBBLE-REJECT", /answer reject:/, 60000);
+    const runId = runIdOf(suspended, "calm-empty");
+    const answered = runPrinted(answerCommand(suspended, "reject"), home);
+    assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
+
+    const rejected = runCli(["status", "PEBBLE-REJECT"], { cwd, home });
+    assert.match(rejected.stdout, /calm-empty\s+frontend\s+rejected/);
+    assert.doesNotMatch(git(checkout, ["log", "--format=%s", `yak/${runId}`]), /^kiln:/m);
+    const landed = journalRecords(checkout, runId).filter(
+      (event) => event.t === "step.completed" && event.stepId === "land",
+    );
+    assert.equal(landed.length, 1);
+    assert.equal(landed[0]?.skipped, true);
+  });
+
+  it("stops after two rounds when CHANGES are still open", () => {
+    const { cwd, home, checkouts } = pebbleDir();
+    const kilnDir = join(cwd, ".kiln");
+    const promptLog = join(cwd, "prompt-log");
+    mkdirSync(promptLog);
+    const checkout = checkouts.frontend;
+    writeConfig(kilnDir, checkouts, 1);
+    const findings = "MUSTFIX pebble-still-open: the week id is still missing";
+    commitFeatureFixtures(checkout, {
+      spec: [{ output: { goal: "Show the weekly reflection.", design: "Touch the named module.", acceptance: "The task's checks pass." } }],
+      build: [{ output: { summary: "Mock build for the Pebble task.", status: "READY" } }],
+      security: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
+      ux: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
+      ui: [{ output: { verdict: "PASS", findings: "Checked: no UI changes." } }],
+      code: [{ output: { verdict: "CHANGES", findings } }],
+      approver: [{ output: { decision: "ESCALATE", reason: "Code review still wants changes." } }],
+    });
+    const plan: Plan = {
+      requirementId: "PEBBLE-LIMIT",
+      contracts: [],
+      tasks: [task("sunday-heading", "Sunday heading", "frontend")],
+    };
+    writePlan(join(kilnDir, "plans"), plan);
+    approve(cwd, home, "PEBBLE-LIMIT");
+
+    const launched = runCli(["tick"], { cwd, home, env: promptEnv(promptLog) });
+    assert.equal(launched.status, 0, launched.stderr);
+    const suspended = waitForStatus(cwd, home, "PEBBLE-LIMIT", /sunday-heading\s+frontend\s+suspended/, 60000);
+    const runId = runIdOf(suspended, "sunday-heading");
+    assert.deepEqual(stepIterations(checkout, runId, "build"), [1, 2]);
+    assert.deepEqual(stepIterations(checkout, runId, "code"), [1, 2]);
+    assert.equal(readArtifact(checkout, runId, "code.1.json").verdict, "CHANGES");
+    assert.equal(readArtifact(checkout, runId, "code.2.json").verdict, "CHANGES");
+    assert.equal(readArtifact(checkout, runId, "decision.json").decision, "ESCALATE");
+    assert.match(suspended, /Agent decision: ESCALATE/);
+    assert.deepEqual(
+      journalRecords(checkout, runId).filter((event) => event.stepId === "land"),
+      [],
+    );
+    const approverPrompt = readPrompts(promptLog).find((entry) => entry.stepId === "approver");
+    assert.ok(approverPrompt);
+    assert.match(approverPrompt.prompt, /MUSTFIX pebble-still-open/);
+    assert.match(approverPrompt.prompt, /Only the final round is provided/);
   });
 });
 
@@ -783,13 +972,52 @@ function readArtifact(
   checkout: string,
   runId: string,
   name: string,
-): { verdict?: string; exitCode?: number; stderr?: string; stdout?: string } {
+): { verdict?: string; exitCode?: number; stderr?: string; stdout?: string; status?: string; decision?: string } {
   return JSON.parse(readFileSync(join(checkout, ".runs", runId, "artifacts", name), "utf8")) as {
     verdict?: string;
     exitCode?: number;
     stderr?: string;
     stdout?: string;
+    status?: string;
+    decision?: string;
   };
+}
+
+function headSha(checkout: string): string {
+  return git(checkout, ["rev-parse", "HEAD"]).trim();
+}
+
+function readInput(checkout: string, runId: string): { baseRef?: string } {
+  return JSON.parse(readFileSync(join(checkout, ".runs", runId, "artifacts", "input.json"), "utf8")) as {
+    baseRef?: string;
+  };
+}
+
+interface JournalRecord {
+  t?: string;
+  stepId?: string;
+  skipped?: boolean;
+}
+
+function journalRecords(checkout: string, runId: string): JournalRecord[] {
+  const lines = readFileSync(join(checkout, ".runs", runId, "journal.jsonl"), "utf8").split("\n");
+  const found: JournalRecord[] = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      found.push(JSON.parse(line) as JournalRecord);
+    } catch {
+      // A torn last line is ignored, same as the driver.
+    }
+  }
+  return found;
+}
+
+function assertBranchPreamble(prompt: string, base: string): void {
+  assert.ok(prompt.includes(base), "prompt is missing the base SHA");
+  assert.match(prompt, /git branch --show-current/);
+  assert.match(prompt, /yak\/<run-id>/);
+  assert.match(prompt, /Do not guess `main`/);
 }
 
 interface PromptRecord {

@@ -1,8 +1,8 @@
 <!--
 MIT License. Copyright (c) 2026 Lawrence Chase.
 Copied verbatim from the factory plugin v0.7.0 (Lawrence Chase):
-https://github.com/lchase/coding-agent-plugins/blob/main/plugins/factory/agents/spec-writer.md
-Full license: https://github.com/lchase/coding-agent-plugins/blob/main/LICENSE
+https://github.com/lchase/coding-agent-plugins/blob/4c84a2ce7fbde5ac298c0de9f0b90141eac4ed98/plugins/factory/agents/spec-writer.md
+Full license: https://github.com/lchase/coding-agent-plugins/blob/4c84a2ce7fbde5ac298c0de9f0b90141eac4ed98/LICENSE
 The body below this header is unchanged.
 -->
 

@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import type { LoadedKilnConfig } from "./config.js";
+import { packageRoot } from "./paths.js";
 import { planBasename } from "./plans.js";
 import { renderStatus, renderTick, yakCliPath, type LaunchReport } from "./report.js";
 import {
@@ -180,7 +181,11 @@ function launchTask(config: LoadedKilnConfig, planFile: Plan, task: Task): Launc
   const crumbPath = breadcrumbPath(config.kilnDir, planFile.requirementId, task.id);
   ensureCheckoutExcludes(checkout);
 
-  const input = { ...taskInput(planFile, task), runNonce: randomUUID() };
+  const input = {
+    ...taskInput(planFile, task),
+    runNonce: randomUUID(),
+    baseRef: checkoutHead(checkout),
+  };
   const args = [
     yakCliPath(),
     "run",
@@ -208,7 +213,12 @@ function launchTask(config: LoadedKilnConfig, planFile: Plan, task: Task): Launc
       cwd: checkout,
       detached: true,
       stdio: ["ignore", logFd, logFd],
-      env: { ...process.env, KILN_TEST: testCommand, KILN_TASK_TITLE: task.title },
+      env: {
+        ...process.env,
+        KILN_TEST: testCommand,
+        KILN_TASK_TITLE: task.title,
+        KILN_VERIFY_WRAPPER: join(packageRoot(), "dist", "truncate-output.js"),
+      },
     });
     child.unref();
     const pid = child.pid ?? 0;
@@ -517,6 +527,17 @@ function ensureCheckoutExcludes(checkout: string): void {
   if (missing.length === 0) return;
   const suffix = current.length === 0 || current.endsWith("\n") ? "" : "\n";
   writeFileSync(exclude, `${current}${suffix}${missing.join("\n")}\n`);
+}
+
+/** Checkout HEAD at launch. The worktree branch is cut from this commit. */
+function checkoutHead(checkout: string): string {
+  const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: checkout, encoding: "utf8" });
+  const sha = result.stdout.trim();
+  if (result.status !== 0 || !/^[0-9a-f]{40}$/.test(sha)) {
+    const detail = (result.stderr || result.stdout || "no HEAD").trim();
+    throw new Error(`Could not record the base SHA for ${checkout}: ${detail}`);
+  }
+  return sha;
 }
 
 /** Main git dir, including when `.git` is a file (a linked worktree). */
