@@ -1,0 +1,26 @@
+{
+  "name": "kiln",
+  "version": "0.0.1",
+  "description": "Refine a requirement into the contracts between repos and the per-repo tasks that follow them.",
+  "type": "module",
+  "bin": {
+    "kiln": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "kiln": "node dist/cli.js",
+    "prekiln": "npm run build",
+    "test": "tsc -p tsconfig.json && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.3"
+  }
+}
