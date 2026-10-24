@@ -33,19 +33,26 @@ Copy the shape from `examples/kiln.config.json` and replace the paths. Leave `"e
   "repos": {
     "frontend": {
       "checkout": "/absolute/path/to/your/frontend",
-      "ownership": "ownership/frontend.json"
+      "ownership": "ownership/frontend.json",
+      "test": "npm test"
     },
     "ai-core": {
       "checkout": "/absolute/path/to/your/ai-core",
-      "ownership": "ownership/ai-core.json"
+      "ownership": "ownership/ai-core.json",
+      "test": "npm test"
     },
     "evals-obs": {
       "checkout": "/absolute/path/to/your/evals-obs",
-      "ownership": "ownership/evals-obs.json"
+      "ownership": "ownership/evals-obs.json",
+      "test": "npm test"
     }
-  }
+  },
+  "maxConcurrent": 2,
+  "adapter": "claude-code"
 }
 ```
+
+`test` is the shell command yak runs to verify a task in that repo. `maxConcurrent` caps how many yak runs may be in flight (default 2). A single `kiln tick` still launches at most one task. `adapter` is `claude-code` (default) or `mock`.
 
 If neither local config exists, Kiln uses `examples/kiln.config.json` only for a file under `examples/requirements/`. Any other requirement without a local config is refused.
 
@@ -92,6 +99,26 @@ claude -p --output-format json --json-schema '<schema>' --tools "" \
 
 The prompt includes the requirement, the ownership maps from your local config, the absolute checkout paths, and the JSON schema. Kiln reads a Claude JSON envelope (`structured_output`, or JSON in `result`). Set `KILN_PLANNER=agent` to make the agent the default. `--config <file>` selects a config file other than `.kiln/kiln.config.json` or `~/.kiln/kiln.config.json`. `--agent-bin <bin>` selects a different executable.
 
+## Approve, tick, status
+
+`kiln refine` only writes a plan. Nothing runs until a person approves it:
+
+```bash
+npm run kiln -- approve EX-202
+npm run kiln -- tick
+npm run kiln -- status EX-202
+```
+
+`approve` writes `<kiln-dir>/plans/<id>.approved.json`. Unapproved plans are skipped.
+
+`tick` is one stateless pass: read approved plans and the yak journals under each checkout's `.runs/`, decide actions, apply them, exit. It launches at most one ready task, and only when running-plus-suspended runs are below `maxConcurrent`. The launch is `yak run workflows/feature.yaml` in that task's checkout, tagged `kiln:<planId>/<taskId>`. A contract dependency is satisfied when the task that publishes the contract has a journal that finished ok. A task that already has a run is not launched again. A failed run stays failed.
+
+`status` prints each task's state, the yak run id, and, for a run suspended on a gate, the command that writes the answer file and runs `yak resume`.
+
+The feature workflow is the factory loop (spec, build, verify, security/ux/code review, approver, human gate), ported onto yak. Verify runs the repo's `test` command. The default adapter is `claude-code`. `adapter: "mock"` uses fixture files in the checkout at `test/fixtures/kiln-feature/<step>.json` and does not call a model.
+
+Kiln also writes a tick lock and, only while a launch is in progress, a breadcrumb under `<kiln-dir>/launching/`. yak writes `.runs/` and `.yak/` inside the checkout. None of that is committed.
+
 ## Not in this slice
 
-No Jira client, and no agent that edits code. The agent CLI is asked to reply with a plan and nothing else. The only files Kiln writes are the plan JSON and markdown under the local kiln directory.
+No Jira client. `kiln refine --planner agent` is asked to reply with a plan and nothing else. The coding agent that edits a checkout is the yak run started by `tick`, not the planner.

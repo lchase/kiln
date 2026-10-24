@@ -1,0 +1,195 @@
+# One Kiln plan task, run by yak (@lchase/yak).
+#
+# Ported from the factory skill and its agent prompts:
+# https://github.com/lchase/coding-agent-plugins/tree/main/plugins/factory
+#   skills/factory/SKILL.md
+#   agents/spec-writer.md, builder.md, review-security.md, review-ux.md,
+#   review-code.md, approver.md
+# The factory writes markdown into a job folder. Here each agent returns a
+# schema-checked artifact instead, and the human stop at the end is a yak gate.
+#
+# yak gaps this file works around:
+# - A loop body cannot contain a map step (the engine rejects kind "map" and
+#   runs the body strictly in order). The security, ux, and code reviewers are
+#   sequential steps. They are not a parallel fan-out.
+# - A loop-body prompt cannot {{ }} an artifact produced later in the body.
+#   On round 1 that value is undefined and the template throws. The engine's
+#   escape hatch is a transform in the checkout's .yak/transforms.ts. Kiln does
+#   not write into product checkouts, so the builder is told to address
+#   CHANGES from the previous round without those artifacts inlined.
+# - command.run is not templated. The verify step executes $KILN_TEST, which
+#   `kiln tick` sets from repos.<repo>.test in the kiln config.
+# - UI review is not a separate step. The factory skips it when no UI paths
+#   changed, and Kiln has no per-repo UI path list. security, ux, and code
+#   are the minimum.
+name: kiln-feature
+version: "1"
+inputSchema:
+  inline:
+    type: object
+    additionalProperties: false
+    properties:
+      title: { type: string }
+      description: { type: string }
+      acceptance: { type: string }
+      contracts: { type: string }
+    required: [title, description, acceptance, contracts]
+steps:
+  - id: spec
+    needs: [input]
+    agent:
+      prompt:
+        inline: |
+          Write the spec for this one task. Do not edit code.
+          Task: {{input.title}}
+          {{input.description}}
+          Acceptance:
+          {{input.acceptance}}
+          Contracts this task publishes or depends on:
+          {{input.contracts}}
+          Name the modules to change. Each acceptance check must be verifiable by a test or a command. If the task is a bug, the first check is a test that fails before the fix and passes after.
+      schema:
+        inline:
+          type: object
+          additionalProperties: false
+          properties:
+            goal: { type: string }
+            design: { type: string }
+            acceptance: { type: string }
+          required: [goal, design, acceptance]
+      tools: [Read, Grep, Glob]
+    produces: spec
+
+  - id: revise
+    needs: [spec]
+    loop:
+      until: 'security.verdict == "PASS" && ux.verdict == "PASS" && code.verdict == "PASS"'
+      budget:
+        maxIterations: 2
+      # Factory still asks the approver after round 2, even with open CHANGES.
+      onExhausted: continue
+      body:
+        - id: build
+          needs: [input, spec]
+          agent:
+            prompt:
+              inline: |
+                Implement the spec in this checkout. Smallest change that meets every acceptance check. Match the surrounding code. Do not add scope the spec did not ask for.
+                Task: {{input.title}}
+                Spec goal: {{spec.goal}}
+                Spec design: {{spec.design}}
+                Acceptance: {{spec.acceptance}}
+                On a later round, fix every CHANGES finding from the security, ux, and code reviews of the previous round, then run the repo tests again. Do not report READY if tests fail. Report BLOCKED only when the spec contradicts itself or you need a human.
+            schema:
+              inline:
+                type: object
+                additionalProperties: false
+                properties:
+                  summary: { type: string }
+                  status: { type: string, enum: [READY, BLOCKED] }
+                required: [summary, status]
+            tools: [Read, Grep, Glob, Edit, Write, Bash]
+          produces: build
+
+        - id: verify
+          needs: [build]
+          command:
+            run: 'sh -c "$KILN_TEST"'
+            capture: [stdout, stderr, exitCode]
+          produces: verify
+
+        - id: security
+          needs: [spec, build]
+          agent:
+            prompt:
+              inline: |
+                Security review of the change for this task. Read the spec and the diff. A finding is CHANGES only when you can point at a file and the problem.
+                Spec: {{spec.goal}}
+                Build ({{build.status}}): {{build.summary}}
+                Look for missing authorization, injection, secrets, unsafe deserialization, and untrusted input at a boundary. Nits alone are PASS.
+            schema:
+              inline:
+                type: object
+                additionalProperties: false
+                properties:
+                  verdict: { type: string, enum: [PASS, CHANGES] }
+                  findings: { type: string }
+                required: [verdict, findings]
+            tools: [Read, Grep, Glob, Bash]
+          produces: security
+
+        - id: ux
+          needs: [spec, build]
+          agent:
+            prompt:
+              inline: |
+                UX review for the person or the API caller this change serves. No UI in the diff? Review the API or CLI shape and its errors, and say so.
+                Spec: {{spec.goal}}
+                Acceptance: {{spec.acceptance}}
+                Build ({{build.status}}): {{build.summary}}
+                CHANGES when acceptance is missed, names are inconsistent, or errors hide the cause. Otherwise PASS.
+            schema:
+              inline:
+                type: object
+                additionalProperties: false
+                properties:
+                  verdict: { type: string, enum: [PASS, CHANGES] }
+                  findings: { type: string }
+                required: [verdict, findings]
+            tools: [Read, Grep, Glob, Bash]
+          produces: ux
+
+        - id: code
+          needs: [spec, build]
+          agent:
+            prompt:
+              inline: |
+                Code review. Check that each acceptance criterion is actually tested and that the diff is no larger than the spec.
+                Spec: {{spec.goal}}
+                Acceptance: {{spec.acceptance}}
+                Build ({{build.status}}): {{build.summary}}
+                CHANGES for a correctness bug, a missing test, or scope the spec did not ask for. Nits alone are PASS.
+            schema:
+              inline:
+                type: object
+                additionalProperties: false
+                properties:
+                  verdict: { type: string, enum: [PASS, CHANGES] }
+                  findings: { type: string }
+                required: [verdict, findings]
+            tools: [Read, Grep, Glob, Bash]
+          produces: code
+    produces: rounds
+
+  - id: approver
+    needs: [spec, rounds]
+    agent:
+      prompt:
+        inline: |
+          Decide whether this task is ready for a human to approve delivery. APPROVE only if you would hand the change to a reviewer as it is. ESCALATE when the build is BLOCKED, any review is CHANGES, or the diff leaves the spec.
+          Spec: {{spec.goal}}
+          Latest round: {{rounds}}
+      schema:
+        inline:
+          type: object
+          additionalProperties: false
+          properties:
+            decision: { type: string, enum: [APPROVE, ESCALATE] }
+            reason: { type: string }
+          required: [decision, reason]
+      tools: [Read, Grep, Glob, Bash]
+    produces: decision
+
+  - id: approve
+    needs: [input, decision]
+    gate:
+      schema:
+        inline:
+          type: object
+          additionalProperties: false
+          properties:
+            decision: { type: string, enum: [approve, reject] }
+          required: [decision]
+      render:
+        inline: 'Approve "{{input.title}}"? Agent decision: {{decision.decision}}. {{decision.reason}}'
+    produces: approval
