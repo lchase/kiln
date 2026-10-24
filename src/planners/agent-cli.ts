@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { z } from "zod";
 import { PlannerOutputError } from "../errors.js";
 import { expectSchema, type Planner, type PlannerContext } from "../planner.js";
-import { PlanSchema, ReadinessSchema, REPOS, type Plan, type Readiness } from "../schemas.js";
+import { PlanSchema, ReadinessSchema, REPOS, type Plan, type Readiness, type Repo } from "../schemas.js";
 import { extractModelJson } from "./extract-json.js";
 
 export interface AgentRunResult {
@@ -22,23 +22,51 @@ export interface AgentCliPlannerOptions {
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 
+/** Read-only Claude Code tools. No shell, no edits, no web fetch. */
+export const READ_ONLY_TOOLS = "Read,Grep,Glob";
+
+const WRITE_CAPABLE_TOOLS = ["Bash", "Edit", "Write", "WebFetch"] as const;
+
 /**
- * Non-interactive Claude Code invocation. `--tools ""` disables built-in
- * tools so this planning step cannot edit the tree.
+ * Non-interactive Claude Code invocation. The process cwd is one checkout;
+ * the other two are passed with `--add-dir`. `--tools` is read-only, and
+ * `--permission-prompts none` needs Claude Code >= 2.1.259.
  */
-export function defaultClaudeArgs(jsonSchema: unknown): string[] {
-  return [
+export function defaultClaudeArgs(jsonSchema: unknown, checkouts: Record<Repo, string>): string[] {
+  const args = [
     "-p",
     "--output-format",
     "json",
     "--json-schema",
     JSON.stringify(jsonSchema),
     "--tools",
-    "",
+    READ_ONLY_TOOLS,
     "--no-session-persistence",
     "--permission-prompts",
     "none",
   ];
+  for (const repo of REPOS) {
+    if (repo === REPOS[0]) continue;
+    args.push("--add-dir", checkouts[repo]);
+  }
+  return args;
+}
+
+/** Checkout used as the planner's cwd. The other two are `--add-dir` entries. */
+export function plannerCwd(checkouts: Record<Repo, string>): string {
+  return checkouts[REPOS[0]];
+}
+
+export function enabledTools(args: readonly string[]): string[] {
+  const index = args.indexOf("--tools");
+  const value = index >= 0 ? args[index + 1] : undefined;
+  if (!value) return [];
+  return value.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
+}
+
+export function hasWriteCapableTool(args: readonly string[]): boolean {
+  const enabled = new Set(enabledTools(args));
+  return WRITE_CAPABLE_TOOLS.some((name) => enabled.has(name) || args.includes(name));
 }
 
 export class AgentCliPlanner implements Planner {
@@ -56,22 +84,22 @@ export class AgentCliPlanner implements Planner {
 
   async assessReadiness(context: PlannerContext): Promise<Readiness> {
     const jsonSchema = toJsonSchema(ReadinessSchema);
-    const value = await this.complete(jsonSchema, buildAssessPrompt(context, jsonSchema));
+    const value = await this.complete(context, jsonSchema, buildAssessPrompt(context, jsonSchema));
     return expectSchema(ReadinessSchema, value, "Readiness");
   }
 
   async decompose(context: PlannerContext): Promise<Plan> {
     const jsonSchema = toJsonSchema(PlanSchema);
-    const value = await this.complete(jsonSchema, buildDecomposePrompt(context, jsonSchema));
+    const value = await this.complete(context, jsonSchema, buildDecomposePrompt(context, jsonSchema));
     return expectSchema(PlanSchema, value, "Plan");
   }
 
-  private async complete(jsonSchema: Record<string, unknown>, prompt: string): Promise<unknown> {
-    const args = this.args ? [...this.args, prompt] : [...defaultClaudeArgs(jsonSchema), prompt];
+  private async complete(context: PlannerContext, jsonSchema: Record<string, unknown>, prompt: string): Promise<unknown> {
+    const args = this.args ? [...this.args, prompt] : [...defaultClaudeArgs(jsonSchema, context.checkouts), prompt];
     let result: AgentRunResult;
     try {
       result = await runProcess(this.bin, args, {
-        cwd: this.cwd,
+        cwd: this.cwd ?? plannerCwd(context.checkouts),
         timeoutMs: this.timeoutMs,
       });
     } catch (error) {
@@ -99,7 +127,8 @@ function toJsonSchema(schema: z.ZodType): Record<string, unknown> {
 
 function buildAssessPrompt(context: PlannerContext, jsonSchema: unknown): string {
   return [
-    "You are Kiln's planner. Reply with one JSON object and no markdown fence. Do not edit files. Do not call tools.",
+    "You are Kiln's planner. Reply with one JSON object and no markdown fence.",
+    "You may read the checkouts with Read, Grep, and Glob. Do not edit files. Do not run shell commands. Do not fetch the web.",
     "",
     "KILN_STEP: assess",
     "",
@@ -125,11 +154,14 @@ function buildAssessPrompt(context: PlannerContext, jsonSchema: unknown): string
 
 function buildDecomposePrompt(context: PlannerContext, jsonSchema: unknown): string {
   return [
-    "You are Kiln's planner. Reply with one JSON object and no markdown fence. Do not edit files. Do not call tools.",
+    "You are Kiln's planner. Reply with one JSON object and no markdown fence.",
+    "You may read the checkouts with Read, Grep, and Glob. Do not edit files. Do not run shell commands. Do not fetch the web.",
     "",
     "KILN_STEP: decompose",
     "",
     "Decompose the requirement into a plan. The plan centers on the seams between repos.",
+    "Before deciding contracts, inspect the actual code paths (routes, API clients, schemas).",
+    "Cite file paths in task descriptions.",
     "Each contract is published by one task in its owner repo. That task does not depend on the contract.",
     "Tasks in the other repo depend on the contract id, so the seam lands before they run.",
     "",

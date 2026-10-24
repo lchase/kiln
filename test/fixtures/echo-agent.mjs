@@ -32,6 +32,10 @@ if (prompt.includes("KILN_STEP: assess")) {
 }
 
 if (prompt.includes("KILN_STEP: decompose")) {
+  if (!prompt.includes("inspect the actual code paths") || !prompt.includes("Cite file paths")) {
+    console.error("decompose prompt does not tell the planner to inspect code and cite paths");
+    process.exit(1);
+  }
   if (!wantsPlan) {
     console.error("decompose was called for a requirement that should only return questions");
     process.exit(1);

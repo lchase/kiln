@@ -4,7 +4,13 @@ import { describe, it } from "node:test";
 import { loadKilnConfig } from "../src/config.js";
 import { PlannerOutputError } from "../src/errors.js";
 import { packageRoot } from "../src/paths.js";
-import { AgentCliPlanner } from "../src/planners/agent-cli.js";
+import {
+  AgentCliPlanner,
+  defaultClaudeArgs,
+  hasWriteCapableTool,
+  plannerCwd,
+  READ_ONLY_TOOLS,
+} from "../src/planners/agent-cli.js";
 import { extractModelJson } from "../src/planners/extract-json.js";
 import { refine } from "../src/refine.js";
 import type { Requirement } from "../src/schemas.js";
@@ -25,6 +31,21 @@ const readyFields = {
 };
 
 describe("agent CLI planner", () => {
+  it("cannot edit the tree: argv is read-only tools plus the other two checkouts", () => {
+    const args = defaultClaudeArgs({ type: "object" }, exampleConfig.checkouts);
+    assert.equal(args[args.indexOf("--tools") + 1], READ_ONLY_TOOLS);
+    assert.equal(hasWriteCapableTool(args), false);
+    assert.deepEqual(
+      args.filter((arg) => arg === "--add-dir").length,
+      2,
+    );
+    assert.equal(args[args.indexOf("--add-dir") + 1], exampleConfig.checkouts["ai-core"]);
+    assert.equal(args.at(-1), exampleConfig.checkouts["evals-obs"]);
+    assert.equal(args.includes(exampleConfig.checkouts.frontend), false);
+    assert.equal(plannerCwd(exampleConfig.checkouts), exampleConfig.checkouts.frontend);
+    assert.equal(args[args.indexOf("--permission-prompts") + 1], "none");
+  });
+
   it("reads a non-interactive CLI and returns questions without decomposing", async () => {
     const requirement: Requirement = {
       id: "EX-AGENT-Q",
