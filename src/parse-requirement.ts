@@ -87,12 +87,16 @@ export function parseRequirement(markdown: string, filename = "requirement.md"):
     );
   }
   const criteria = bullets(section(body, "Acceptance criteria"));
+  const scope = section(body, "Scope");
+  const outcome = section(body, "Outcome") || section(body, "User-facing outcome");
   const parsed = RequirementSchema.safeParse({
     id: meta.id,
     source: meta.source,
     title,
     body,
     ...(criteria.length > 0 ? { acceptanceCriteria: criteria } : {}),
+    ...(scope ? { scope } : {}),
+    ...(outcome ? { outcome } : {}),
   });
   if (!parsed.success) {
     throw new RequirementParseError(`${filename} is not a valid requirement: ${parsed.error.message}`);

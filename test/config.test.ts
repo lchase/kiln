@@ -88,6 +88,20 @@ describe("kiln config", () => {
     }
   });
 
+  it("writes plans under cwd/.kiln when the config file is not inside a .kiln directory", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "kiln-cwd-"));
+    const configDir = join(cwd, "elsewhere");
+    try {
+      writeLocalConfig(configDir, "outside-kiln");
+      const loaded = loadKilnConfig(join(configDir, "kiln.config.json"), { cwd });
+      assert.equal(loaded.kilnDir, join(cwd, ".kiln"));
+      assert.equal(loaded.plansDir, join(cwd, ".kiln", "plans"));
+      assert.equal(loaded.plansDir.startsWith(configDir), false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("writes plan files only inside the plans directory", () => {
     const dir = mkdtempSync(join(tmpdir(), "kiln-plans-"));
     try {

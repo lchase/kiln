@@ -32,7 +32,6 @@ function renderQuestions(requirement: Requirement, readiness: Readiness): string
 }
 
 function renderPlan(requirement: Requirement, plan: Plan): string {
-  const acceptance = bullets(plan.acceptance);
   const contracts =
     plan.contracts.length === 0
       ? "None. This plan stays inside one repo."
@@ -41,7 +40,7 @@ function renderPlan(requirement: Requirement, plan: Plan): string {
             [
               `### \`${contract.id}\` (${contract.kind})`,
               "",
-              `Between \`${contract.between[0]}\` and \`${contract.between[1]}\`.`,
+              `Between \`${contract.between[0]}\` and \`${contract.between[1]}\`. Owner: \`${contract.owner}\`.`,
               "",
               contract.spec,
             ].join("\n"),
@@ -53,16 +52,14 @@ function renderPlan(requirement: Requirement, plan: Plan): string {
         task.dependsOn.length === 0
           ? "Depends on: nothing."
           : `Depends on: ${task.dependsOn.map((id) => `\`${id}\``).join(", ")}.`;
-      const refs =
-        task.contractRefs.length === 0
-          ? "Contract refs: none."
-          : `Contract refs: ${task.contractRefs.map((id) => `\`${id}\``).join(", ")}.`;
       return [
-        `### \`${task.id}\` — ${task.repo}, ${task.workflow}`,
+        `### \`${task.id}\` — ${task.title}`,
+        "",
+        `${task.repo}, ${task.workflow}`,
+        "",
+        task.description,
         "",
         depends,
-        "",
-        refs,
         "",
         "Acceptance:",
         "",
@@ -75,12 +72,8 @@ function renderPlan(requirement: Requirement, plan: Plan): string {
     `# Plan: ${requirement.title}`,
     "",
     plan.contracts.length > 0
-      ? `Requirement \`${plan.requirementId}\`. Contracts are listed before the tasks that depend on them.`
+      ? `Requirement \`${plan.requirementId}\`. The owner task of each contract publishes it. The other repo waits on that contract.`
       : `Requirement \`${plan.requirementId}\`. One repo, so there is no cross-repo contract.`,
-    "",
-    "## Acceptance",
-    "",
-    acceptance,
     "",
     "## Contracts",
     "",

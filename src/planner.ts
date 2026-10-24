@@ -12,8 +12,9 @@ export interface PlannerContext {
 }
 
 /**
- * The model behind refine. `assessReadiness` decides whether the filer still
- * owes answers. `decompose` runs only after that check passes.
+ * The model behind refine. `assessReadiness` adds gaps on top of the
+ * structural checks. `decompose` runs only after the union of those checks
+ * passes.
  */
 export interface Planner {
   assessReadiness(context: PlannerContext): Promise<Readiness>;

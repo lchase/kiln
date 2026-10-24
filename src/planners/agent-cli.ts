@@ -14,12 +14,7 @@ export interface AgentRunResult {
 export interface AgentCliPlannerOptions {
   /** Executable to spawn. Defaults to `claude`. */
   bin?: string;
-  /**
-   * Arguments before the prompt. `{schema}` is replaced with the JSON Schema
-   * for this step. `{prompt}` is replaced with the prompt; if it is absent,
-   * the prompt is appended as the last argument.
-   * When omitted, Kiln uses the Claude Code print-mode flags below.
-   */
+  /** Arguments before the prompt. When set, these replace the default Claude flags. The prompt is appended. */
   args?: string[];
   cwd?: string;
   timeoutMs?: number;
@@ -29,8 +24,7 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 
 /**
  * Non-interactive Claude Code invocation. `--tools ""` disables built-in
- * tools so this planning step cannot edit the tree. Swap `bin` / `args` for
- * another agent CLI (see the README for Codex).
+ * tools so this planning step cannot edit the tree.
  */
 export function defaultClaudeArgs(jsonSchema: unknown): string[] {
   return [
@@ -73,9 +67,7 @@ export class AgentCliPlanner implements Planner {
   }
 
   private async complete(jsonSchema: Record<string, unknown>, prompt: string): Promise<unknown> {
-    const args = this.args
-      ? applyArgTemplates(this.args, jsonSchema, prompt)
-      : [...defaultClaudeArgs(jsonSchema), prompt];
+    const args = this.args ? [...this.args, prompt] : [...defaultClaudeArgs(jsonSchema), prompt];
     let result: AgentRunResult;
     try {
       result = await runProcess(this.bin, args, {
@@ -86,7 +78,7 @@ export class AgentCliPlanner implements Planner {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("ENOENT")) {
         throw new PlannerOutputError(
-          `Could not run ${this.bin}. Install it, or pass --planner fake to use the scripted planner.`,
+          `Could not run ${this.bin}. Install it, or pass --planner rules to use the rules-based planner.`,
         );
       }
       throw new PlannerOutputError(message);
@@ -97,21 +89,6 @@ export class AgentCliPlanner implements Planner {
     }
     return extractModelJson(result.stdout);
   }
-}
-
-export function applyArgTemplates(args: string[], jsonSchema: unknown, prompt: string): string[] {
-  const schemaText = JSON.stringify(jsonSchema);
-  let usedPrompt = false;
-  const next = args.map((arg) => {
-    let value = arg.replaceAll("{schema}", schemaText);
-    if (value.includes("{prompt}")) {
-      usedPrompt = true;
-      value = value.replaceAll("{prompt}", prompt);
-    }
-    return value;
-  });
-  if (!usedPrompt) next.push(prompt);
-  return next;
 }
 
 function toJsonSchema(schema: z.ZodType): Record<string, unknown> {
@@ -127,7 +104,8 @@ function buildAssessPrompt(context: PlannerContext, jsonSchema: unknown): string
     "KILN_STEP: assess",
     "",
     "Decide whether this requirement is ready to decompose into repository tasks.",
-    "It is ready only when all three are present:",
+    "Kiln already rejects a requirement that is missing acceptance criteria, scope, or a user-facing outcome.",
+    "Add any further gaps. It is ready only when all three are present:",
     "- acceptance criteria",
     "- scope: which of frontend, ai-core, and evals-obs are in scope, and which are out",
     "- a user-facing outcome: what a person can see or do when the work is done",
@@ -152,18 +130,20 @@ function buildDecomposePrompt(context: PlannerContext, jsonSchema: unknown): str
     "KILN_STEP: decompose",
     "",
     "Decompose the requirement into a plan. The plan centers on the seams between repos.",
-    "Contracts land first. A task in one repo depends on the contract ids it implements,",
-    "not on a task in another repo, so the repos can proceed independently once the seam exists.",
+    "Each contract is published by one task in its owner repo. That task does not depend on the contract.",
+    "Tasks in the other repo depend on the contract id, so the seam lands before they run.",
     "",
     "Rules:",
     "- requirementId is the requirement's id.",
-    "- acceptance copies the requirement's acceptance criteria and is non-empty.",
-    "- A contract joins exactly two different repos. kind is api, event, or schema.",
-    "- Use api for a frontend ↔ ai-core seam and event for an ai-core ↔ evals-obs seam.",
+    "- Every task has its own title, description, and acceptance. Acceptance is specific to that task, not a copy of the whole requirement.",
+    "- A contract joins exactly two different repos. between is an array of those two repos. kind is api, event, or schema.",
+    "- owner is one of those two repos. Exactly one task in the owner repo does not depend on the contract id. That task publishes it.",
+    "- Use api for a frontend ↔ ai-core seam (owner ai-core) and event for an ai-core ↔ evals-obs seam (owner ai-core).",
     "- A change that touches one repo has contracts: [].",
-    "- Every repo named on a contract has a task in that repo whose contractRefs include it.",
-    "- dependsOn lists those contract ids before any task ids. It may name a task id or a contract id.",
-    "- dependsOn must not name a task in another repo.",
+    "- Every pair of repos that both have tasks has a contract for that pair.",
+    "- dependsOn names a task id or a contract id. The other side of a contract depends on that contract id.",
+    "- A task does not depend on a contract its repo is not a side of.",
+    "- A task does not depend on a task in another repo unless that task publishes the contract between them.",
     "- A task's repo is the one repo it changes. workflow is feature, bug, security, or prototype.",
     "- Do not invent repos. Use only frontend, ai-core, and evals-obs.",
     "- Task ids and contract ids are unique, non-empty strings in one namespace.",

@@ -1,9 +1,10 @@
 import { PlannerOutputError } from "../errors.js";
 
 /**
- * Pull the model's JSON object out of a coding-agent CLI transcript.
- * Accepts a raw JSON object, a Claude `--output-format json` envelope
- * (`structured_output` or a `result` string), or a Codex `exec --json` JSONL stream.
+ * Pull the model's JSON object out of a Claude print-mode transcript.
+ * Accepts a raw JSON object, a `--output-format json` envelope
+ * (`structured_output` or a `result` string, possibly fenced), or a JSON
+ * array of events that includes a `type: "result"` element.
  */
 export function extractModelJson(stdout: string): unknown {
   const trimmed = stdout.trim();
@@ -17,16 +18,6 @@ export function extractModelJson(stdout: string): unknown {
     if (error instanceof PlannerOutputError) throw error;
   }
 
-  const lines = trimmed.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (lines.length > 1) {
-    try {
-      const events = lines.map((line) => JSON.parse(line) as unknown);
-      return unwrapEnvelope(events);
-    } catch (error) {
-      if (error instanceof PlannerOutputError) throw error;
-    }
-  }
-
   try {
     return parseEmbeddedJson(trimmed);
   } catch (error) {
@@ -37,14 +28,15 @@ export function extractModelJson(stdout: string): unknown {
 
 function unwrapEnvelope(value: unknown): unknown {
   if (Array.isArray(value)) {
-    if (value.some(isEvent)) {
-      const withStructured = [...value].reverse().find((item) => {
-        return isRecord(item) && item.type === "result" && item.structured_output != null;
-      });
-      if (isRecord(withStructured)) return withStructured.structured_output;
-      const text = lastAgentText(value);
-      if (text) return parseEmbeddedJson(text);
-      throw new PlannerOutputError("Agent event stream did not include a JSON result.");
+    const withStructured = [...value].reverse().find((item) => {
+      return isRecord(item) && item.type === "result" && item.structured_output != null;
+    });
+    if (isRecord(withStructured)) return withStructured.structured_output;
+    const withResult = [...value].reverse().find((item) => {
+      return isRecord(item) && item.type === "result" && typeof item.result === "string";
+    });
+    if (isRecord(withResult) && typeof withResult.result === "string") {
+      return parseEmbeddedJson(withResult.result);
     }
     return value;
   }
@@ -55,49 +47,11 @@ function unwrapEnvelope(value: unknown): unknown {
     return value.structured_output;
   }
 
-  if (typeof value.type === "string" && value.type.startsWith("item.")) {
-    const text = textOfItem(value.item);
-    if (text) return parseEmbeddedJson(text);
-  }
-
   if (typeof value.result === "string") {
     return parseEmbeddedJson(value.result);
   }
 
   return value;
-}
-
-function lastAgentText(events: unknown[]): string | undefined {
-  let text: string | undefined;
-  for (const event of events) {
-    if (!isRecord(event)) continue;
-    const fromItem = textOfItem(event.item);
-    if (fromItem && (event.type === "item.completed" || event.type === "item.updated")) {
-      text = fromItem;
-      continue;
-    }
-    if (typeof event.result === "string" && event.type === "result") {
-      text = event.result;
-    }
-  }
-  return text;
-}
-
-function textOfItem(item: unknown): string | undefined {
-  if (!isRecord(item)) return undefined;
-  const itemType = item.type ?? item.item_type;
-  if (itemType !== "agent_message" && itemType !== "assistant_message") return undefined;
-  return typeof item.text === "string" ? item.text : undefined;
-}
-
-function isEvent(value: unknown): boolean {
-  if (!isRecord(value) || typeof value.type !== "string") return false;
-  return (
-    value.type === "result" ||
-    value.type.startsWith("item.") ||
-    value.type.startsWith("thread.") ||
-    value.type.startsWith("turn.")
-  );
 }
 
 function parseEmbeddedJson(text: string): unknown {

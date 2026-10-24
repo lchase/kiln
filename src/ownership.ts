@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { OwnershipMapSchema, REPOS, type OwnershipMap, type Repo } from "./schemas.js";
+import { OwnershipMapSchema, type OwnershipMap, type Repo } from "./schemas.js";
 
 export function loadOwnershipMap(file: string, expected: Repo): OwnershipMap {
   let raw: unknown;
@@ -18,8 +17,4 @@ export function loadOwnershipMap(file: string, expected: Repo): OwnershipMap {
     throw new Error(`${file} declares repo ${parsed.data.repo}, expected ${expected}.`);
   }
   return parsed.data;
-}
-
-export function loadOwnershipMaps(dir: string): OwnershipMap[] {
-  return REPOS.map((repo) => loadOwnershipMap(join(dir, `${repo}.json`), repo));
 }

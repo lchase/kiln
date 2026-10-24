@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { z } from "zod";
 import { KilnConfigError } from "./errors.js";
 import { loadOwnershipMap } from "./ownership.js";
@@ -25,13 +25,19 @@ export type KilnConfigFile = z.infer<typeof KilnConfigFileSchema>;
 
 export interface LoadedKilnConfig {
   configPath: string;
-  /** Directory that holds the config file. Real plans are written under here. */
+  /** Directory that holds the config file. */
   configDir: string;
-  /** True for the committed fictional Pebble config. Plans then go to `./.kiln/plans`. */
+  /** True for the committed fictional Pebble config. */
   example: boolean;
   note?: string;
   checkouts: Record<Repo, string>;
   ownership: OwnershipMap[];
+  /**
+   * Local kiln directory. The config's own directory when it is named `.kiln`
+   * (for example `./.kiln` or `~/.kiln`). Otherwise `<cwd>/.kiln`, so a
+   * `--config` path outside `.kiln` still writes plans under `.kiln/`.
+   */
+  kilnDir: string;
   plansDir: string;
 }
 
@@ -87,6 +93,7 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
     ownership.push(loadOwnershipMap(ownershipPath, repo));
   }
 
+  const kilnDir = basename(configDir) === ".kiln" ? configDir : join(cwd, ".kiln");
   return {
     configPath: resolvedPath,
     configDir,
@@ -94,7 +101,8 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
     note: parsed.data.note,
     checkouts,
     ownership,
-    plansDir: example ? join(cwd, ".kiln", "plans") : join(configDir, "plans"),
+    kilnDir,
+    plansDir: join(kilnDir, "plans"),
   };
 }
 

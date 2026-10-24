@@ -14,33 +14,21 @@ import {
 const REPO_PATTERN = /\b(frontend|ai-core|evals-obs)\b/g;
 
 /**
- * Deterministic planner for tests and for `kiln refine` without a model.
- * It applies a fixed rubric. It does not call an agent CLI.
+ * Rules-based planner for tests and for `kiln refine` without a model.
+ * Structural gaps (acceptance, scope, outcome) are checked in `refine` from
+ * the parsed requirement. This planner only adds a scope gap when the scope
+ * text names no repo, then decomposes.
  */
-export class FakePlanner implements Planner {
+export class RulesPlanner implements Planner {
   async assessReadiness(context: PlannerContext): Promise<Readiness> {
     const { requirement } = context;
     const missing: Readiness["missing"] = [];
     const questions: string[] = [];
 
-    if (!requirement.acceptanceCriteria?.length) {
-      missing.push("acceptance-criteria");
-      questions.push(
-        `What are the acceptance criteria for "${requirement.title}"? List the observable checks that would tell us it is done.`,
-      );
-    }
-
-    if (reposInScope(requirement.body).length === 0) {
+    if (requirement.scope && reposNamedIn(requirement.scope).length === 0) {
       missing.push("scope");
       questions.push(
-        `Which of frontend, ai-core, and evals-obs does "${requirement.title}" change, and which are out of scope?`,
-      );
-    }
-
-    if (!outcomeOf(requirement.body)) {
-      missing.push("user-facing-outcome");
-      questions.push(
-        `What should a person using the product be able to see or do when "${requirement.title}" is done?`,
+        `Which of frontend, ai-core, and evals-obs does "${requirement.title}" change? The scope section does not name one.`,
       );
     }
 
@@ -49,7 +37,7 @@ export class FakePlanner implements Planner {
 
   async decompose(context: PlannerContext): Promise<Plan> {
     const { requirement, ownership } = context;
-    const repos = reposInScope(requirement.body);
+    const repos = requirement.scope ? reposNamedIn(requirement.scope) : reposInScope(requirement.body);
     if (repos.length === 0) {
       throw new Error(
         `Cannot decompose ${requirement.id}: no in-scope repo. Run the readiness check first.`,
@@ -60,24 +48,24 @@ export class FakePlanner implements Planner {
       throw new Error(`Cannot decompose ${requirement.id}: no acceptance criteria.`);
     }
     const workflow = workflowOf(requirement.title, requirement.body, repos);
-    const outcome = outcomeOf(requirement.body);
+    const outcome = requirement.outcome ?? outcomeOf(requirement.body);
     const contracts = seamsFor(requirement.id, repos, ownership, outcome);
-    const tasks = repos.map((repo) => {
-      const related = contracts.filter((contract) => contract.between.includes(repo));
-      const contractIds = related.map((contract) => contract.id);
-      return {
-        id: `${requirement.id}-${repo}`,
-        repo,
-        workflow,
-        dependsOn: contractIds,
-        contractRefs: contractIds,
-        acceptance,
-      };
-    });
+    const tasks = repos.map((repo) => ({
+      id: `${requirement.id}-${repo}`,
+      repo,
+      title: `${requirement.title} (${repo})`,
+      description: outcome
+        ? `In ${repo}: ${oneLine(outcome)}`
+        : `In ${repo}: ${requirement.title}.`,
+      workflow,
+      dependsOn: contracts
+        .filter((contract) => contract.between.includes(repo) && contract.owner !== repo)
+        .map((contract) => contract.id),
+      acceptance: acceptanceFor(repo, acceptance, repos),
+    }));
 
     return {
       requirementId: requirement.id,
-      acceptance,
       contracts,
       tasks,
     };
@@ -91,6 +79,10 @@ export class FakePlanner implements Planner {
 export function reposInScope(body: string): Repo[] {
   const scope = section(body, "Scope");
   if (!scope) return [];
+  return reposNamedIn(scope);
+}
+
+function reposNamedIn(scope: string): Repo[] {
   const found = new Set<Repo>();
   for (const line of scope.split(/\r?\n/)) {
     if (/out of scope/i.test(line) || /^\s*out\s*:/i.test(line)) continue;
@@ -102,6 +94,32 @@ export function reposInScope(body: string): Repo[] {
     }
   }
   return REPOS.filter((repo) => found.has(repo));
+}
+
+function mentionedRepos(text: string, inScope: readonly Repo[]): Repo[] {
+  const found = new Set<Repo>();
+  for (const match of text.matchAll(REPO_PATTERN)) {
+    const repo = match[1];
+    if ((repo === "frontend" || repo === "ai-core" || repo === "evals-obs") && inScope.includes(repo)) {
+      found.add(repo);
+    }
+  }
+  return REPOS.filter((repo) => found.has(repo));
+}
+
+/**
+ * A criterion that names a repo goes only to that repo. A criterion that names
+ * no in-scope repo goes to the first in-scope repo, not to every task.
+ */
+function acceptanceFor(repo: Repo, criteria: string[], repos: Repo[]): string[] {
+  const first = repos[0];
+  const mine = criteria.filter((item) => {
+    const named = mentionedRepos(item, repos);
+    if (named.length === 0) return repo === first;
+    return named.includes(repo);
+  });
+  if (mine.length > 0) return mine;
+  return [`Deliver the ${repo} part of this requirement.`];
 }
 
 function outcomeOf(body: string): string {
@@ -124,17 +142,20 @@ function seamsFor(
   outcome: string,
 ): Contract[] {
   const contracts: Contract[] = [];
-  for (let i = 0; i < repos.length - 1; i += 1) {
-    const left = repos[i];
-    const right = repos[i + 1];
-    if (!left || !right) continue;
-    const kind = kindFor(left, right);
-    contracts.push({
-      id: `${requirementId}-${kind}-${left}-${right}`,
-      between: [left, right],
-      kind,
-      spec: specFor(left, right, kind, ownership, outcome),
-    });
+  for (let i = 0; i < repos.length; i += 1) {
+    for (let j = i + 1; j < repos.length; j += 1) {
+      const left = repos[i];
+      const right = repos[j];
+      if (!left || !right) continue;
+      const kind = kindFor(left, right);
+      contracts.push({
+        id: `${requirementId}-${kind}-${left}-${right}`,
+        between: [left, right],
+        owner: ownerFor(left, right),
+        kind,
+        spec: specFor(left, right, kind, ownership, outcome),
+      });
+    }
   }
   return contracts;
 }
@@ -146,6 +167,13 @@ function kindFor(left: Repo, right: Repo): ContractKind {
   return "schema";
 }
 
+/** ai-core publishes the assistant API and the trace event. Otherwise evals-obs owns the schema. */
+function ownerFor(left: Repo, right: Repo): Repo {
+  const pair = new Set([left, right]);
+  if (pair.has("ai-core")) return "ai-core";
+  return "evals-obs";
+}
+
 function specFor(
   left: Repo,
   right: Repo,
@@ -153,9 +181,8 @@ function specFor(
   ownership: OwnershipMap[],
   outcome: string,
 ): string {
-  const expose = (repo: Repo) =>
-    ownership.find((map) => map.repo === repo)?.exposes[0] ?? repo;
-  const outcomeLine = outcome.replace(/\s+/g, " ").trim();
+  const expose = (repo: Repo) => ownership.find((map) => map.repo === repo)?.exposes[0] ?? repo;
+  const outcomeLine = oneLine(outcome);
   const label = kind === "api" ? "API" : kind;
   return [
     `Example ${label} seam for the fictional Pebble product.`,
@@ -165,6 +192,10 @@ function specFor(
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function sentence(text: string): string {

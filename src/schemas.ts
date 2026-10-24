@@ -18,6 +18,10 @@ export const RequirementSchema = z.object({
   title: z.string().min(1),
   body: z.string().min(1),
   acceptanceCriteria: z.array(z.string().min(1)).optional(),
+  /** Text of the Scope section, when the requirement has one. */
+  scope: z.string().min(1).optional(),
+  /** Text of the Outcome section, when the requirement has one. */
+  outcome: z.string().min(1).optional(),
 });
 export type Requirement = z.infer<typeof RequirementSchema>;
 
@@ -58,16 +62,15 @@ export const ContractKindSchema = z.enum(["api", "event", "schema"]);
 export type ContractKind = z.infer<typeof ContractKindSchema>;
 
 /**
- * A contract is one seam with two sides. Work that spans all three repos is
- * two seams (frontend↔ai-core, ai-core↔evals-obs), not one three-way blob.
+ * A contract is one seam with two sides. `between` is an array of length 2
+ * (not a tuple) so agent structured output accepts the schema. The validator
+ * checks that the two repos differ. `owner` is the repo whose task publishes
+ * the seam; that task does not depend on the contract, and the other side does.
  */
 export const ContractSchema = z.object({
   id: z.string().min(1),
-  between: z
-    .tuple([RepoSchema, RepoSchema])
-    .refine((pair) => pair[0] !== pair[1], {
-      message: "A contract joins two different repos.",
-    }),
+  between: z.array(RepoSchema).min(2).max(2),
+  owner: RepoSchema,
   kind: ContractKindSchema,
   spec: z.string().min(1),
 });
@@ -77,23 +80,23 @@ export const WorkflowSchema = z.enum(["feature", "bug", "security", "prototype"]
 export type Workflow = z.infer<typeof WorkflowSchema>;
 
 /**
- * `dependsOn` may name another task in the same repo, or a contract id.
- * Contract ids are roots: they have no dependencies, so they land first and
- * the two repos' tasks can run independently once the seam exists.
+ * `dependsOn` names a task id or a contract id. A contract id waits on the
+ * owner repo's task that publishes it (the task in `owner` that does not
+ * depend on this contract). That is what makes the contract land first.
  */
 export const TaskSchema = z.object({
   id: z.string().min(1),
   repo: RepoSchema,
+  title: z.string().min(1),
+  description: z.string().min(1),
   workflow: WorkflowSchema,
   dependsOn: z.array(z.string().min(1)),
-  contractRefs: z.array(z.string().min(1)),
   acceptance: z.array(z.string().min(1)).min(1),
 });
 export type Task = z.infer<typeof TaskSchema>;
 
 export const PlanSchema = z.object({
   requirementId: z.string().min(1),
-  acceptance: z.array(z.string().min(1)).min(1),
   contracts: z.array(ContractSchema),
   tasks: z.array(TaskSchema).min(1),
 });

@@ -59,13 +59,21 @@ describe("kiln refine", () => {
     assert.equal(result.status, 0, result.stderr);
     const { json, markdown } = splitOutput(result.stdout);
     assert.equal(json.kind, "plan");
-    const plan = json.plan as { contracts: { id: string }[]; tasks: { dependsOn: string[] }[] };
+    const plan = json.plan as {
+      contracts: { id: string; owner: string; between: string[] }[];
+      tasks: { repo: string; dependsOn: string[]; title: string }[];
+    };
     assert.equal(plan.contracts.length, 1);
-    const contractId = plan.contracts[0]?.id;
-    assert.ok(contractId);
-    for (const task of plan.tasks) {
-      assert.equal(task.dependsOn[0], contractId);
-    }
+    const contract = plan.contracts[0];
+    assert.ok(contract);
+    assert.equal(contract.between.includes(contract.owner), true);
+    const ownerTask = plan.tasks.find((task) => task.repo === contract.owner);
+    const other = plan.tasks.find((task) => task.repo !== contract.owner);
+    assert.ok(ownerTask);
+    assert.ok(other);
+    assert.equal(ownerTask.dependsOn.includes(contract.id), false);
+    assert.equal(other.dependsOn.includes(contract.id), true);
+    assert.notEqual(ownerTask.title, other.title);
     assert.ok(markdown.indexOf("## Contracts") < markdown.indexOf("## Tasks"));
     assert.match(markdown, /frontend/);
     assert.match(markdown, /ai-core/);
@@ -73,7 +81,7 @@ describe("kiln refine", () => {
     const jsonPath = join(root, ".kiln", "plans", "EX-202.json");
     const markdownPath = join(root, ".kiln", "plans", "EX-202.md");
     assert.equal(existsSync(join(root, "examples", "plans")), false);
-    assert.match(readFileSync(jsonPath, "utf8"), /EX-202-api-frontend-ai-core/);
+    assert.match(readFileSync(jsonPath, "utf8"), /"requirementId": "EX-202"/);
     assert.match(readFileSync(markdownPath, "utf8"), /^# Plan: Weekly reflection summary/);
     assert.match(result.stderr, new RegExp(jsonPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   });

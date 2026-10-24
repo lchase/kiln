@@ -1,4 +1,4 @@
-// Test double for a non-interactive coding-agent CLI. Prints JSON and exits.
+// Test double for a non-interactive coding-agent CLI. Prints a Claude JSON envelope and exits.
 const prompt = process.argv.at(-1) ?? "";
 
 if (!prompt.includes("PLACEHOLDER EXAMPLE") || !prompt.includes('"repo": "frontend"')) {
@@ -39,29 +39,25 @@ if (prompt.includes("KILN_STEP: decompose")) {
   const id = prompt.match(/"id": "([^"]+)"/)?.[1] ?? "EX-AGENT";
   const plan = {
     requirementId: id,
-    acceptance: ["The habit list shows each habit once"],
     contracts: [],
     tasks: [
       {
         id: `${id}-frontend`,
         repo: "frontend",
+        title: "Show each habit once",
+        description: "Fix the frontend day-boundary grouping so yesterday is not listed twice.",
         workflow: "bug",
         dependsOn: [],
-        contractRefs: [],
         acceptance: ["The habit list shows each habit once"],
       },
     ],
   };
-  const line = (value) => JSON.stringify(value);
   process.stdout.write(
-    [
-      line({ type: "thread.started", thread_id: "example" }),
-      line({
-        type: "item.completed",
-        item: { id: "item_1", type: "agent_message", text: JSON.stringify(plan) },
-      }),
-      line({ type: "turn.completed" }),
-    ].join("\n"),
+    JSON.stringify({
+      type: "result",
+      result: "ignored",
+      structured_output: plan,
+    }),
   );
   process.exit(0);
 }

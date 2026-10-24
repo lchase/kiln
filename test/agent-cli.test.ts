@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import { loadKilnConfig } from "../src/config.js";
 import { PlannerOutputError } from "../src/errors.js";
 import { packageRoot } from "../src/paths.js";
-import { AgentCliPlanner, defaultClaudeArgs } from "../src/planners/agent-cli.js";
+import { AgentCliPlanner } from "../src/planners/agent-cli.js";
 import { extractModelJson } from "../src/planners/extract-json.js";
 import { refine } from "../src/refine.js";
 import type { Requirement } from "../src/schemas.js";
@@ -18,24 +18,20 @@ function agentPlanner(): AgentCliPlanner {
   return new AgentCliPlanner({ bin: process.execPath, args: [fixture] });
 }
 
-describe("agent CLI planner", () => {
-  it("asks Claude for JSON in print mode with tools disabled", () => {
-    const args = defaultClaudeArgs({ type: "object" });
-    assert.equal(args[0], "-p");
-    assert.ok(args.includes("--output-format"));
-    assert.ok(args.includes("json"));
-    const toolsAt = args.indexOf("--tools");
-    assert.equal(args[toolsAt + 1], "");
-    assert.ok(args.includes("--no-session-persistence"));
-    assert.ok(args.includes("--permission-prompts"));
-  });
+const readyFields = {
+  acceptanceCriteria: ["The habit list shows each habit once"],
+  scope: "frontend only.",
+  outcome: "A person sees each habit once.",
+};
 
+describe("agent CLI planner", () => {
   it("reads a non-interactive CLI and returns questions without decomposing", async () => {
     const requirement: Requirement = {
       id: "EX-AGENT-Q",
       source: "jira",
       title: "Agent questions please",
       body: "This example is intentionally thin.",
+      ...readyFields,
     };
     const result = await refine(requirement, agentPlanner(), { config: exampleConfig });
     assert.equal(result.kind, "questions");
@@ -44,13 +40,13 @@ describe("agent CLI planner", () => {
     assert.deepEqual(result.readiness.questions, ["Which repo does this example change?"]);
   });
 
-  it("reads a Codex-style JSONL plan from the same CLI", async () => {
+  it("reads a Claude JSON envelope and returns a plan", async () => {
     const requirement: Requirement = {
       id: "EX-AGENT",
       source: "markdown",
       title: "Agent plan please",
       body: "A scripted agent fixture answers this example.",
-      acceptanceCriteria: ["The habit list shows each habit once"],
+      ...readyFields,
     };
     const result = await refine(requirement, agentPlanner(), { config: exampleConfig });
     assert.equal(result.kind, "plan");
@@ -58,6 +54,8 @@ describe("agent CLI planner", () => {
     assert.equal(result.plan.requirementId, "EX-AGENT");
     assert.deepEqual(result.plan.contracts, []);
     assert.equal(result.plan.tasks[0]?.repo, "frontend");
+    assert.ok(result.plan.tasks[0]?.title);
+    assert.ok(result.plan.tasks[0]?.description);
   });
 });
 
@@ -87,17 +85,14 @@ describe("extractModelJson", () => {
     });
   });
 
-  it("reads the last agent message from a Codex JSONL stream", () => {
-    const plan = { requirementId: "EX-1", contracts: [] };
-    const stdout = [
-      JSON.stringify({ type: "thread.started", thread_id: "example" }),
-      JSON.stringify({
-        type: "item.completed",
-        item: { id: "item_1", type: "agent_message", text: JSON.stringify(plan) },
-      }),
-      JSON.stringify({ type: "turn.completed" }),
-    ].join("\n");
-    assert.deepEqual(extractModelJson(stdout), plan);
+  it("reads a Claude event array that contains a result", () => {
+    const value = extractModelJson(
+      JSON.stringify([
+        { type: "system" },
+        { type: "result", result: "ignored", structured_output: { ready: true, missing: [], questions: [] } },
+      ]),
+    );
+    assert.deepEqual(value, { ready: true, missing: [], questions: [] });
   });
 
   it("rejects empty stdout", () => {

@@ -2,21 +2,20 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { resolveKilnConfig } from "./config.js";
-import { KilnConfigError, PlanValidationError, PlannerOutputError } from "./errors.js";
-import { parseRequirement, RequirementParseError } from "./parse-requirement.js";
+import { PlanValidationError } from "./errors.js";
+import { parseRequirement } from "./parse-requirement.js";
 import { writePlanFiles } from "./plans.js";
 import { AgentCliPlanner } from "./planners/agent-cli.js";
-import { FakePlanner } from "./planners/fake.js";
+import { RulesPlanner } from "./planners/rules.js";
 import type { Planner } from "./planner.js";
 import { refine } from "./refine.js";
 import { renderRefineResult } from "./render.js";
 
 interface Flags {
   file: string;
-  planner: "fake" | "agent";
+  planner: "rules" | "agent";
   configPath?: string;
   agentBin?: string;
-  agentArgs?: string;
 }
 
 function usage(): never {
@@ -25,15 +24,13 @@ function usage(): never {
       "Usage: kiln refine <requirement.md> [options]",
       "",
       "Options:",
-      "  --planner fake|agent     Scripted planner (default) or a coding-agent CLI",
+      "  --planner rules|agent    Rules-based planner (default) or a coding-agent CLI",
       "  --config <file>          kiln.config.json. Default: ./.kiln/, then ~/.kiln/",
       "  --agent-bin <bin>        Agent executable (default: claude). Uses your login.",
-      "  --agent-args <args>      Arguments for the agent, split on spaces.",
-      "                           {schema} and {prompt} are replaced.",
-      "                           Default is Claude print mode with tools disabled.",
       "",
-      "Prints JSON, then a markdown rendering. A valid plan is also written under",
-      "the local kiln directory (.kiln/plans or ~/.kiln/plans). Do not commit it.",
+      "Prints JSON, then a markdown rendering. A valid plan is written under a",
+      ".kiln directory: the config file's directory when that directory is named",
+      ".kiln, otherwise ./.kiln/plans. Do not commit it.",
       "Questions and valid plans both exit 0.",
     ].join("\n"),
   );
@@ -44,13 +41,13 @@ function parseFlags(argv: string[]): Flags {
   if (argv[0] !== "refine" || !argv[1] || argv[1].startsWith("--")) usage();
   const flags: Flags = {
     file: argv[1],
-    planner: process.env.KILN_PLANNER === "agent" ? "agent" : "fake",
+    planner: process.env.KILN_PLANNER === "agent" ? "agent" : "rules",
   };
   for (let i = 2; i < argv.length; i += 1) {
     const flag = argv[i];
     const next = argv[i + 1];
-    if (flag === "--planner" && (next === "fake" || next === "agent")) {
-      flags.planner = next;
+    if (flag === "--planner" && (next === "rules" || next === "fake" || next === "agent")) {
+      flags.planner = next === "agent" ? "agent" : "rules";
       i += 1;
       continue;
     }
@@ -64,22 +61,14 @@ function parseFlags(argv: string[]): Flags {
       i += 1;
       continue;
     }
-    if (flag === "--agent-args" && next) {
-      flags.agentArgs = next;
-      i += 1;
-      continue;
-    }
     usage();
   }
   return flags;
 }
 
 function plannerFrom(flags: Flags): Planner {
-  if (flags.planner === "fake") return new FakePlanner();
-  return new AgentCliPlanner({
-    bin: flags.agentBin,
-    args: flags.agentArgs?.split(/\s+/).filter(Boolean),
-  });
+  if (flags.planner === "rules") return new RulesPlanner();
+  return new AgentCliPlanner({ bin: flags.agentBin });
 }
 
 async function main(): Promise<void> {
@@ -117,14 +106,6 @@ async function main(): Promise<void> {
 main().catch((error: unknown) => {
   if (error instanceof PlanValidationError) {
     console.error(JSON.stringify({ kind: "invalid-plan", issues: error.issues }, null, 2));
-    process.exit(1);
-  }
-  if (
-    error instanceof PlannerOutputError ||
-    error instanceof RequirementParseError ||
-    error instanceof KilnConfigError
-  ) {
-    console.error(error.message);
     process.exit(1);
   }
   console.error(error instanceof Error ? error.message : String(error));
