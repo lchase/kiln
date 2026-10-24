@@ -1,5 +1,12 @@
 import type { PlanIssue } from "./validate.js";
 
+export class KilnConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "KilnConfigError";
+  }
+}
+
 export class PlannerOutputError extends Error {
   constructor(message: string) {
     super(message);

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { loadKilnConfig, type LoadedKilnConfig } from "../src/config.js";
 import { PlanValidationError, PlannerOutputError } from "../src/errors.js";
-import { loadOwnershipMaps } from "../src/ownership.js";
 import { packageRoot } from "../src/paths.js";
 import { parseRequirement } from "../src/parse-requirement.js";
 import type { Planner } from "../src/planner.js";
@@ -11,6 +11,12 @@ import { FakePlanner } from "../src/planners/fake.js";
 import { refine, type RefineResult } from "../src/refine.js";
 import type { Plan, Requirement } from "../src/schemas.js";
 import { validatePlan } from "../src/validate.js";
+
+function exampleConfig(): LoadedKilnConfig {
+  return loadKilnConfig(join(packageRoot(), "examples", "kiln.config.json"), {
+    cwd: packageRoot(),
+  });
+}
 
 function example(name: string): Requirement {
   const path = join(packageRoot(), "examples", "requirements", name);
@@ -36,7 +42,7 @@ describe("refine", () => {
       },
     };
     const requirement = example("thin-jira.md");
-    const result = await refine(requirement, watching);
+    const result = await refine(requirement, watching, { config: exampleConfig() });
 
     assert.equal(result.kind, "questions");
     if (result.kind !== "questions") return;
@@ -53,8 +59,9 @@ describe("refine", () => {
 
   it("returns a valid cross-repo plan with contracts ordered before the dependent tasks", async () => {
     const requirement = example("weekly-reflection.md");
-    const plan = assertPlan(await refine(requirement, planner));
-    const maps = loadOwnershipMaps(join(packageRoot(), "ownership"));
+    const config = exampleConfig();
+    const plan = assertPlan(await refine(requirement, planner, { config }));
+    const maps = config.ownership;
 
     assert.equal(plan.requirementId, "EX-202");
     assert.deepEqual(plan.acceptance, requirement.acceptanceCriteria);
@@ -90,7 +97,7 @@ describe("refine", () => {
 
   it("returns a single-repo bug plan with no contracts", async () => {
     const requirement = example("duplicate-habit.md");
-    const plan = assertPlan(await refine(requirement, planner));
+    const plan = assertPlan(await refine(requirement, planner, { config: exampleConfig() }));
 
     assert.equal(plan.requirementId, "EX-203");
     assert.deepEqual(plan.contracts, []);
@@ -127,7 +134,7 @@ describe("refine", () => {
       ].join("\n"),
       acceptanceCriteria: ["The reflection shows a score that came from the eval store."],
     };
-    const plan = assertPlan(await refine(requirement, planner));
+    const plan = assertPlan(await refine(requirement, planner, { config: exampleConfig() }));
     assert.deepEqual(
       plan.contracts.map((contract) => [contract.kind, contract.between.join("/")]),
       [
@@ -178,7 +185,7 @@ describe("refine", () => {
       },
     };
     await assert.rejects(
-      () => refine(requirement, broken),
+      () => refine(requirement, broken, { config: exampleConfig() }),
       (error: unknown) => {
         assert.ok(error instanceof PlanValidationError);
         assert.ok(error.issues.some((issue) => issue.code === "dependency-cycle"));
@@ -211,6 +218,9 @@ describe("refine", () => {
         };
       },
     };
-    await assert.rejects(() => refine(requirement, confused), PlannerOutputError);
+    await assert.rejects(
+      () => refine(requirement, confused, { config: exampleConfig() }),
+      PlannerOutputError,
+    );
   });
 });

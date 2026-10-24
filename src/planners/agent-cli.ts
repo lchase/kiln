@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { z } from "zod";
 import { PlannerOutputError } from "../errors.js";
 import { expectSchema, type Planner, type PlannerContext } from "../planner.js";
-import { PlanSchema, ReadinessSchema, type Plan, type Readiness } from "../schemas.js";
+import { PlanSchema, ReadinessSchema, REPOS, type Plan, type Readiness } from "../schemas.js";
 import { extractModelJson } from "./extract-json.js";
 
 export interface AgentRunResult {
@@ -136,9 +136,7 @@ function buildAssessPrompt(context: PlannerContext, jsonSchema: unknown): string
     "If it is not ready, return ready false, list the absent items in missing using only",
     "acceptance-criteria, scope, and user-facing-outcome, and write one specific question per gap.",
     "",
-    "Ownership maps follow. They are placeholder example data for a fictional product, not a real company.",
-    JSON.stringify(context.ownership, null, 2),
-    "",
+    ...localContext(context),
     "Requirement:",
     JSON.stringify(context.requirement, null, 2),
     "",
@@ -171,15 +169,29 @@ function buildDecomposePrompt(context: PlannerContext, jsonSchema: unknown): str
     "- Task ids and contract ids are unique, non-empty strings in one namespace.",
     "- This is a planning step. Do not propose edits to a working tree.",
     "",
-    "Ownership maps follow. They are placeholder example data for a fictional product, not a real company.",
-    JSON.stringify(context.ownership, null, 2),
-    "",
+    ...localContext(context),
     "Requirement:",
     JSON.stringify(context.requirement, null, 2),
     "",
     "JSON Schema:",
     JSON.stringify(jsonSchema, null, 2),
   ].join("\n");
+}
+
+function localContext(context: PlannerContext): string[] {
+  const lines = [
+    "Local checkouts on this machine:",
+    ...REPOS.map((repo) => `- ${repo}: ${context.checkouts[repo]}`),
+    "",
+  ];
+  if (context.example) {
+    lines.push(
+      "These checkouts and ownership maps are fictional example data, not a real company.",
+      "",
+    );
+  }
+  lines.push("Ownership maps:", JSON.stringify(context.ownership, null, 2), "");
+  return lines;
 }
 
 function runProcess(
@@ -191,6 +203,7 @@ function runProcess(
     const child = spawn(bin, args, {
       cwd: options.cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      // The agent CLI uses the login already on this machine. Kiln stores no credentials.
       env: process.env,
     });
     const stdout: Buffer[] = [];

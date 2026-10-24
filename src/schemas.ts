@@ -2,7 +2,7 @@ import { z } from "zod";
 
 /**
  * The three monorepos this factory plans for. A closed set keeps a plan from
- * naming a repository nobody owns. Add a repo here and in `ownership/` together.
+ * naming a repository nobody owns. Add a repo here and in the kiln config together.
  */
 export const REPOS = ["frontend", "ai-core", "evals-obs"] as const;
 

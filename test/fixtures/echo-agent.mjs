@@ -5,6 +5,10 @@ if (!prompt.includes("PLACEHOLDER EXAMPLE") || !prompt.includes('"repo": "fronte
   console.error("prompt is missing ownership maps");
   process.exit(1);
 }
+if (!prompt.includes("Local checkouts") || !prompt.includes("examples/checkouts/frontend")) {
+  console.error("prompt is missing local checkout paths");
+  process.exit(1);
+}
 
 const wantsPlan = prompt.includes("Agent plan please");
 

@@ -14,6 +14,6 @@ export function packageRoot(): string {
   throw new Error("Could not find package.json above the running file.");
 }
 
-export function defaultOwnershipDir(): string {
-  return join(packageRoot(), "ownership");
+export function exampleConfigPath(): string {
+  return join(packageRoot(), "examples", "kiln.config.json");
 }

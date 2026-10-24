@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { PlanValidationError, PlannerOutputError } from "./errors.js";
+import { resolveKilnConfig } from "./config.js";
+import { KilnConfigError, PlanValidationError, PlannerOutputError } from "./errors.js";
 import { parseRequirement, RequirementParseError } from "./parse-requirement.js";
+import { writePlanFiles } from "./plans.js";
 import { AgentCliPlanner } from "./planners/agent-cli.js";
 import { FakePlanner } from "./planners/fake.js";
 import type { Planner } from "./planner.js";
@@ -12,7 +14,7 @@ import { renderRefineResult } from "./render.js";
 interface Flags {
   file: string;
   planner: "fake" | "agent";
-  ownership?: string;
+  configPath?: string;
   agentBin?: string;
   agentArgs?: string;
 }
@@ -24,13 +26,15 @@ function usage(): never {
       "",
       "Options:",
       "  --planner fake|agent     Scripted planner (default) or a coding-agent CLI",
-      "  --ownership <dir>        Directory of <repo>.json ownership maps",
-      "  --agent-bin <bin>        Agent executable (default: claude)",
+      "  --config <file>          kiln.config.json. Default: ./.kiln/, then ~/.kiln/",
+      "  --agent-bin <bin>        Agent executable (default: claude). Uses your login.",
       "  --agent-args <args>      Arguments for the agent, split on spaces.",
       "                           {schema} and {prompt} are replaced.",
       "                           Default is Claude print mode with tools disabled.",
       "",
-      "Prints JSON, then a markdown rendering. Questions and valid plans both exit 0.",
+      "Prints JSON, then a markdown rendering. A valid plan is also written under",
+      "the local kiln directory (.kiln/plans or ~/.kiln/plans). Do not commit it.",
+      "Questions and valid plans both exit 0.",
     ].join("\n"),
   );
   process.exit(2);
@@ -50,8 +54,8 @@ function parseFlags(argv: string[]): Flags {
       i += 1;
       continue;
     }
-    if (flag === "--ownership" && next) {
-      flags.ownership = next;
+    if (flag === "--config" && next) {
+      flags.configPath = next;
       i += 1;
       continue;
     }
@@ -89,12 +93,25 @@ async function main(): Promise<void> {
     console.error(`Could not read ${path}: ${message}`);
     process.exit(2);
   }
-  const requirement = parseRequirement(markdown, path);
-  const result = await refine(requirement, plannerFrom(flags), {
-    ownershipDir: flags.ownership ? resolve(flags.ownership) : undefined,
+  const config = resolveKilnConfig({
+    configPath: flags.configPath,
+    requirementPath: path,
   });
+  if (config.example) {
+    console.error(
+      `Using ${config.configPath} (fictional example data). Real checkout paths, ownership maps, requirements, and plans belong in .kiln/ or ~/.kiln/ and must not be committed.`,
+    );
+  }
+  const requirement = parseRequirement(markdown, path);
+  const result = await refine(requirement, plannerFrom(flags), { config });
   const rendered = renderRefineResult(requirement, result);
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n\n${rendered}`);
+  const json = JSON.stringify(result, null, 2);
+  if (result.kind === "plan") {
+    const written = writePlanFiles(config.plansDir, requirement.id, json, rendered);
+    console.error(`Wrote ${written.jsonPath}`);
+    console.error(`Wrote ${written.markdownPath}`);
+  }
+  process.stdout.write(`${json}\n\n${rendered}`);
 }
 
 main().catch((error: unknown) => {
@@ -102,7 +119,11 @@ main().catch((error: unknown) => {
     console.error(JSON.stringify({ kind: "invalid-plan", issues: error.issues }, null, 2));
     process.exit(1);
   }
-  if (error instanceof PlannerOutputError || error instanceof RequirementParseError) {
+  if (
+    error instanceof PlannerOutputError ||
+    error instanceof RequirementParseError ||
+    error instanceof KilnConfigError
+  ) {
     console.error(error.message);
     process.exit(1);
   }

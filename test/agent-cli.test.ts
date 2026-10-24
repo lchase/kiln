@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { loadKilnConfig } from "../src/config.js";
 import { PlannerOutputError } from "../src/errors.js";
 import { packageRoot } from "../src/paths.js";
 import { AgentCliPlanner, defaultClaudeArgs } from "../src/planners/agent-cli.js";
@@ -9,6 +10,9 @@ import { refine } from "../src/refine.js";
 import type { Requirement } from "../src/schemas.js";
 
 const fixture = join(packageRoot(), "test", "fixtures", "echo-agent.mjs");
+const exampleConfig = loadKilnConfig(join(packageRoot(), "examples", "kiln.config.json"), {
+  cwd: packageRoot(),
+});
 
 function agentPlanner(): AgentCliPlanner {
   return new AgentCliPlanner({ bin: process.execPath, args: [fixture] });
@@ -33,7 +37,7 @@ describe("agent CLI planner", () => {
       title: "Agent questions please",
       body: "This example is intentionally thin.",
     };
-    const result = await refine(requirement, agentPlanner());
+    const result = await refine(requirement, agentPlanner(), { config: exampleConfig });
     assert.equal(result.kind, "questions");
     if (result.kind !== "questions") return;
     assert.deepEqual(result.readiness.missing, ["scope"]);
@@ -48,7 +52,7 @@ describe("agent CLI planner", () => {
       body: "A scripted agent fixture answers this example.",
       acceptanceCriteria: ["The habit list shows each habit once"],
     };
-    const result = await refine(requirement, agentPlanner());
+    const result = await refine(requirement, agentPlanner(), { config: exampleConfig });
     assert.equal(result.kind, "plan");
     if (result.kind !== "plan") return;
     assert.equal(result.plan.requirementId, "EX-AGENT");

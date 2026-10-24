@@ -1,0 +1,18 @@
+{
+  "example": true,
+  "note": "EXAMPLE CONFIG. Fictional habit tracker Pebble. These are not real checkouts, not a real company, and not real ownership. Real paths, ownership maps, requirements, and plans belong in .kiln/ or ~/.kiln/, which must not be committed.",
+  "repos": {
+    "frontend": {
+      "checkout": "checkouts/frontend",
+      "ownership": "ownership/frontend.json"
+    },
+    "ai-core": {
+      "checkout": "checkouts/ai-core",
+      "ownership": "ownership/ai-core.json"
+    },
+    "evals-obs": {
+      "checkout": "checkouts/evals-obs",
+      "ownership": "ownership/evals-obs.json"
+    }
+  }
+}

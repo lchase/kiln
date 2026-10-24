@@ -1,10 +1,14 @@
 import { z } from "zod";
 import { PlannerOutputError } from "./errors.js";
-import type { OwnershipMap, Plan, Readiness, Requirement } from "./schemas.js";
+import type { OwnershipMap, Plan, Readiness, Repo, Requirement } from "./schemas.js";
 
 export interface PlannerContext {
   requirement: Requirement;
   ownership: OwnershipMap[];
+  /** Absolute paths of the three local checkouts from the kiln config. */
+  checkouts: Record<Repo, string>;
+  /** True when the config is the committed fictional example, not the user's machine. */
+  example: boolean;
 }
 
 /**

@@ -1,3 +1,7 @@
 node_modules/
 dist/
 dist-test/
+
+# Local machine state. Checkout paths, real ownership maps, real requirements,
+# and generated plans live here (or in ~/.kiln/) and must not be committed.
+.kiln/

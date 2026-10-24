@@ -1,6 +1,5 @@
+import type { LoadedKilnConfig } from "./config.js";
 import { PlanValidationError, PlannerOutputError } from "./errors.js";
-import { loadOwnershipMaps } from "./ownership.js";
-import { defaultOwnershipDir } from "./paths.js";
 import { expectSchema, type Planner } from "./planner.js";
 import {
   PlanSchema,
@@ -16,7 +15,7 @@ export type RefineResult =
   | { kind: "plan"; plan: Plan };
 
 export interface RefineOptions {
-  ownershipDir?: string;
+  config: LoadedKilnConfig;
 }
 
 /**
@@ -27,10 +26,14 @@ export interface RefineOptions {
 export async function refine(
   requirement: Requirement,
   planner: Planner,
-  options: RefineOptions = {},
+  options: RefineOptions,
 ): Promise<RefineResult> {
-  const ownership = loadOwnershipMaps(options.ownershipDir ?? defaultOwnershipDir());
-  const context = { requirement, ownership };
+  const context = {
+    requirement,
+    ownership: options.config.ownership,
+    checkouts: options.config.checkouts,
+    example: options.config.example,
+  };
   const readiness = expectSchema(
     ReadinessSchema,
     await planner.assessReadiness(context),

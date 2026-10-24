@@ -25,8 +25,11 @@ export type {
   Task,
   Workflow,
 } from "./schemas.js";
-export { PlanValidationError, PlannerOutputError } from "./errors.js";
-export { loadOwnershipMaps } from "./ownership.js";
+export { loadKilnConfig, resolveKilnConfig, KilnConfigFileSchema, isShippedExampleRequirement } from "./config.js";
+export type { KilnConfigFile, LoadedKilnConfig, LoadKilnConfigOptions, ResolveKilnConfigOptions } from "./config.js";
+export { KilnConfigError, PlanValidationError, PlannerOutputError } from "./errors.js";
+export { loadOwnershipMap, loadOwnershipMaps } from "./ownership.js";
+export { planBasename, writePlanFiles } from "./plans.js";
 export { parseRequirement, RequirementParseError, section } from "./parse-requirement.js";
 export { expectSchema } from "./planner.js";
 export type { Planner, PlannerContext } from "./planner.js";
