@@ -160,7 +160,7 @@ claude -p --output-format json --json-schema '<schema>' \
 
 ## What tick and status report
 
-`tick` reads approved plans and the yak journals under each checkout's `.runs/`, decides, and exits. The launch is detached: `yak run --isolation worktree` in the task's checkout, tagged `kiln:<planId>/<taskId>`, with logs in `<kiln-dir>/logs/<plan>/<task>.log`. A dependency is satisfied when the upstream task finished ok and its approve gate was not rejected. A failed run stays failed. A run whose process is gone is `dead`; status prints the `cancel` command to run from the checkout. A launch that died before writing a journal is `launch-failed` and prints its log path.
+`tick` reads approved plans and the yak journals under each checkout's `.runs/`, decides, and exits. The launch is detached: `yak run --isolation worktree` in the task's checkout, tagged `kiln:<planId>/<taskId>`, with logs in `<kiln-dir>/logs/<plan>/<task>.log`. A dependency is satisfied when the upstream task finished ok and its approval artifact says approve. A reject is `rejected`. An ok run with no readable approval artifact is `ok-undecided` and does not unblock dependents. A failed run stays failed. A run whose process is gone is `dead`; status prints the `cancel` command to run from the checkout. A launch that died before writing a journal is `launch-failed` and prints its log path.
 
 The task runs the factory loop (spec, build, verify, security/ux/code review, approver, human gate, then a commit). Verify runs the repo's `test` command. After an approved gate, the run commits on `yak/<run-id>` with message `kiln: <task title>`. A reject skips that commit. `adapter: "mock"` reads fixtures at `test/fixtures/kiln-feature/<step>.json` and does not call a model.
 

@@ -170,6 +170,12 @@ function waitForStatus(
   throw new Error(`timed out waiting for ${pattern}:\n${last}`);
 }
 
+function runIdOf(status: string, taskId: string): string {
+  const match = status.match(new RegExp(`${taskId}\\s+\\S+\\s+\\S+\\s+run (\\S+)`));
+  assert.ok(match?.[1], status);
+  return match[1];
+}
+
 function answerCommand(status: string, choice: "approve" | "reject"): string {
   const command = status.match(new RegExp(`^    answer ${choice}: (.+)$`, "m"))?.[1];
   assert.ok(command, status);
@@ -405,7 +411,7 @@ describe("kiln tick", { concurrency: 1 }, () => {
     const second = runCli(["tick"], { cwd, home });
     assert.equal(second.status, 0, second.stderr);
     assert.match(second.stdout, /launch sunday-heading\s+frontend/);
-    waitForStatus(
+    const suspended = waitForStatus(
       cwd,
       home,
       "PEBBLE-POLISH",
@@ -421,11 +427,29 @@ describe("kiln tick", { concurrency: 1 }, () => {
       const tree = join(checkouts.frontend, ".yak", "worktrees", id);
       assert.equal(git(tree, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), `yak/${id}`);
     }
-    // The second run can cache `verify`, so the marker is not in every worktree.
-    const landed = trees.filter((id) =>
-      existsSync(join(checkouts.frontend, ".yak", "worktrees", id, "kiln-landed.txt")),
-    );
-    assert.ok(landed.length >= 1);
+
+    const calm = runIdOf(suspended, "calm-empty");
+    const sunday = runIdOf(suspended, "sunday-heading");
+    const commands = [...suspended.matchAll(/^    answer approve: (.+)$/gm)].map((match) => match[1] ?? "");
+    assert.equal(commands.length, 2);
+    for (const command of commands) {
+      assert.ok(command);
+      assertResolvedYak(command);
+      const answered = runPrinted(command, home);
+      assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
+    }
+    const checkout = checkouts.frontend;
+    assert.equal(existsSync(join(checkout, ".yak", "worktrees", calm, "kiln-landed.txt")), true);
+    assert.equal(existsSync(join(checkout, ".yak", "worktrees", sunday, "kiln-landed.txt")), true);
+    assert.equal(git(checkout, ["log", "-1", "--format=%s", `yak/${calm}`]).trim(), "kiln: Calm empty copy");
+    assert.equal(git(checkout, ["log", "-1", "--format=%s", `yak/${sunday}`]).trim(), "kiln: Sunday heading");
+    for (const id of [calm, sunday]) {
+      const names = git(checkout, ["show", "--name-only", "--format=", `yak/${id}`])
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      assert.deepEqual(names, ["kiln-landed.txt"]);
+    }
   });
 
   it("does not launch a second ready task when maxConcurrent is 1 and the first run is in flight", () => {

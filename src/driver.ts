@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -8,10 +9,9 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import type { LoadedKilnConfig } from "./config.js";
 import { planBasename } from "./plans.js";
 import { renderStatus, renderTick, yakCliPath, type LaunchReport } from "./report.js";
@@ -183,7 +183,7 @@ function launchTask(config: LoadedKilnConfig, planFile: Plan, task: Task): Launc
   const crumbPath = breadcrumbPath(config.kilnDir, planFile.requirementId, task.id);
   ensureCheckoutExcludes(checkout);
 
-  const input = taskInput(planFile, task);
+  const input = { ...taskInput(planFile, task), runNonce: randomUUID() };
   const args = [
     yakCliPath(),
     "run",
@@ -199,6 +199,12 @@ function launchTask(config: LoadedKilnConfig, planFile: Plan, task: Task): Launc
     args.push("--input", `${key}=${value}`);
   }
 
+  writeBreadcrumb(crumbPath, {
+    planId: planFile.requirementId,
+    taskId: task.id,
+    pid: 0,
+    logPath,
+  });
   const logFd = openSync(logPath, "a");
   try {
     const child = spawn(process.execPath, args, {
@@ -218,12 +224,6 @@ function launchTask(config: LoadedKilnConfig, planFile: Plan, task: Task): Launc
     return { taskId: task.id, repo: task.repo, output: `pid ${pid}\nlog ${logPath}` };
   } catch (error) {
     writeFileSync(logPath, `${errorMessage(error)}\n`);
-    writeBreadcrumb(crumbPath, {
-      planId: planFile.requirementId,
-      taskId: task.id,
-      pid: 0,
-      logPath,
-    });
     return { taskId: task.id, repo: task.repo, output: `pid 0\nlog ${logPath}` };
   } finally {
     closeSync(logFd);
@@ -395,18 +395,13 @@ function classify(events: JournalEvent[]): RunStatus {
 }
 
 function readApproveDecision(runDir: string): "approve" | "reject" | undefined {
-  const files = [
-    join(runDir, "artifacts", "approval.json"),
-    join(runDir, "pending", "approve.answer.json"),
-  ];
-  for (const file of files) {
-    if (!existsSync(file)) continue;
-    try {
-      const parsed = JSON.parse(readFileSync(file, "utf8")) as { decision?: unknown };
-      if (parsed.decision === "approve" || parsed.decision === "reject") return parsed.decision;
-    } catch {
-      // A partial artifact is not a decision.
-    }
+  const file = join(runDir, "artifacts", "approval.json");
+  if (!existsSync(file)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as { decision?: unknown };
+    if (parsed.decision === "approve" || parsed.decision === "reject") return parsed.decision;
+  } catch {
+    // A partial artifact is not a decision.
   }
   return undefined;
 }
@@ -514,8 +509,8 @@ function readBreadcrumbs(kilnDir: string): Breadcrumb[] {
 
 /** The checkout's git metadata must not show up in `git status` or a later `git add`. */
 function ensureCheckoutExcludes(checkout: string): void {
-  const gitDir = join(checkout, ".git");
-  if (!existsSync(gitDir) || !statSync(gitDir).isDirectory()) return;
+  const gitDir = gitCommonDir(checkout);
+  if (!gitDir) return;
   const info = join(gitDir, "info");
   mkdirSync(info, { recursive: true });
   const exclude = join(info, "exclude");
@@ -525,6 +520,18 @@ function ensureCheckoutExcludes(checkout: string): void {
   if (missing.length === 0) return;
   const suffix = current.length === 0 || current.endsWith("\n") ? "" : "\n";
   writeFileSync(exclude, `${current}${suffix}${missing.join("\n")}\n`);
+}
+
+/** Main git dir, including when `.git` is a file (a linked worktree). */
+function gitCommonDir(checkout: string): string | undefined {
+  const result = spawnSync("git", ["rev-parse", "--git-common-dir"], {
+    cwd: checkout,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) return undefined;
+  const printed = result.stdout.trim();
+  if (!printed) return undefined;
+  return isAbsolute(printed) ? printed : join(checkout, printed);
 }
 
 function withTickLock<T>(kilnDir: string, fn: () => T): T {

@@ -10,8 +10,8 @@ import type { Plan, Repo } from "./schemas.js";
  * keeps its slot. At most one task is launched per tick, and only when
  * in-flight work is below maxConcurrent. A task that already has a run is
  * not launched again. A failed run stays failed. A dead run, a rejected
- * gate, and a launch that exited before writing a journal are terminal and
- * do not take a slot.
+ * gate, an ok run with no readable approval, and a launch that exited before
+ * writing a journal are terminal and do not take a slot.
  */
 
 export type RunStatus = "alive" | "suspended" | "ok" | "failed" | "dead";
@@ -25,6 +25,7 @@ export type TaskPhase =
   | "running"
   | "suspended"
   | "ok"
+  | "ok-undecided"
   | "rejected"
   | "failed"
   | "dead";
@@ -119,6 +120,7 @@ export function taskPhase(task: ObservedTask, observation: Observation): TaskPha
   if (task.launching && !task.run) return "launching";
   if (task.run) {
     if (task.run.status === "ok" && task.run.gateDecision === "reject") return "rejected";
+    if (task.run.status === "ok" && task.run.gateDecision !== "approve") return "ok-undecided";
     if (task.run.status === "alive") return "running";
     return task.run.status;
   }
@@ -128,7 +130,8 @@ export function taskPhase(task: ObservedTask, observation: Observation): TaskPha
 
 /**
  * A contract dependency is met when the task that publishes it finished ok
- * and its approve gate was not rejected. A task dependency is the same.
+ * and artifacts/approval.json says approve. A task dependency is the same.
+ * Reject, and an ok run with no readable decision, do not count.
  */
 export function dependenciesMet(task: ObservedTask, observation: Observation): boolean {
   return task.dependsOn.every((dep) => {
@@ -137,7 +140,7 @@ export function dependenciesMet(task: ObservedTask, observation: Observation): b
     const upstream = observation.tasks.find(
       (candidate) => candidate.planId === task.planId && candidate.taskId === upstreamId,
     );
-    return upstream?.run?.status === "ok" && upstream.run.gateDecision !== "reject";
+    return upstream?.run?.status === "ok" && upstream.run.gateDecision === "approve";
   });
 }
 

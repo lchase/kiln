@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { packageRoot } from "./paths.js";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import {
   inFlightCount,
   taskPhase,
@@ -19,17 +19,18 @@ export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-/** Absolute path of the yak CLI, from the installed package's `bin` field. */
+/** Absolute path of the yak CLI, from the installed package's `bin.yak`. */
 export function yakCliPath(): string {
-  const yakRoot = join(packageRoot(), "node_modules", "@lchase", "yak");
-  const pkg = JSON.parse(readFileSync(join(yakRoot, "package.json"), "utf8")) as {
+  const require = createRequire(import.meta.url);
+  const pkgPath = require.resolve("@lchase/yak/package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
     bin?: string | Record<string, string>;
   };
   const relative = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.yak;
   if (!relative) {
-    throw new Error(`@lchase/yak at ${yakRoot} has no "yak" bin in package.json.`);
+    throw new Error(`${pkgPath} has no "yak" bin.`);
   }
-  return join(yakRoot, relative);
+  return join(dirname(pkgPath), relative);
 }
 
 export function yakInvocation(subcommand: "resume" | "cancel", runId: string): string {

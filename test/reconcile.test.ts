@@ -78,6 +78,12 @@ describe("plan", () => {
     assert.equal(taskPhase(dependent, obs), "blocked");
 
     publisher.run = run("ok");
+    assert.equal(taskPhase(publisher, obs), "ok-undecided");
+    assert.equal(taskPhase(dependent, obs), "blocked");
+    assert.deepEqual(plan(obs), []);
+
+    publisher.run.gateDecision = "approve";
+    assert.equal(taskPhase(publisher, obs), "ok");
     assert.deepEqual(plan(obs), [
       { type: "launch", planId: PLAN_ID, taskId: "render-reflection", repo: "frontend" },
     ]);
@@ -94,6 +100,8 @@ describe("plan", () => {
     assert.equal(firstAction?.type, "launch");
     if (firstAction?.type === "launch") assert.equal(firstAction.taskId, "publish");
     first.run = run("ok");
+    assert.equal(taskPhase(second, obs), "blocked");
+    first.run.gateDecision = "approve";
     const follow = plan(obs)[0];
     assert.equal(follow?.type, "launch");
     if (follow?.type === "launch") assert.equal(follow.taskId, "follow");
@@ -158,6 +166,16 @@ describe("plan", () => {
     assert.deepEqual(plan(obs), [
       { type: "launch", planId: PLAN_ID, taskId: "sunday-heading", repo: "frontend" },
     ]);
+  });
+
+  it("does not let an ok run with no gate decision unblock its dependent", () => {
+    const publisher = task({ taskId: "publish", repo: "frontend", run: run("ok") });
+    const dependent = task({ taskId: "follow", repo: "frontend", dependsOn: ["publish"] });
+    const obs = observation({ tasks: [publisher, dependent] });
+    assert.equal(publisher.run?.gateDecision, undefined);
+    assert.equal(taskPhase(publisher, obs), "ok-undecided");
+    assert.equal(taskPhase(dependent, obs), "blocked");
+    assert.deepEqual(plan(obs), []);
   });
 
   it("does not let a dead run take a slot or satisfy a dependency", () => {

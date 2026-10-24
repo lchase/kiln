@@ -21,7 +21,9 @@
 #   `kiln tick` sets from repos.<repo>.test. An empty value fails the step.
 #   After an approved gate, land commits on the worktree branch with
 #   `git commit -m "kiln: $KILN_TASK_TITLE"`. The status resume command sets
-#   that variable. land is skipped when the gate answer is reject.
+#   that variable. land runs only when approval.decision is approve, and it
+#   does not fail when the index is empty. verify and land both need `input`,
+#   which carries a per-launch runNonce, so one task cannot cache-hit another.
 # - UI review is not a separate step. The factory skips it when no UI paths
 #   changed, and Kiln has no per-repo UI path list. security, ux, and code
 #   are the minimum.
@@ -36,7 +38,8 @@ inputSchema:
       description: { type: string }
       acceptance: { type: string }
       contracts: { type: string }
-    required: [title, description, acceptance, contracts]
+      runNonce: { type: string }
+    required: [title, description, acceptance, contracts, runNonce]
 steps:
   - id: spec
     needs: [input]
@@ -95,7 +98,7 @@ steps:
           produces: build
 
         - id: verify
-          needs: [build]
+          needs: [input, build]
           command:
             run: 'sh -c "${KILN_TEST:?KILN_TEST is empty}"'
             capture: [stdout, stderr, exitCode]
@@ -198,7 +201,7 @@ steps:
     produces: approval
 
   - id: land
-    needs: [approval]
-    skipIf: 'approval.decision == "reject"'
+    needs: [input, approval]
+    skipIf: 'approval.decision != "approve"'
     command:
-      run: 'git add -A && git commit -m "kiln: $KILN_TASK_TITLE"'
+      run: 'git add -A && git diff --cached --quiet || git commit -m "kiln: $KILN_TASK_TITLE"'
