@@ -1,7 +1,7 @@
 {
   "name": "kiln",
   "version": "0.0.1",
-  "description": "Refine a requirement into the contracts between repos and the per-repo tasks that follow them.",
+  "description": "Refine a requirement into the contracts between repos, then drive each task with yak.",
   "type": "module",
   "bin": {
     "kiln": "./dist/cli.js"
@@ -17,6 +17,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@lchase/yak": "0.5.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

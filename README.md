@@ -1,97 +1,182 @@
 # Kiln
 
-Kiln plans work for a product that spans three monorepos: `frontend`, `ai-core`, and `evals-obs`. This is the first slice, the REFINE workflow.
+Kiln plans a change across three repos, `frontend`, `ai-core`, and `evals-obs`, then runs that plan on your machine.
 
-REFINE takes a requirement, checks whether it is ready, and if it is, decomposes it into the contracts between repos and the per-repo tasks that follow those contracts. Contracts are the seams (an API between frontend and ai-core, a trace event between ai-core and evals-obs). They land first. Tasks in different repos depend on the contract, not on each other, and then run independently.
+`refine` reads a requirement and writes a plan: the contracts between repos, and a task in each repo that has work. `approve` records that you accept the plan. `tick` starts at most one ready task. `status` shows each task, the command that answers an open gate, and the branch an approved task landed on.
 
-Kiln runs on your machine. It reads the three product checkouts from paths in a local config and runs the coding-agent CLI with the login that CLI already has. Kiln does not store credentials.
+Kiln uses the Claude login already on this machine. It does not store credentials.
 
-This repository is public. Anything specific to a real product stays in a gitignored local directory and is never committed:
+This repository is public. Real checkout paths, ownership maps, requirements, and plans stay in gitignored `.kiln/` or in `~/.kiln/`. `examples/` is fictional data for a habit tracker called Pebble.
 
-- paths to the three repo checkouts
-- the real per-repo ownership maps
-- real requirements
-- generated plans
+## Prerequisites
 
-`examples/` is fictional data for a habit tracker called Pebble. It is not a real company, a real ticket, or a real checkout.
+- Node.js >= 22 (the `engines` field in `package.json`)
+- git
+- Claude Code >= 2.1.259, installed and logged in. `claude auth status` should succeed. `kiln refine --planner agent` passes `--permission-prompts none`, which that version supports.
+- Each checkout is a git repo with a commit at `HEAD`. `tick` adds a worktree from that commit. Uncommitted files in the checkout are left as they are; the task edits the worktree, on branch `yak/<run-id>`.
 
 ## Local config
 
 Kiln looks for `kiln.config.json` in this order:
 
-1. `./.kiln/kiln.config.json` in the working directory
+1. `./.kiln/kiln.config.json`
 2. `~/.kiln/kiln.config.json`
 
-`.kiln/` is gitignored in this repo. `~/.kiln/` lives outside the repo. Put real ownership maps and real requirement files in that directory, for example `.kiln/ownership/` and `.kiln/requirements/`.
-
-A valid plan is written to `<kiln-dir>/plans/<requirement-id>.json` and `.md`. When the config file lives in a directory named `.kiln` (`./.kiln/kiln.config.json` or `~/.kiln/kiln.config.json`), that directory is the kiln dir. Any other config path, including `--config` pointing at a file outside `.kiln` and the committed example config, writes plans to `./.kiln/plans`. Plans are never written next to an arbitrary config file, and never into `examples/`.
-
-Copy the shape from `examples/kiln.config.json` and replace the paths. Leave `"example": true` off your copy. Relative paths are resolved from the config file's directory.
+When the config file is inside a `.kiln` directory, plans are written there. Any other config path writes plans to `./.kiln/plans`. Relative paths are resolved from the config file's directory. Leave `"example": true` off your copy. If neither local config exists, Kiln uses `examples/kiln.config.json` only for a file under `examples/requirements/`.
 
 ```json
 {
   "repos": {
     "frontend": {
       "checkout": "/absolute/path/to/your/frontend",
-      "ownership": "ownership/frontend.json"
+      "ownership": "ownership/frontend.json",
+      "test": "npm test"
     },
     "ai-core": {
       "checkout": "/absolute/path/to/your/ai-core",
-      "ownership": "ownership/ai-core.json"
+      "ownership": "ownership/ai-core.json",
+      "test": "npm test"
     },
     "evals-obs": {
       "checkout": "/absolute/path/to/your/evals-obs",
-      "ownership": "ownership/evals-obs.json"
+      "ownership": "ownership/evals-obs.json",
+      "test": "npm test"
     }
-  }
+  },
+  "maxConcurrent": 2,
+  "adapter": "claude-code"
 }
 ```
 
-If neither local config exists, Kiln uses `examples/kiln.config.json` only for a file under `examples/requirements/`. Any other requirement without a local config is refused.
+`test` is the command yak runs to verify a task in that repo. An empty command is refused. `maxConcurrent` caps how many tasks may be in flight (default 2). `adapter` is `claude-code` (default) or `mock`.
 
-## Run the examples
+## Ownership maps
+
+Each repo has one JSON file. `repo` matches the config key. `owns` is what that repo is the source of truth for. `exposes` is what the other repos call, and what this repo calls in them.
+
+```json
+{
+  "repo": "frontend",
+  "owns": [
+    "Habit list and day view",
+    "Client-side routing for the browser app"
+  ],
+  "exposes": [
+    "Calls GET /v1/reflection on ai-core and renders the paragraph"
+  ]
+}
+```
+
+To draft a map, run this inside the repo:
+
+```
+Describe this repo for a cross-repo work planner. Output only JSON:
+{
+  "repo": "<frontend|ai-core|evals-obs>",
+  "owns": ["<5-10 short lines: domains, features, and data this repo is the source of truth for>"],
+  "exposes": ["<each API, event, schema, or package other repos call or consume, and what it calls in the other two repos>"]
+}
+Be concrete: name real endpoints, packages, and modules. No marketing language.
+```
+
+## Requirement files
+
+A requirement is markdown with frontmatter. Kiln refuses to plan until the body has an outcome, a scope, and at least one acceptance criterion.
+
+```markdown
+---
+id: EX-202
+source: markdown
+title: Weekly reflection summary
+---
+
+## Outcome
+
+A person can open the app on Sunday and read a short summary of the week.
+
+## Scope
+
+- frontend shows the summary on the home screen.
+- ai-core returns it from a new endpoint.
+- evals-obs is out of scope.
+
+## Workflow
+
+feature
+
+## Acceptance criteria
+
+- The Sunday screen shows the paragraph from the API.
+- A week with no habits shows a calm empty state.
+```
+
+`source` is `markdown` or `jira`. `## Workflow` is optional: `feature`, `bug`, `security`, or `prototype`. `## User-facing outcome` is accepted in place of `## Outcome`.
+
+A requirement that is not ready prints questions and exits 0. A valid plan exits 0. Invalid planner output exits 1.
+
+## First real run
 
 ```bash
 npm install
+mkdir -p .kiln/ownership .kiln/requirements
+```
+
+Write `.kiln/kiln.config.json`, one ownership file per repo, and a requirement at `.kiln/requirements/<name>.md`. Then:
+
+```bash
+npm run kiln -- refine .kiln/requirements/<name>.md --planner agent
+```
+
+Read `.kiln/plans/<id>.md`. If the plan is the one you want:
+
+```bash
+npm run kiln -- approve <id>
+npm run kiln -- tick
+npm run kiln -- status <id>
+```
+
+`status` prints an approve command and a reject command for an open gate. Run the approve command. It uses node and the yak entrypoint, so `yak` does not need to be on `PATH`. When the task finishes, `status` prints `branch yak/<run-id>` in that task's checkout. Kiln does not push.
+
+`tick` launches at most one task and returns. Run it again until nothing is left to launch, by hand or on a timer:
+
+```bash
+while true; do npm run kiln -- tick; sleep 30; done
+```
+
+`maxConcurrent` (default 2) is how many tasks may be in flight at once. A later tick starts the next task while an earlier one is still running.
+
+`--planner agent` runs Claude with cwd set to the frontend checkout and `--add-dir` for the other two. The tools are `Read`, `Grep`, and `Glob`. There is no Bash, Edit, Write, or WebFetch. The prompt tells it to inspect routes, API clients, and schemas before it chooses contracts, and to cite file paths in task descriptions. Set `KILN_PLANNER=agent` to make that the default. `--agent-bin <bin>` selects a different executable. `--config <file>` selects a config other than `.kiln/kiln.config.json` or `~/.kiln/kiln.config.json`.
+
+The same Claude invocation, with the schema and prompt filled in, is:
+
+```bash
+claude -p --output-format json --json-schema '<schema>' \
+  --tools "Read,Grep,Glob" \
+  --no-session-persistence --permission-prompts none \
+  --add-dir /absolute/path/to/ai-core \
+  --add-dir /absolute/path/to/evals-obs \
+  '<prompt>'
+```
+
+## What tick and status report
+
+`tick` reads approved plans and the yak journals under each checkout's `.runs/`, decides, and exits. The launch is detached: `yak run --isolation worktree` in the task's checkout, tagged `kiln:<planId>/<taskId>`, with logs in `<kiln-dir>/logs/<plan>/<task>.log`. A dependency is satisfied when the upstream task finished ok and its approval artifact says approve. A reject is `rejected`. An ok run with no readable approval artifact is `ok-undecided` and does not unblock dependents. A failed run stays failed. A run whose process is gone is `dead`; status prints the `cancel` command to run from the checkout. A launch that died before writing a journal is `launch-failed` and prints its log path.
+
+The task runs the factory loop (spec, build, verify, security/ux/code review, approver, human gate, then a commit). Verify runs the repo's `test` command. After an approved gate, the run commits on `yak/<run-id>` with message `kiln: <task title>`. A reject skips that commit. `adapter: "mock"` reads fixtures at `test/fixtures/kiln-feature/<step>.json` and does not call a model.
+
+The first launch adds `.runs/` and `.yak/` to that checkout's `.git/info/exclude`.
+
+## Examples
+
+The default planner is rules-based and does not call a model. It is what the examples and `npm test` use.
+
+```bash
 npm test
 npm run kiln -- refine examples/requirements/thin-jira.md
 npm run kiln -- refine examples/requirements/weekly-reflection.md
 npm run kiln -- refine examples/requirements/duplicate-habit.md
 ```
 
-The default planner is rules-based and does not call a model. It prints JSON, then a short markdown rendering, and writes a plan under `.kiln/plans/` when the requirement is ready. A requirement that is not ready prints questions and exits 0. A valid plan exits 0. Invalid planner output exits 1.
+## Not included
 
-## Readiness
-
-Kiln always checks the parsed requirement before it trusts a planner:
-
-- acceptance criteria, at least one
-- a scope section
-- a user-facing outcome (`## Outcome` or `## User-facing outcome`)
-
-The planner may add further gaps and questions. The result is the union. A planner cannot mark a requirement ready when one of those three is missing.
-
-The rules planner also asks which repo is in scope when the scope text names none of `frontend`, `ai-core`, and `evals-obs`. Lines that say "out of scope" do not count. `## Workflow` may be `feature`, `bug`, `security`, or `prototype`. A single-repo requirement whose text says "bug" is planned as a bug.
-
-One in-scope repo produces no contracts. Every pair of in-scope repos gets one contract. The contract's `owner` is the providing repo (`ai-core` when it is a side, otherwise `evals-obs`). That repo's task publishes the contract and does not depend on it. The other repo's task depends on the contract id. Each task has its own title, description, and acceptance. A criterion that names a repo stays on that repo. A criterion that names no repo goes to one task, not onto every task.
-
-## Point the real planner at a model
-
-`--planner agent` shells out non-interactively and inherits your environment, so Claude uses the login already on this machine. The default command is current Claude Code, with built-in tools turned off so this planning step cannot edit the tree:
-
-```bash
-npm run kiln -- refine .kiln/requirements/your-requirement.md --planner agent
-```
-
-which runs:
-
-```bash
-claude -p --output-format json --json-schema '<schema>' --tools "" \
-  --no-session-persistence --permission-prompts none '<prompt>'
-```
-
-The prompt includes the requirement, the ownership maps from your local config, the absolute checkout paths, and the JSON schema. Kiln reads a Claude JSON envelope (`structured_output`, or JSON in `result`). Set `KILN_PLANNER=agent` to make the agent the default. `--config <file>` selects a config file other than `.kiln/kiln.config.json` or `~/.kiln/kiln.config.json`. `--agent-bin <bin>` selects a different executable.
-
-## Not in this slice
-
-No Jira client, and no agent that edits code. The agent CLI is asked to reply with a plan and nothing else. The only files Kiln writes are the plan JSON and markdown under the local kiln directory.
+No Jira client. The planner does not edit the checkouts. The coding agent that edits a checkout is the yak run started by `tick`.

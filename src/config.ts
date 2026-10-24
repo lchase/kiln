@@ -10,11 +10,20 @@ import { REPOS, type OwnershipMap, type Repo } from "./schemas.js";
 const RepoEntrySchema = z.object({
   checkout: z.string().min(1),
   ownership: z.string().min(1),
+  /**
+   * Shell command the feature workflow runs as its verify step (`KILN_TEST`).
+   * Required before `kiln tick` can launch a task in this repo.
+   */
+  test: z.string().min(1).optional(),
 });
 
 export const KilnConfigFileSchema = z.object({
   note: z.string().min(1).optional(),
   example: z.boolean().optional(),
+  /** How many yak runs may be in flight at once. Default 2. A tick still launches at most one. */
+  maxConcurrent: z.number().int().min(1).optional(),
+  /** yak agent adapter. Default `claude-code`. `mock` reads fixtures from the checkout. */
+  adapter: z.enum(["mock", "claude-code"]).optional(),
   repos: z.object({
     frontend: RepoEntrySchema,
     "ai-core": RepoEntrySchema,
@@ -39,6 +48,12 @@ export interface LoadedKilnConfig {
    */
   kilnDir: string;
   plansDir: string;
+  /** In-flight cap for `kiln tick`. Default 2. */
+  maxConcurrent: number;
+  /** Passed to `yak run --adapter`. Default `claude-code`. */
+  adapter: "mock" | "claude-code";
+  /** Per-repo verify command. Missing means a task in that repo cannot launch. */
+  testCommands: Record<Repo, string | undefined>;
 }
 
 export interface LoadKilnConfigOptions {
@@ -78,12 +93,14 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
   const configDir = dirname(resolvedPath);
   const example = parsed.data.example === true;
   const checkouts = {} as Record<Repo, string>;
+  const testCommands = {} as Record<Repo, string | undefined>;
   const ownership: OwnershipMap[] = [];
 
   for (const repo of REPOS) {
     const entry = parsed.data.repos[repo];
     const checkout = resolveFrom(configDir, entry.checkout);
     const ownershipPath = resolveFrom(configDir, entry.ownership);
+    testCommands[repo] = entry.test;
     if (!existsSync(checkout) || !statSync(checkout).isDirectory()) {
       throw new KilnConfigError(
         `Checkout for ${repo} does not exist or is not a directory: ${checkout}. Set repos.${repo}.checkout in the local kiln config. Do not commit that file.`,
@@ -103,6 +120,9 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
     ownership,
     kilnDir,
     plansDir: join(kilnDir, "plans"),
+    maxConcurrent: parsed.data.maxConcurrent ?? 2,
+    adapter: parsed.data.adapter ?? "claude-code",
+    testCommands,
   };
 }
 
