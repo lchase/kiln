@@ -4,7 +4,7 @@ Kiln runs a workflow against a git checkout. Register any repo, add a job from a
 
 A ready spec is the input. Kiln does not build or iterate requirements.
 
-This repository is public. Checkout paths and jobs stay in gitignored `.kiln/` or `~/.kiln/`. Do not commit them.
+This repository is public. Checkout paths and jobs stay in `~/.kiln/` (or `$KILN_HOME` when that is set). Do not commit them.
 
 ## Install
 
@@ -13,6 +13,10 @@ npm i -g @lchase/kiln
 kiln repo add web /absolute/path/to/web --test "npm test"
 kiln repo list
 ```
+
+Run `kiln repo add <name> <path>` from any directory. The first run creates `~/.kiln/kiln.config.json`. Jobs, logs, and deliveries live in that same directory, whichever directory you run `kiln` from. Set `KILN_HOME` or pass `--config <file>` to use a different kiln home.
+
+If `./.kiln/kiln.config.json` is still in the working directory and the home config does not exist, kiln stops. Move it with `mv ./.kiln ~/.kiln`, or pass `--config` / set `KILN_HOME`. Kiln does not move it for you.
 
 `kiln` is the command. The subcommands in the rest of this file are the same ones. Examples that say `npm run kiln --` are the in-checkout form.
 
@@ -47,12 +51,12 @@ npm run kiln -- repo add api /absolute/path/to/api --test "npm test"
 npm run kiln -- repo list
 ```
 
-`npm run kiln` builds first. `npm run kiln -- repo add` writes `./.kiln/kiln.config.json` (or updates `~/.kiln/kiln.config.json` when that file already exists). A relative path is stored relative to the config file's directory. `~` is expanded from the home directory. `test` is optional on the entry and required before tick can launch a job in that repo.
+`npm run kiln` builds first. `kiln repo add <name> <path>` writes `~/.kiln/kiln.config.json`. When `KILN_HOME` is set it writes `$KILN_HOME/kiln.config.json`. `--config <file>` writes that file instead, and jobs live in the file's directory. A relative path is stored absolute, resolved from the working directory at add time. `~` is expanded from the home directory. `test` is optional on the entry and required before tick can launch a job in that repo.
 
 ```json
 {
   "repos": {
-    "web": { "path": "../web", "test": "npm test" },
+    "web": { "path": "/absolute/path/to/web", "test": "npm test" },
     "api": { "path": "~/src/api", "test": "npm test" }
   },
   "maxConcurrent": 2,
@@ -72,7 +76,7 @@ npm run kiln -- add feature --repo api --spec api-spec.md --after <job-id>
 npm run kiln -- add feature --repo web --jira PROJ-123
 ```
 
-`--title` defaults to the first `#` heading in the spec, then the file name. `--after` may be repeated. Those jobs must already exist. Kiln copies the spec to `.kiln/specs/<id>.md` and writes `.kiln/jobs/<id>.json`:
+`--title` defaults to the first `#` heading in the spec, then the file name. `--after` may be repeated. Those jobs must already exist. Kiln copies the spec to `~/.kiln/specs/<id>.md` and writes `~/.kiln/jobs/<id>.json`:
 
 ```json
 {
@@ -87,7 +91,7 @@ npm run kiln -- add feature --repo web --jira PROJ-123
 }
 ```
 
-`dependsOn` is omitted when the job has no `--after`. `stack: true` is set by `--stack` and is omitted otherwise. `source` records which intake created the job. Jobs written before intake omit `source` and still run. State is not stored. The pull request url is not stored on the job; Kiln writes it under `.kiln/deliveries/`.
+`dependsOn` is omitted when the job has no `--after`. `stack: true` is set by `--stack` and is omitted otherwise. `source` records which intake created the job. Jobs written before intake omit `source` and still run. State is not stored. The pull request url is not stored on the job; Kiln writes it under `~/.kiln/deliveries/`.
 
 ## Intake
 
@@ -136,7 +140,7 @@ npm run kiln -- add feature --repo web --jira PROJ-123 --after <job-id> --dry-ru
 
 `--jira` reads one Jira Cloud issue over REST API v3 and writes the same job as the other intakes. `source.kind` is `jira`. `source.ref` is the issue key (`PROJ-123`). The title is `PROJ-123: <summary>`. The spec is that heading, a `Source:` line with the issue's browse URL, then the description converted from Atlassian document format to markdown.
 
-Set `JIRA_BASE_URL` (for example `https://acme.atlassian.net`), `JIRA_EMAIL`, and `JIRA_API_TOKEN`. Each value falls back to the optional `jira` block in the gitignored kiln config (`./.kiln/kiln.config.json`, or `~/.kiln/kiln.config.json` when the working directory has no config):
+Set `JIRA_BASE_URL` (for example `https://acme.atlassian.net`), `JIRA_EMAIL`, and `JIRA_API_TOKEN`. Each value falls back to the optional `jira` block in the kiln config (`~/.kiln/kiln.config.json`, or `$KILN_HOME/kiln.config.json` when `KILN_HOME` is set, or the file passed with `--config`). Environment variables override the block:
 
 ```json
 "jira": {
@@ -206,7 +210,7 @@ npm run kiln -- repo add web /absolute/path/to/web --test "npm test" --deliver p
 
 `deliver` is `local` or `pr`. `base` is the pull request base branch. When `base` is omitted, Kiln uses origin's default branch, from `refs/remotes/origin/HEAD` after `git fetch`.
 
-With `deliver=pr`, the tick after an approved land pushes `yak/<run-id>` and runs `gh pr create --draft`. The title is the job title. The body is the spec's first paragraph, the line `Kiln job: <id>`, and the security, ux, ui, code, and approver verdicts. The branch, pull request number, and url are written to `.kiln/deliveries/<job-id>.json`, not the job file. A later tick looks up an existing pull request for that branch and does not push when origin already has the same commit. Kiln does not merge, and it does not push the base branch.
+With `deliver=pr`, the tick after an approved land pushes `yak/<run-id>` and runs `gh pr create --draft`. The title is the job title. The body is the spec's first paragraph, the line `Kiln job: <id>`, and the security, ux, ui, code, and approver verdicts. The branch, pull request number, and url are written to `~/.kiln/deliveries/<job-id>.json`, not the job file. A later tick looks up an existing pull request for that branch and does not push when origin already has the same commit. Kiln does not merge, and it does not push the base branch.
 
 If `gh` is missing or not authenticated, that job becomes `failed` and status prints what to run (`gh auth login`, then `kiln tick`). The rest of the tick still runs. The next tick tries again.
 

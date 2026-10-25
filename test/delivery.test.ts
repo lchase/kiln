@@ -13,6 +13,8 @@ import { tmpdir } from "node:os";
 import { delimiter, join, sep } from "node:path";
 import { after, describe, it } from "node:test";
 import { resolveKilnConfig } from "../src/config.js";
+
+delete process.env.KILN_HOME;
 import { writeDelivery } from "../src/delivery.js";
 import { answerJob, runStatus, runTick } from "../src/driver.js";
 import {
@@ -113,7 +115,7 @@ function runCli(
   const result = spawnSync(process.execPath, [join(root, "dist", "cli.js"), ...args], {
     cwd: options.cwd,
     encoding: "utf8",
-    env: { ...process.env, HOME: options.home },
+    env: kilnEnv(options.home),
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
@@ -198,8 +200,14 @@ function commitOnBranch(checkout: string, branch: string, file: string, contents
   return sha;
 }
 
-function useMock(cwd: string): void {
-  const path = join(cwd, ".kiln", "kiln.config.json");
+function kilnEnv(home: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
+  delete env.KILN_HOME;
+  return env;
+}
+
+function useMock(home: string): void {
+  const path = join(home, ".kiln", "kiln.config.json");
   const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
   raw.adapter = "mock";
   raw.maxConcurrent = 2;
@@ -280,7 +288,7 @@ function childPath(pid: number): string {
   throw new Error(`could not read yak child PATH for pid ${pid}: ${lastError}`);
 }
 
-function waitForWorktree(checkout: string, timeoutMs = 60000): { runId: string; head: string } {
+function waitForWorktree(checkout: string, kilnDir: string, timeoutMs = 60000): { runId: string; head: string } {
   const start = Date.now();
   let log = "";
   while (Date.now() - start < timeoutMs) {
@@ -294,7 +302,7 @@ function waitForWorktree(checkout: string, timeoutMs = 60000): { runId: string; 
     }
     sleep(0.1);
   }
-  const logs = join(checkout, "..", "..", ".kiln", "logs");
+  const logs = join(kilnDir, "logs");
   if (existsSync(logs)) {
     for (const name of readdirSync(logs)) log += readFileSync(join(logs, name), "utf8");
   }
@@ -347,7 +355,7 @@ describe("delivery", { concurrency: 1 }, () => {
     );
     assert.equal(added.status, 0, added.stderr);
     assert.match(added.stdout, /deliver pr/);
-    useMock(cwd);
+    useMock(home);
     const id = addJob(cwd, home, "web", "Show the weekly summary");
     const runId = "2026-10-25T00-00-00Z-pr01";
     commitOnBranch(checkout, `yak/${runId}`, "landed.txt", "landed\n", "kiln: Show the weekly summary");
@@ -375,13 +383,13 @@ describe("delivery", { concurrency: 1 }, () => {
     assert.match(github.pulls[0]?.body ?? "", /- security: CHANGES/);
     assert.match(github.pulls[0]?.body ?? "", /- ux: PASS/);
     assert.match(github.pulls[0]?.body ?? "", /- approver: APPROVE/);
-    const jobFile = JSON.parse(readFileSync(join(cwd, ".kiln", "jobs", `${id}.json`), "utf8")) as {
+    const jobFile = JSON.parse(readFileSync(join(home, ".kiln", "jobs", `${id}.json`), "utf8")) as {
       state?: unknown;
       prUrl?: unknown;
     };
     assert.equal(jobFile.state, undefined);
     assert.equal(jobFile.prUrl, undefined);
-    const record = JSON.parse(readFileSync(join(cwd, ".kiln", "deliveries", `${id}.json`), "utf8")) as {
+    const record = JSON.parse(readFileSync(join(home, ".kiln", "deliveries", `${id}.json`), "utf8")) as {
       branch: string;
       prNumber: number;
       prUrl: string;
@@ -394,7 +402,7 @@ describe("delivery", { concurrency: 1 }, () => {
     assert.equal(github.creates, 1);
     assert.deepEqual(remote.pushes, [`yak/${runId}`]);
 
-    rmSync(join(cwd, ".kiln", "deliveries", `${id}.json`));
+    rmSync(join(home, ".kiln", "deliveries", `${id}.json`));
     const third = runTick(config, host);
     assert.match(third, /pull\/1/);
     assert.equal(github.creates, 1);
@@ -427,7 +435,7 @@ describe("delivery", { concurrency: 1 }, () => {
       runCli(["repo", "add", "web", checkout, "--test", testCommand, "--deliver", "pr", "--base", "main"], { cwd, home }).status,
       0,
     );
-    useMock(cwd);
+    useMock(home);
     const upstream = addJob(cwd, home, "web", "Publish the summary");
     const downstream = addJob(cwd, home, "web", "Show the summary", [upstream]);
     landRun(checkout, upstream, upstreamRun);
@@ -467,7 +475,7 @@ describe("delivery", { concurrency: 1 }, () => {
     github.merge(4);
     const launched = runTick(config, host);
     assert.match(launched, new RegExp(`launch ${downstream}\\s+web`));
-    const work = waitForWorktree(checkout);
+    const work = waitForWorktree(checkout, join(home, ".kiln"));
     const input = JSON.parse(
       readFileSync(join(checkout, ".runs", work.runId, "artifacts", "input.json"), "utf8"),
     ) as { baseRef?: string };
@@ -496,7 +504,7 @@ describe("delivery", { concurrency: 1 }, () => {
       runCli(["repo", "add", "web", checkout, "--test", testCommand, "--deliver", "pr", "--base", "main"], { cwd, home }).status,
       0,
     );
-    useMock(cwd);
+    useMock(home);
     const upstream = addJob(cwd, home, "web", "Publish the summary");
     const downstream = addJob(cwd, home, "web", "Show the summary", [upstream], true);
     landRun(checkout, upstream, upstreamRun);
@@ -604,7 +612,7 @@ describe("delivery", { concurrency: 1 }, () => {
     assert.equal(imported.status, 1);
     assert.match(imported.stderr, /03-both\.md/);
     assert.match(imported.stderr, /2 dependencies/);
-    const names = existsSync(join(cwd, ".kiln", "jobs")) ? readdirSync(join(cwd, ".kiln", "jobs")) : [];
+    const names = existsSync(join(home, ".kiln", "jobs")) ? readdirSync(join(home, ".kiln", "jobs")) : [];
     assert.deepEqual(
       names.filter((name) => name !== `${first}.json` && name !== `${second}.json` && name !== `${otherRepo}.json`),
       [],
@@ -622,7 +630,7 @@ describe("delivery", { concurrency: 1 }, () => {
     git(checkout, ["add", "readme.md"]);
     git(checkout, ["commit", "-q", "-m", "initial"]);
     assert.equal(runCli(["repo", "add", "web", checkout, "--test", testCommand], { cwd, home }).status, 0);
-    useMock(cwd);
+    useMock(home);
     const id = addJob(cwd, home, "web", "Show the weekly summary");
     const runId = "2026-10-25T00-00-00Z-local";
     commitOnBranch(checkout, `yak/${runId}`, "landed.txt", "landed\n", "kiln: local");
@@ -648,7 +656,7 @@ describe("delivery", { concurrency: 1 }, () => {
       runCli(["repo", "add", "web", checkout, "--test", testCommand, "--deliver", "pr", "--base", "main"], { cwd, home }).status,
       0,
     );
-    useMock(cwd);
+    useMock(home);
     const broken = addJob(cwd, home, "web", "Publish the summary");
     const other = addJob(cwd, home, "web", "Show the summary");
     const runId = "2026-10-25T00-00-00Z-gh01";
@@ -685,7 +693,7 @@ describe("delivery", { concurrency: 1 }, () => {
       runCli(["repo", "add", "web", checkout, "--test", testCommand, "--deliver", "pr", "--base", "main"], { cwd, home }).status,
       0,
     );
-    useMock(cwd);
+    useMock(home);
     const id = addJob(cwd, home, "web", "Show the weekly summary");
     const config = resolveKilnConfig({ cwd, home });
     const github = new FakeGitHub();

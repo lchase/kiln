@@ -34,14 +34,15 @@ function tempKiln(jira?: Record<string, string>): { cwd: string; home: string; c
   const cwd = mkdtempSync(join(tmpdir(), "kiln-jira-"));
   keep.push(cwd);
   const home = join(cwd, "home");
+  const kiln = join(home, ".kiln");
   const checkout = join(cwd, "web");
-  mkdirSync(join(cwd, ".kiln"), { recursive: true });
-  mkdirSync(home);
+  mkdirSync(kiln, { recursive: true });
   mkdirSync(checkout);
   const file: Record<string, unknown> = { repos: { web: { path: checkout } } };
   if (jira) file.jira = jira;
-  writeFileSync(join(cwd, ".kiln", "kiln.config.json"), `${JSON.stringify(file, null, 2)}\n`);
-  return { cwd, home, config: loadKilnConfig(join(cwd, ".kiln", "kiln.config.json"), { cwd, home }) };
+  const configPath = join(kiln, "kiln.config.json");
+  writeFileSync(configPath, `${JSON.stringify(file, null, 2)}\n`);
+  return { cwd, home, config: loadKilnConfig(configPath, { home }) };
 }
 
 function envCreds(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
@@ -53,8 +54,8 @@ function envCreds(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   };
 }
 
-function readJobs(cwd: string): StoredJob[] {
-  const dir = join(cwd, ".kiln", "jobs");
+function readJobs(config: LoadedKilnConfig): StoredJob[] {
+  const dir = config.jobsDir;
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((name) => name.endsWith(".json"))
@@ -62,8 +63,8 @@ function readJobs(cwd: string): StoredJob[] {
     .map((name) => JSON.parse(readFileSync(join(dir, name), "utf8")) as StoredJob);
 }
 
-function specText(cwd: string, job: StoredJob): string {
-  return readFileSync(join(cwd, ".kiln", job.spec), "utf8");
+function specText(config: LoadedKilnConfig, job: StoredJob): string {
+  return readFileSync(join(config.kilnDir, job.spec), "utf8");
 }
 
 function assertNoSecret(text: string): void {
@@ -271,6 +272,7 @@ function addInput(
 
 function runCli(args: string[], cwd: string, home: string): { status: number | null; stdout: string; stderr: string } {
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
+  delete env.KILN_HOME;
   delete env.JIRA_BASE_URL;
   delete env.JIRA_EMAIL;
   delete env.JIRA_API_TOKEN;
@@ -296,7 +298,7 @@ describe("jira intake", () => {
     const result = await addFromJira(config, addInput("proj-1", stub.fetch, envCreds()));
     assert.equal(result.created, true);
     assert.equal(result.warnings.length, 0);
-    const job = readJobs(cwd)[0];
+    const job = readJobs(config)[0];
     assert.ok(job);
     assert.equal(job.id, result.job?.id);
     assert.equal(job.title, "PROJ-1: Show the empty state");
@@ -304,7 +306,7 @@ describe("jira intake", () => {
     assert.equal(job.workflow, "feature");
     assert.equal(job.dependsOn, undefined);
     assert.deepEqual(job.source, { kind: "jira", ref: "PROJ-1" });
-    assert.equal(specText(cwd, job), expectedSpec);
+    assert.equal(specText(config, job), expectedSpec);
     assert.match(result.report, new RegExp(`^added ${job.id}\\n`));
     assert.match(result.report, /source jira PROJ-1/);
     const issueCall = stub.calls.find((call) => call.url.includes("/rest/api/3/issue/PROJ-1"));
@@ -317,9 +319,9 @@ describe("jira intake", () => {
       assert.equal(call.url.includes(TOKEN), false);
     }
     assertNoSecret(result.report);
-    assertNoSecret(specText(cwd, job));
+    assertNoSecret(specText(config, job));
     assertNoSecret(JSON.stringify(job));
-    assert.equal(readFileSync(join(cwd, ".kiln", "kiln.config.json"), "utf8").includes(TOKEN), false);
+    assert.equal(readFileSync(config.configPath, "utf8").includes(TOKEN), false);
   });
 
   it("appends acceptance criteria when that custom field is listed", async () => {
@@ -349,9 +351,9 @@ describe("jira intake", () => {
     const stub = stubFetch(routes(body, fields));
     const result = await addFromJira(config, addInput("PROJ-1", stub.fetch, envCreds()));
     assert.equal(result.created, true);
-    const job = readJobs(cwd)[0];
+    const job = readJobs(config)[0];
     assert.ok(job);
-    const spec = specText(cwd, job);
+    const spec = specText(config, job);
     assert.match(spec, /^# PROJ-1: Show the empty state\nSource: https:\/\/acme\.atlassian\.net\/browse\/PROJ-1\n\nList the items\.\n\n## Acceptance criteria\n\nThe page shows the empty sentence\.\n$/);
     const issueCall = stub.calls.find((call) => call.url.includes("/rest/api/3/issue/"));
     assert.ok(issueCall);
@@ -427,11 +429,11 @@ describe("jira intake", () => {
     );
     assert.equal(result.created, true);
     assert.deepEqual(result.warnings, ["warning: blocked by PROJ-9, which has no kiln job yet."]);
-    const job = readJobs(cwd).find((candidate) => candidate.source?.ref === "PROJ-2");
+    const job = readJobs(config).find((candidate) => candidate.source?.ref === "PROJ-2");
     assert.ok(job);
     assert.deepEqual(job.dependsOn, [first.job.id, other.job.id]);
     assert.equal(job.title, "PROJ-2: Render the empty state");
-    assert.match(specText(cwd, job), /^# PROJ-2: Render the empty state\nSource: https:\/\/acme\.atlassian\.net\/browse\/PROJ-2\n/);
+    assert.match(specText(config, job), /^# PROJ-2: Render the empty state\nSource: https:\/\/acme\.atlassian\.net\/browse\/PROJ-2\n/);
     assert.doesNotMatch(result.warnings.join("\n"), /PROJ-8/);
     assert.doesNotMatch(result.warnings.join("\n"), /PROJ-7/);
   });
@@ -447,15 +449,15 @@ describe("jira intake", () => {
     });
     const created = await addFromJira(config, addInput("PROJ-1", stubFetch(routes(body)).fetch, envCreds()));
     assert.ok(created.job);
-    const before = readFileSync(join(cwd, ".kiln", created.job.spec), "utf8");
+    const before = readFileSync(join(config.kilnDir, created.job.spec), "utf8");
     const again = await addFromJira(config, addInput("proj-1", boomFetch(), {}, { dryRun: true }));
     assert.equal(again.created, false);
     assert.equal(again.job?.id, created.job.id);
     assert.equal(again.warnings.length, 0);
     assert.match(again.report, new RegExp(`^exists ${created.job.id}\\n`));
     assert.match(again.report, /source jira PROJ-1/);
-    assert.equal(readJobs(cwd).length, 1);
-    assert.equal(readFileSync(join(cwd, ".kiln", created.job.spec), "utf8"), before);
+    assert.equal(readJobs(config).length, 1);
+    assert.equal(readFileSync(join(config.kilnDir, created.job.spec), "utf8"), before);
   });
 
   it("names each missing credential and does not call fetch", async () => {
@@ -497,9 +499,9 @@ describe("jira intake", () => {
     assert.ok(issueCall);
     assert.equal(issueCall.url.startsWith(`${BASE}/rest/api/3/issue/PROJ-1`), true);
     assert.equal(issueCall.authorization, `Basic ${Buffer.from(`${EMAIL}:${TOKEN}`, "utf8").toString("base64")}`);
-    const job = readJobs(cwd)[0];
+    const job = readJobs(config)[0];
     assert.ok(job);
-    assertNoSecret(specText(cwd, job));
+    assertNoSecret(specText(config, job));
     assertNoSecret(result.report);
     assertNoSecret(result.warnings.join("\n"));
   });
@@ -563,8 +565,8 @@ describe("jira intake", () => {
         return true;
       },
     );
-    assert.equal(existsSync(join(cwd, ".kiln", "jobs")), false);
-    assert.equal(existsSync(join(cwd, ".kiln", "specs")), false);
+    assert.equal(existsSync(join(config.kilnDir, "jobs")), false);
+    assert.equal(existsSync(join(config.kilnDir, "specs")), false);
   });
 
   it("dry-run prints the job and writes nothing", async () => {
@@ -599,8 +601,8 @@ describe("jira intake", () => {
     assert.match(result.report, /created nothing/);
     assert.deepEqual(result.warnings, ["warning: blocked by PROJ-9, which has no kiln job yet."]);
     assertNoSecret(result.report);
-    assert.equal(existsSync(join(cwd, ".kiln", "jobs")), false);
-    assert.equal(existsSync(join(cwd, ".kiln", "specs")), false);
+    assert.equal(existsSync(join(config.kilnDir, "jobs")), false);
+    assert.equal(existsSync(join(config.kilnDir, "specs")), false);
   });
 
   it("warns for Spike and Research issues when no investigation workflow exists", async () => {
@@ -627,8 +629,8 @@ describe("jira intake", () => {
       assert.match(result.warnings[0] ?? "", new RegExp(`^warning: ${key} looks like a spike or says no product code;`));
       assert.match(result.warnings[0] ?? "", /investigation\.yaml is missing, using feature/);
     }
-    assert.equal(readJobs(cwd).length, 2);
-    for (const job of readJobs(cwd)) assert.equal(job.workflow, "feature");
+    assert.equal(readJobs(config).length, 2);
+    for (const job of readJobs(config)) assert.equal(job.workflow, "feature");
   });
 
   it("rejects a Jira key that is not KEY-123 before any request", async () => {
@@ -651,11 +653,11 @@ describe("jira intake", () => {
   });
 
   it("reports missing credentials from the CLI and does not create a job", () => {
-    const { cwd, home } = tempKiln();
+    const { cwd, home, config } = tempKiln();
     const result = runCli(["add", "feature", "--repo", "web", "--jira", "PROJ-1"], cwd, home);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Jira credentials are missing: JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN/);
-    assert.equal(existsSync(join(cwd, ".kiln", "jobs")), false);
+    assert.equal(existsSync(join(config.kilnDir, "jobs")), false);
     assertNoSecret(result.stderr);
   });
 
@@ -673,7 +675,7 @@ describe("jira intake", () => {
       const again = runCli(["add", "feature", "--repo", "web", "--jira", "PROJ-1"], cwd, home);
       assert.equal(again.status, 0, again.stderr);
       assert.match(again.stdout, new RegExp(`^exists ${created.job?.id}\\n`));
-      assert.equal(readJobs(cwd).length, 1);
+      assert.equal(readJobs(config).length, 1);
       const status = runCli(["status", created.job.id], cwd, home);
       assert.equal(status.status, 0, status.stderr);
       assert.match(status.stdout, /source jira PROJ-1/);
