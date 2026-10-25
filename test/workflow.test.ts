@@ -110,7 +110,7 @@ describe("feature workflow", () => {
     assert.ok(buildFile);
     assert.ok(approverFile);
     assert.match(readFileSync(buildFile, "utf8"), /this is round 1/);
-    assert.match(readFileSync(buildFile, "utf8"), /signal, no exit code/);
+    assert.match(readFileSync(buildFile, "utf8"), /verify == undefined \? "\(round 1: no prior verify\)" : \(verify\.exitCode == null \? "\(signal, no exit code\)"/);
     assert.match(readFileSync(approverFile, "utf8"), /Only the final round is provided/);
     const codeFile = renderedText.match(/file: "([^"]*code-[0-9a-f]+\.md)"/)?.[1];
     assert.ok(codeFile);
