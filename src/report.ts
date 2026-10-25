@@ -3,6 +3,8 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import {
   inFlightCount,
+  isDone,
+  isLanded,
   jobState,
   type Action,
   type Observation,
@@ -14,6 +16,13 @@ export interface LaunchReport {
   jobId: string;
   repo: string;
   output: string;
+}
+
+export interface DeliverReport {
+  jobId: string;
+  repo: string;
+  ok: boolean;
+  detail: string;
 }
 
 export function shellQuote(value: string): string {
@@ -69,11 +78,28 @@ export function renderStatus(observation: Observation, jobId?: string): string {
     }
     const state = jobState(job, observation);
     const run = job.run ? `  run ${job.run.runId}` : "";
-    const branch = state === "done" && job.run ? `  branch yak/${job.run.runId}` : "";
-    lines.push(`${job.jobId}  ${job.repo}  ${job.workflow}  ${state}${run}${branch}`);
+    const branch =
+      job.run && (state === "done" || state === "in-review") ? `  branch yak/${job.run.runId}` : "";
+    const pr = prSuffix(job, state);
+    lines.push(`${job.jobId}  ${job.repo}  ${job.workflow}  ${state}${run}${branch}${pr}`);
     if (job.source) lines.push(`  source ${job.source.kind} ${job.source.ref}`);
+    if (state === "in-review" && !job.delivery?.prNumber) {
+      lines.push("  pull request not opened yet");
+    }
+    if (state === "failed" && job.delivery?.error) {
+      lines.push(`  ${job.delivery.error}`);
+    }
+    if (state === "failed" && job.delivery?.prState === "CLOSED" && job.delivery.prNumber) {
+      lines.push(`  pull request #${job.delivery.prNumber} was closed without merging`);
+    }
+    if (job.delivery?.viewError && (state === "in-review" || state === "done")) {
+      lines.push(`  could not read pull request: ${job.delivery.viewError}`);
+    }
     if (state === "failed" && job.launchFailed && job.logPath) {
       lines.push(`  log ${job.logPath}`);
+    }
+    if (state === "failed" && job.launchError) {
+      lines.push(`  ${job.launchError}`);
     }
     if (state === "failed" && job.run?.status === "ok" && !job.run.gateDecision) {
       lines.push("  no readable approval decision");
@@ -82,9 +108,7 @@ export function renderStatus(observation: Observation, jobId?: string): string {
       lines.push(`  fix: cd ${shellQuote(job.run.checkout)} && ${yakInvocation("cancel", job.run.runId)}`);
     }
     if (state === "blocked") {
-      for (const dep of missingDependencyIds(job, observation)) {
-        lines.push(`  blocked on missing job ${dep}`);
-      }
+      for (const line of blockedLines(job, observation)) lines.push(line);
     }
     if (state === "needs-human" && job.run) {
       for (const gate of job.run.gates) {
@@ -96,9 +120,36 @@ export function renderStatus(observation: Observation, jobId?: string): string {
   return `${lines.join("\n")}\n`;
 }
 
-function missingDependencyIds(job: ObservedJob, observation: Observation): string[] {
-  const known = new Set(observation.jobs.map((candidate) => candidate.jobId));
-  return job.dependsOn.filter((id) => !known.has(id));
+function prSuffix(job: ObservedJob, state: string): string {
+  const url = job.delivery?.prUrl;
+  if (!url) return "";
+  if (state !== "in-review" && state !== "done" && state !== "failed") return "";
+  return `  pr ${url}`;
+}
+
+function blockedLines(job: ObservedJob, observation: Observation): string[] {
+  const lines: string[] = [];
+  for (const dep of job.dependsOn) {
+    const upstream = observation.jobs.find((candidate) => candidate.jobId === dep);
+    if (!upstream) {
+      lines.push(`  blocked on missing job ${dep}`);
+      continue;
+    }
+    if (job.stack) {
+      if (!isLanded(upstream)) lines.push(`  waiting for ${dep} to land`);
+      continue;
+    }
+    if (isDone(upstream)) continue;
+    const number = upstream.delivery?.prNumber;
+    if (number && !upstream.delivery?.merged && upstream.delivery?.prState !== "CLOSED") {
+      lines.push(`  waiting for PR #${number} to merge`);
+      continue;
+    }
+    if ((upstream.deliver ?? "local") === "pr" && isLanded(upstream)) {
+      lines.push(`  waiting for ${dep} to open a pull request`);
+    }
+  }
+  return lines;
 }
 
 function appendGateCommands(lines: string[], job: ObservedJob, gate: ObservedGate): void {
@@ -107,7 +158,12 @@ function appendGateCommands(lines: string[], job: ObservedJob, gate: ObservedGat
   if (choices.includes("reject")) lines.push(`  reject: kiln reject ${job.jobId}`);
 }
 
-export function renderTick(observation: Observation, actions: Action[], launches: LaunchReport[]): string {
+export function renderTick(
+  observation: Observation,
+  actions: Action[],
+  launches: LaunchReport[],
+  delivers: DeliverReport[] = [],
+): string {
   const lines = [`tick  inFlight=${inFlightCount(observation)}  maxConcurrent=${observation.maxConcurrent}`];
   for (const job of observation.jobs) {
     if (job.error) lines.push(`skip ${job.jobId} (invalid: ${job.error})`);
@@ -115,13 +171,24 @@ export function renderTick(observation: Observation, actions: Action[], launches
   for (const action of actions) {
     if (action.type === "clear-breadcrumb") lines.push(`clear breadcrumb ${action.path}`);
   }
+  for (const deliver of delivers) {
+    lines.push(
+      deliver.ok
+        ? `deliver ${deliver.jobId}  ${deliver.repo}  ${deliver.detail}`
+        : `deliver ${deliver.jobId}  ${deliver.repo}  failed: ${deliver.detail}`,
+    );
+  }
   for (const launch of launches) {
     lines.push(`launch ${launch.jobId}  ${launch.repo}`);
     for (const line of launch.output.split("\n")) {
       if (line.trim()) lines.push(`  ${line}`);
     }
   }
-  if (!actions.some((action) => action.type === "launch") && launches.length === 0) {
+  if (
+    !actions.some((action) => action.type === "launch") &&
+    launches.length === 0 &&
+    delivers.length === 0
+  ) {
     lines.push("nothing to launch");
   }
   return `${lines.join("\n")}\n`;

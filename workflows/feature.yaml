@@ -29,8 +29,10 @@
 #   cache-hit another. land runs only when approval.decision is approve,
 #   and it does not fail when the index is empty. `git add -A` stages every
 #   uncommitted path in the worktree.
-# - input.baseRef is the checkout HEAD at launch (full SHA). Every preamble
-#   maps `<main branch>` to that SHA. The worktree branch is yak/<run-id>.
+# - input.baseRef is the commit the worktree was branched from (full SHA).
+#   deliver=local uses checkout HEAD. deliver=pr uses origin/<base>, or the
+#   upstream yak/<run-id> tip when the job is stacked. Every preamble maps
+#   `<main branch>` to that SHA. The worktree branch is yak/<run-id>.
 # - A loop body does not evaluate skipIf, so the UI reviewer is a real step.
 #   review-ui.md itself returns PASS when no UI changed.
 # - A loop-body artifact is not a top-level producer. The approver reads the

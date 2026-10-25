@@ -17,6 +17,8 @@ export interface ImportTicketsInput {
   workflow?: string;
   contextPath?: string;
   dryRun: boolean;
+  /** When true, every imported job stacks on its single blocker. */
+  stack?: boolean;
   cwd: string;
   now?: Date;
 }
@@ -67,6 +69,16 @@ export function importTickets(config: LoadedKilnConfig, input: ImportTicketsInpu
   assertWorkflowName(requested);
   const context = resolveContext(dirAbs, input.contextPath, input.cwd);
   const tickets = readTickets(dirAbs);
+  if (input.stack) {
+    const offender =
+      tickets.find((ticket) => ticket.blockedBy.length > 1) ??
+      tickets.find((ticket) => ticket.blockedBy.length !== 1);
+    if (offender) {
+      throw new Error(
+        `Ticket ${offender.file} has ${offender.blockedBy.length} dependencies. stack needs exactly one.`,
+      );
+    }
+  }
   const warnings: string[] = [];
   const workflows = new Map<string, string>();
   for (const ticket of tickets) {
@@ -156,6 +168,7 @@ export function importTickets(config: LoadedKilnConfig, input: ImportTicketsInpu
         specText: composeSpec(write.ticket.text, context),
         title: write.ticket.title,
         dependsOn: write.dependsOn,
+        ...(input.stack ? { stack: true } : {}),
         source: { kind: "tickets", ref: write.ticket.path },
         now: write.now,
         pendingIds,

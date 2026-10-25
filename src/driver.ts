@@ -11,8 +11,21 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { delimiter, basename, dirname, isAbsolute, join } from "node:path";
 import type { LoadedKilnConfig } from "./config.js";
+import {
+  clearLaunchError,
+  deliverJob,
+  readDelivery,
+  readLaunchError,
+  resolveLaunchBase,
+  writeDelivery,
+  writeLaunchError,
+  isMerged,
+  type LaunchBase,
+} from "./delivery.js";
+import { installGitShim } from "./git-shim.js";
+import { defaultHost, type KilnHost, type PullRequestState } from "./host.js";
 import { readJobSpec } from "./jobs.js";
 import { jobBasename, packageRoot } from "./paths.js";
 import {
@@ -24,7 +37,14 @@ import {
   type ObservedRun,
   type RunStatus,
 } from "./reconcile.js";
-import { gateAnswerCommand, renderStatus, renderTick, yakCliPath, type LaunchReport } from "./report.js";
+import {
+  gateAnswerCommand,
+  renderStatus,
+  renderTick,
+  yakCliPath,
+  type DeliverReport,
+  type LaunchReport,
+} from "./report.js";
 import { JobSchema, type Job } from "./schemas.js";
 import { materializeWorkflow, workflowInputs } from "./workflow.js";
 
@@ -61,20 +81,25 @@ export function parseJobTag(tag: string): string | undefined {
   return id;
 }
 
-export function runStatus(config: LoadedKilnConfig, jobId?: string): string {
-  return renderStatus(observe(config).observation, jobId);
+export function runStatus(config: LoadedKilnConfig, jobId?: string, host: KilnHost = defaultHost()): string {
+  return renderStatus(observe(config, host).observation, jobId);
 }
 
-export function runTick(config: LoadedKilnConfig): string {
+export function runTick(config: LoadedKilnConfig, host: KilnHost = defaultHost()): string {
   return withTickLock(config.kilnDir, () => {
-    const world = observe(config);
+    const world = observe(config, host);
     const actions = decide(world.observation);
-    return apply(config, world, actions);
+    return apply(config, world, actions, host);
   });
 }
 
-export function answerJob(config: LoadedKilnConfig, jobId: string, choice: "approve" | "reject"): string {
-  const world = observe(config);
+export function answerJob(
+  config: LoadedKilnConfig,
+  jobId: string,
+  choice: "approve" | "reject",
+  host: KilnHost = defaultHost(),
+): string {
+  const world = observe(config, host);
   const job = world.observation.jobs.find((candidate) => candidate.jobId === jobId);
   if (!job) {
     throw new Error(`No job ${jobId}.`);
@@ -106,7 +131,7 @@ function gateForChoice(gates: ObservedGate[], choice: "approve" | "reject"): Obs
   );
 }
 
-function observe(config: LoadedKilnConfig): World {
+function observe(config: LoadedKilnConfig, host: KilnHost): World {
   const loaded = loadJobs(config);
   const runs = scanRuns(config);
   const breadcrumbs = readBreadcrumbs(config.kilnDir);
@@ -130,6 +155,17 @@ function observe(config: LoadedKilnConfig): World {
     const repoKnown = entry.job ? Boolean(config.repos[entry.job.repo]) : false;
     const repoError =
       entry.job && !repoKnown ? `Repo ${entry.job.repo} is not registered.` : undefined;
+    const repo = entry.job ? config.repos[entry.job.repo] : undefined;
+    const deliver = repo?.deliver ?? "local";
+    const delivery =
+      entry.job && repo && deliver === "pr"
+        ? observedDelivery(config.kilnDir, host, repo.path, entry.job.id, run?.runId)
+        : undefined;
+    const launchError = entry.job && !run ? readLaunchError(config.kilnDir, entry.job.id) : undefined;
+    const stackError =
+      entry.job?.stack && (entry.job.dependsOn?.length ?? 0) !== 1
+        ? "stack needs exactly one dependency."
+        : undefined;
     jobs.push({
       jobId: entry.meta.jobId,
       repo: entry.job?.repo ?? "",
@@ -137,11 +173,17 @@ function observe(config: LoadedKilnConfig): World {
       title: entry.job?.title ?? "",
       dependsOn: entry.job?.dependsOn ?? [],
       ...(entry.job?.source ? { source: entry.job.source } : {}),
+      deliver,
+      ...(entry.job?.stack ? { stack: true } : {}),
+      ...(delivery ? { delivery } : {}),
       launching: Boolean(crumb) && !run && childAlive,
       launchFailed: Boolean(crumb) && !run && !childAlive,
+      ...(launchError ? { launchError } : {}),
       ...(crumb?.logPath ? { logPath: crumb.logPath } : {}),
       ...(run ? { run } : {}),
-      ...(entry.meta.error || repoError ? { error: entry.meta.error ?? repoError } : {}),
+      ...(entry.meta.error || repoError || stackError
+        ? { error: entry.meta.error ?? repoError ?? stackError }
+        : {}),
     });
   }
 
@@ -155,23 +197,131 @@ function observe(config: LoadedKilnConfig): World {
   };
 }
 
-function apply(config: LoadedKilnConfig, world: World, actions: ReturnType<typeof decide>): string {
+function apply(
+  config: LoadedKilnConfig,
+  world: World,
+  actions: ReturnType<typeof decide>,
+  host: KilnHost,
+): string {
   const launches: LaunchReport[] = [];
+  const delivers: DeliverReport[] = [];
   for (const action of actions) {
     if (action.type === "clear-breadcrumb") {
       rmSync(action.path, { force: true });
+      continue;
+    }
+    if (action.type === "deliver") {
+      delivers.push(deliverObserved(config, world, action.jobId, host));
       continue;
     }
     const job = world.jobs.get(action.jobId);
     if (!job) {
       throw new Error(`Tick planned a launch for ${action.jobId}, which is not in the observed jobs.`);
     }
-    launches.push(launchJob(config, job));
+    launches.push(launchJob(config, world, job, host));
   }
-  return renderTick(world.observation, actions, launches);
+  return renderTick(world.observation, actions, launches, delivers);
 }
 
-function launchJob(config: LoadedKilnConfig, job: Job): LaunchReport {
+function deliverObserved(
+  config: LoadedKilnConfig,
+  world: World,
+  jobId: string,
+  host: KilnHost,
+): DeliverReport {
+  const job = world.jobs.get(jobId);
+  const observed = world.observation.jobs.find((candidate) => candidate.jobId === jobId);
+  const repo = job ? config.repos[job.repo] : undefined;
+  if (!job || !observed?.run || !repo) {
+    const detail = `Job ${jobId} is not ready to open a pull request.`;
+    return { jobId, repo: job?.repo ?? "", ok: false, detail };
+  }
+  try {
+    const baseBranch = pullRequestBase(world, job, repo, host);
+    const outcome = deliverJob({
+      config,
+      job,
+      checkout: repo.path,
+      runId: observed.run.runId,
+      baseBranch,
+      host,
+    });
+    return { jobId, repo: job.repo, ok: outcome.ok, detail: outcome.detail };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    writeDelivery(config.kilnDir, {
+      jobId,
+      runId: observed.run.runId,
+      branch: `yak/${observed.run.runId}`,
+      base: repo.base ?? "unknown",
+      pushed: false,
+      error: message,
+    });
+    return { jobId, repo: job.repo, ok: false, detail: message };
+  }
+}
+
+/** Stacked jobs target the upstream branch. Everyone else targets the repo base. */
+function pullRequestBase(
+  world: World,
+  job: Job,
+  repo: { path: string; base?: string },
+  host: KilnHost,
+): string {
+  if (job.stack) {
+    const branch = upstreamBranch(world, job);
+    if (!branch) {
+      throw new Error(`Job ${job.id} is stacked but its upstream has no branch to target.`);
+    }
+    return branch;
+  }
+  if (repo.base) return repo.base;
+  host.git.fetch(repo.path);
+  return host.git.defaultBranch(repo.path);
+}
+
+function upstreamBranch(world: World, job: Job): string | undefined {
+  const upstreamId = job.dependsOn?.[0];
+  if (!upstreamId) return undefined;
+  const upstream = world.observation.jobs.find((candidate) => candidate.jobId === upstreamId);
+  if (!upstream?.run) return undefined;
+  return upstream.delivery?.branch ?? `yak/${upstream.run.runId}`;
+}
+
+function observedDelivery(
+  kilnDir: string,
+  host: KilnHost,
+  checkout: string,
+  jobId: string,
+  runId: string | undefined,
+): ObservedJob["delivery"] | undefined {
+  const record = readDelivery(kilnDir, jobId);
+  if (!record) return undefined;
+  if (runId && record.runId !== runId) return undefined;
+  let prState: PullRequestState | undefined;
+  let merged = false;
+  let viewError: string | undefined;
+  if (record.prNumber) {
+    try {
+      const viewed = host.github.view(checkout, record.prNumber);
+      prState = viewed.state;
+      merged = isMerged(viewed);
+    } catch (error) {
+      viewError = error instanceof Error ? error.message : String(error);
+    }
+  }
+  return {
+    branch: record.branch,
+    ...(record.prNumber ? { prNumber: record.prNumber } : {}),
+    ...(record.prUrl ? { prUrl: record.prUrl } : {}),
+    merged,
+    ...(prState ? { prState } : {}),
+    ...(record.error && !record.prNumber ? { error: record.error } : {}),
+    ...(viewError ? { viewError } : {}),
+  };
+}
+
+function launchJob(config: LoadedKilnConfig, world: World, job: Job, host: KilnHost): LaunchReport {
   const repo = config.repos[job.repo];
   if (!repo) {
     throw new Error(`Repo ${job.repo} is not registered. Run kiln repo add ${job.repo} <path>.`);
@@ -188,13 +338,31 @@ function launchJob(config: LoadedKilnConfig, job: Job): LaunchReport {
   const crumbPath = breadcrumbPath(config.kilnDir, job.id);
   ensureCheckoutExcludes(repo.path);
 
+  let base: LaunchBase;
+  try {
+    clearLaunchError(config.kilnDir, job.id);
+    base = resolveLaunchBase({
+      checkout: repo.path,
+      deliver: repo.deliver,
+      stack: job.stack === true,
+      ...(repo.base ? { configuredBase: repo.base } : {}),
+      ...(job.stack ? { upstreamBranch: upstreamBranch(world, job) } : {}),
+      git: host.git,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    writeLaunchError(config.kilnDir, job.id, message);
+    writeFileSync(logPath, `${message}\n`);
+    return { jobId: job.id, repo: job.repo, output: message };
+  }
+
   const specText = readJobSpec(config.kilnDir, job);
   const sourceWorkflow = readFileSync(join(packageRoot(), "workflows", `${job.workflow}.yaml`), "utf8");
   const input = workflowInputs(sourceWorkflow, {
     title: job.title,
     specText,
     runNonce: randomUUID(),
-    baseRef: checkoutHead(repo.path),
+    baseRef: base.sha,
   });
   const args = [
     yakCliPath(),
@@ -211,6 +379,17 @@ function launchJob(config: LoadedKilnConfig, job: Job): LaunchReport {
     args.push("--input", `${key}=${value}`);
   }
 
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    KILN_TEST: testCommand,
+    KILN_TASK_TITLE: job.title,
+    KILN_VERIFY_WRAPPER: join(packageRoot(), "dist", "truncate-output.js"),
+  };
+  if (base.shim) {
+    env.PATH = `${installGitShim(config.kilnDir)}${delimiter}${process.env.PATH ?? ""}`;
+    env.KILN_WORKTREE_BASE = base.sha;
+  }
+
   writeBreadcrumb(crumbPath, { jobId: job.id, pid: 0, logPath });
   const logFd = openSync(logPath, "a");
   try {
@@ -218,12 +397,7 @@ function launchJob(config: LoadedKilnConfig, job: Job): LaunchReport {
       cwd: repo.path,
       detached: true,
       stdio: ["ignore", logFd, logFd],
-      env: {
-        ...process.env,
-        KILN_TEST: testCommand,
-        KILN_TASK_TITLE: job.title,
-        KILN_VERIFY_WRAPPER: join(packageRoot(), "dist", "truncate-output.js"),
-      },
+      env,
     });
     child.unref();
     const pid = child.pid ?? 0;
@@ -473,17 +647,6 @@ function ensureCheckoutExcludes(checkout: string): void {
   if (missing.length === 0) return;
   const suffix = current.length === 0 || current.endsWith("\n") ? "" : "\n";
   writeFileSync(exclude, `${current}${suffix}${missing.join("\n")}\n`);
-}
-
-/** Checkout HEAD at launch. The worktree branch is cut from this commit. */
-function checkoutHead(checkout: string): string {
-  const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: checkout, encoding: "utf8" });
-  const sha = result.stdout.trim();
-  if (result.status !== 0 || !/^[0-9a-f]{40}$/.test(sha)) {
-    const detail = (result.stderr || result.stdout || "no HEAD").trim();
-    throw new Error(`Could not record the base SHA for ${checkout}: ${detail}`);
-  }
-  return sha;
 }
 
 /** Main git dir, including when `.git` is a file (a linked worktree). */

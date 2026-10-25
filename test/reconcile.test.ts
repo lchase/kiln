@@ -122,6 +122,87 @@ describe("decide", () => {
     assert.deepEqual(decide(obs), [{ type: "launch", jobId: "sunday-heading", repo: "web" }]);
   });
 
+  it("opens a pull request for a landed deliver=pr job and stacks before that pull request merges", () => {
+    const upstream = job({
+      jobId: "publish",
+      repo: "web",
+      deliver: "pr",
+      run: run("ok"),
+    });
+    upstream.run!.gateDecision = "approve";
+    const stacked = job({
+      jobId: "stack",
+      repo: "web",
+      deliver: "pr",
+      stack: true,
+      dependsOn: ["publish"],
+    });
+    const afterMerged = job({
+      jobId: "after",
+      repo: "web",
+      deliver: "pr",
+      dependsOn: ["publish"],
+    });
+    const pending = observation({ jobs: [upstream, stacked, afterMerged] });
+    assert.equal(jobState(upstream, pending), "in-review");
+    assert.equal(jobState(stacked, pending), "queued");
+    assert.equal(jobState(afterMerged, pending), "blocked");
+    assert.deepEqual(
+      decide(pending).filter((action) => action.type === "deliver"),
+      [{ type: "deliver", jobId: "publish", repo: "web" }],
+    );
+
+    upstream.delivery = {
+      merged: false,
+      prNumber: 7,
+      prUrl: "https://github.com/example/repo/pull/7",
+      prState: "OPEN",
+    };
+    const open = observation({ jobs: [upstream, stacked, afterMerged] });
+    assert.equal(jobState(upstream, open), "in-review");
+    assert.equal(jobState(afterMerged, open), "blocked");
+    assert.deepEqual(decide(open), [{ type: "launch", jobId: "stack", repo: "web" }]);
+
+    upstream.delivery = {
+      merged: true,
+      prNumber: 7,
+      prUrl: "https://github.com/example/repo/pull/7",
+      prState: "MERGED",
+    };
+    const merged = observation({ jobs: [upstream, stacked, afterMerged] });
+    assert.equal(jobState(upstream, merged), "done");
+    assert.equal(jobState(afterMerged, merged), "queued");
+  });
+
+  it("keeps deliver=local done on land and records a pull request failure without taking a slot", () => {
+    const landed = job({ jobId: "publish", repo: "web", run: run("ok") });
+    landed.run!.gateDecision = "approve";
+    const next = job({ jobId: "follow", repo: "web", dependsOn: ["publish"] });
+    const local = observation({ jobs: [landed, next] });
+    assert.equal(jobState(landed, local), "done");
+    assert.equal(jobState(next, local), "queued");
+    assert.deepEqual(
+      decide(local).filter((action) => action.type === "deliver"),
+      [],
+    );
+
+    const broken = job({
+      jobId: "publish",
+      repo: "web",
+      deliver: "pr",
+      run: run("ok"),
+      delivery: { merged: false, error: "gh is not installed" },
+    });
+    broken.run!.gateDecision = "approve";
+    const other = job({ jobId: "other", repo: "web" });
+    const failed = observation({ maxConcurrent: 1, jobs: [broken, other] });
+    assert.equal(jobState(broken, failed), "failed");
+    assert.deepEqual(decide(failed), [
+      { type: "deliver", jobId: "publish", repo: "web" },
+      { type: "launch", jobId: "other", repo: "web" },
+    ]);
+  });
+
   it("does not let a dead run take a slot or satisfy a dependency", () => {
     const dead = job({ jobId: "publish", repo: "web", run: run("dead") });
     const next = job({ jobId: "follow", repo: "web", dependsOn: ["publish"] });
