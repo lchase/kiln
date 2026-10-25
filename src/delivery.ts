@@ -73,15 +73,11 @@ export function clearLaunchError(kilnDir: string, jobId: string): void {
   rmSync(launchErrorPath(kilnDir, jobId), { force: true });
 }
 
-export interface LaunchBase {
-  /** Full SHA the worktree is cut from. Passed to the workflow as `baseRef`. */
-  sha: string;
-  /** When true, the yak child must rewrite `git worktree add ... HEAD`. */
-  shim: boolean;
-}
-
 /**
- * `deliver=local` without `--stack` keeps today's base: checkout HEAD.
+ * Full SHA the worktree is cut from. Passed to yak as `--from` and to the
+ * workflow as `baseRef`.
+ *
+ * `deliver=local` without `--stack` is checkout HEAD.
  * `deliver=pr` fetches and uses `origin/<base>` (configured, or origin's default).
  * A stacked job uses the upstream `yak/<run-id>` tip in this checkout.
  */
@@ -92,19 +88,19 @@ export function resolveLaunchBase(input: {
   configuredBase?: string;
   upstreamBranch?: string;
   git: GitRemote;
-}): LaunchBase {
+}): string {
   if (input.stack) {
     if (!input.upstreamBranch) {
       throw new HostError("This stacked job has no upstream branch to start from yet.");
     }
-    return { sha: input.git.revParse(input.checkout, input.upstreamBranch), shim: true };
+    return input.git.revParse(input.checkout, input.upstreamBranch);
   }
   if (input.deliver === "pr") {
     input.git.fetch(input.checkout);
     const base = input.configuredBase ?? input.git.defaultBranch(input.checkout);
-    return { sha: input.git.revParse(input.checkout, `origin/${base}`), shim: true };
+    return input.git.revParse(input.checkout, `origin/${base}`);
   }
-  return { sha: input.git.revParse(input.checkout, "HEAD"), shim: false };
+  return input.git.revParse(input.checkout, "HEAD");
 }
 
 export interface DeliverRequest {

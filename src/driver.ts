@@ -11,7 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { delimiter, basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import type { LoadedKilnConfig } from "./config.js";
 import {
   clearLaunchError,
@@ -22,9 +22,7 @@ import {
   writeDelivery,
   writeLaunchError,
   isMerged,
-  type LaunchBase,
 } from "./delivery.js";
-import { installGitShim } from "./git-shim.js";
 import { defaultHost, type KilnHost, type PullRequestState } from "./host.js";
 import { readJobSpec } from "./jobs.js";
 import { jobBasename, packageRoot } from "./paths.js";
@@ -338,10 +336,10 @@ function launchJob(config: LoadedKilnConfig, world: World, job: Job, host: KilnH
   const crumbPath = breadcrumbPath(config.kilnDir, job.id);
   ensureCheckoutExcludes(repo.path);
 
-  let base: LaunchBase;
+  let baseSha: string;
   try {
     clearLaunchError(config.kilnDir, job.id);
-    base = resolveLaunchBase({
+    baseSha = resolveLaunchBase({
       checkout: repo.path,
       deliver: repo.deliver,
       stack: job.stack === true,
@@ -362,7 +360,7 @@ function launchJob(config: LoadedKilnConfig, world: World, job: Job, host: KilnH
     title: job.title,
     specText,
     runNonce: randomUUID(),
-    baseRef: base.sha,
+    baseRef: baseSha,
   });
   const args = [
     yakCliPath(),
@@ -372,6 +370,8 @@ function launchJob(config: LoadedKilnConfig, world: World, job: Job, host: KilnH
     config.adapter,
     "--isolation",
     "worktree",
+    "--from",
+    baseSha,
     "--tag",
     jobTag(job.id),
   ];
@@ -385,10 +385,6 @@ function launchJob(config: LoadedKilnConfig, world: World, job: Job, host: KilnH
     KILN_TASK_TITLE: job.title,
     KILN_VERIFY_WRAPPER: join(packageRoot(), "dist", "truncate-output.js"),
   };
-  if (base.shim) {
-    env.PATH = `${installGitShim(config.kilnDir)}${delimiter}${process.env.PATH ?? ""}`;
-    env.KILN_WORKTREE_BASE = base.sha;
-  }
 
   writeBreadcrumb(crumbPath, { jobId: job.id, pid: 0, logPath });
   const logFd = openSync(logPath, "a");
