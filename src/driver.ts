@@ -23,11 +23,20 @@ import {
   writeLaunchError,
   isMerged,
 } from "./delivery.js";
+import {
+  appendInvestigationFindings,
+  existingFindingsPath,
+  findingsFilePath,
+  INVESTIGATION_WORKFLOW,
+  readFindingsMarkdown,
+  writeFindings,
+} from "./findings.js";
 import { defaultHost, type KilnHost, type PullRequestState } from "./host.js";
 import { readJobSpec, resolveJobSpec } from "./jobs.js";
 import { jobBasename, packageRoot } from "./paths.js";
 import {
   decide,
+  isLanded,
   jobState,
   type Observation,
   type ObservedArtifact,
@@ -43,11 +52,12 @@ import {
   statusView,
   yakCliPath,
   type DeliverReport,
+  type FindingsReport,
   type LaunchReport,
   type StatusView,
 } from "./report.js";
 import { JobSchema, type Job } from "./schemas.js";
-import { materializeWorkflow, workflowInputs } from "./workflow.js";
+import { materializeWorkflow, workflowInputs, workflowNeedsTestCommand } from "./workflow.js";
 
 interface JournalEvent {
   t: string;
@@ -127,6 +137,9 @@ export function answerJob(
   if (result.status !== 0) {
     throw new Error(output.trim() || `Could not ${choice} job ${jobId}.`);
   }
+  if (choice === "approve") {
+    recordInvestigationFindings(config, observe(config, host), jobId);
+  }
   return output.endsWith("\n") || output.length === 0 ? output : `${output}\n`;
 }
 
@@ -174,6 +187,10 @@ function observe(config: LoadedKilnConfig, host: KilnHost): World {
         : undefined;
     const logPath = crumb?.logPath || existingLog(config.kilnDir, entry.meta.jobId);
     const specPath = entry.job ? resolveJobSpec(config.kilnDir, entry.job.spec) : undefined;
+    const findingsPath =
+      entry.job?.workflow === INVESTIGATION_WORKFLOW
+        ? existingFindingsPath(config.kilnDir, entry.job.id)
+        : undefined;
     jobs.push({
       jobId: entry.meta.jobId,
       repo: entry.job?.repo ?? "",
@@ -185,6 +202,7 @@ function observe(config: LoadedKilnConfig, host: KilnHost): World {
       deliver,
       ...(entry.job?.stack ? { stack: true } : {}),
       ...(delivery ? { delivery } : {}),
+      ...(findingsPath ? { findingsPath } : {}),
       launching: Boolean(crumb) && !run && childAlive,
       launchFailed: Boolean(crumb) && !run && !childAlive,
       ...(launchError ? { launchError } : {}),
@@ -214,6 +232,7 @@ function apply(
 ): string {
   const launches: LaunchReport[] = [];
   const delivers: DeliverReport[] = [];
+  const findings: FindingsReport[] = [];
   for (const action of actions) {
     if (action.type === "clear-breadcrumb") {
       rmSync(action.path, { force: true });
@@ -223,13 +242,40 @@ function apply(
       delivers.push(deliverObserved(config, world, action.jobId, host));
       continue;
     }
+    if (action.type === "record-findings") {
+      const recorded = recordInvestigationFindings(config, world, action.jobId);
+      if (recorded.status !== "skip") findings.push(recorded);
+      continue;
+    }
     const job = world.jobs.get(action.jobId);
     if (!job) {
       throw new Error(`Tick planned a launch for ${action.jobId}, which is not in the observed jobs.`);
     }
     launches.push(launchJob(config, world, job, host));
   }
-  return renderTick(world.observation, actions, launches, delivers);
+  return renderTick(world.observation, actions, launches, delivers, findings);
+}
+
+/**
+ * Copy an approved investigation's markdown into `<kilnDir>/findings`.
+ * A file that is already present is left as it is. A missing or incomplete
+ * artifact is reported and does not fail the tick.
+ */
+function recordInvestigationFindings(
+  config: LoadedKilnConfig,
+  world: World,
+  jobId: string,
+): FindingsReport | { status: "skip"; jobId: string } {
+  const job = world.jobs.get(jobId);
+  const observed = world.observation.jobs.find((candidate) => candidate.jobId === jobId);
+  if (!job || job.workflow !== INVESTIGATION_WORKFLOW || !observed?.run || !isLanded(observed)) {
+    return { status: "skip", jobId };
+  }
+  if (observed.findingsPath) return { status: "skip", jobId };
+  const markdown = readFindingsMarkdown(observed.run.checkout, observed.run.runId);
+  if (!markdown) return { status: "missing", jobId };
+  const path = writeFindings(config.kilnDir, job.id, markdown);
+  return { status: "wrote", jobId, path };
 }
 
 function deliverObserved(
@@ -289,6 +335,35 @@ function pullRequestBase(
   return host.git.defaultBranch(repo.path);
 }
 
+function assertStackTarget(world: World, job: Job): void {
+  if (!job.stack) return;
+  const upstreamId = job.dependsOn?.[0];
+  if (!upstreamId) return;
+  const upstream = world.jobs.get(upstreamId);
+  if (upstream?.workflow !== INVESTIGATION_WORKFLOW) return;
+  throw new Error(
+    `stack cannot target investigation job ${upstream.id}. An investigation does not land a branch.`,
+  );
+}
+
+/** Spec text for this launch. Investigation dependencies append their findings. */
+function specHandedToYak(config: LoadedKilnConfig, world: World, job: Job): string {
+  const base = readJobSpec(config.kilnDir, job);
+  const sections: { title: string; markdown: string }[] = [];
+  for (const depId of job.dependsOn ?? []) {
+    const dep = world.jobs.get(depId);
+    if (!dep || dep.workflow !== INVESTIGATION_WORKFLOW) continue;
+    const path = findingsFilePath(config.kilnDir, dep.id);
+    if (!existsSync(path)) {
+      throw new Error(
+        `Job ${job.id} depends on investigation ${dep.id} (${dep.title}), which has no findings file at ${path}.`,
+      );
+    }
+    sections.push({ title: dep.title, markdown: readFileSync(path, "utf8") });
+  }
+  return appendInvestigationFindings(base, sections);
+}
+
 function upstreamBranch(world: World, job: Job): string | undefined {
   const upstreamId = job.dependsOn?.[0];
   if (!upstreamId) return undefined;
@@ -335,8 +410,9 @@ function launchJob(config: LoadedKilnConfig, world: World, job: Job, host: KilnH
   if (!repo) {
     throw new Error(`Repo ${job.repo} is not registered. Run kiln repo add ${job.repo} <path>.`);
   }
+  const sourceWorkflow = readFileSync(join(packageRoot(), "workflows", `${job.workflow}.yaml`), "utf8");
   const testCommand = repo.test;
-  if (!testCommand?.trim()) {
+  if (workflowNeedsTestCommand(sourceWorkflow) && !testCommand?.trim()) {
     throw new Error(
       `Repo ${job.repo} has no test command. Set repos.${job.repo}.test. The feature workflow refuses to run an empty KILN_TEST.`,
     );
@@ -348,8 +424,10 @@ function launchJob(config: LoadedKilnConfig, world: World, job: Job, host: KilnH
   ensureCheckoutExcludes(repo.path);
 
   let baseSha: string;
+  let specText: string;
   try {
     clearLaunchError(config.kilnDir, job.id);
+    assertStackTarget(world, job);
     baseSha = resolveLaunchBase({
       checkout: repo.path,
       deliver: repo.deliver,
@@ -358,6 +436,7 @@ function launchJob(config: LoadedKilnConfig, world: World, job: Job, host: KilnH
       ...(job.stack ? { upstreamBranch: upstreamBranch(world, job) } : {}),
       git: host.git,
     });
+    specText = specHandedToYak(config, world, job);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     writeLaunchError(config.kilnDir, job.id, message);
@@ -365,8 +444,6 @@ function launchJob(config: LoadedKilnConfig, world: World, job: Job, host: KilnH
     return { jobId: job.id, repo: job.repo, output: message };
   }
 
-  const specText = readJobSpec(config.kilnDir, job);
-  const sourceWorkflow = readFileSync(join(packageRoot(), "workflows", `${job.workflow}.yaml`), "utf8");
   const input = workflowInputs(sourceWorkflow, {
     title: job.title,
     specText,

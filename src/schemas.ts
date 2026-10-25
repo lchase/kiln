@@ -69,6 +69,8 @@ export const JobSchema = z.object({
    * When true, this job starts once its single upstream has landed, on that
    * upstream's branch. Omitted means after-merged: wait until every upstream
    * is `done`. More than one `dependsOn` with `stack` is rejected at add time.
+   * Stacking onto an investigation is rejected: that workflow does not land
+   * a branch.
    */
   stack: z.boolean().optional(),
   source: JobSourceSchema.optional(),
@@ -83,10 +85,12 @@ export type Job = z.infer<typeof JobSchema>;
  * For `deliver=local`, `done` is a run that finished ok with an approve
  * decision. For `deliver=pr`, `done` is that landed run whose pull request
  * has merged (`state` or `mergedAt`, so a squash merge counts). `in-review`
- * is the landed run while the pull request is still open. A reject, a
- * failure, a dead process, and an ok run with no readable approval do not
- * unblock an after-merged dependent. A stacked job unblocks when its one
- * upstream has landed, which includes `in-review`.
+ * is the landed run while the pull request is still open. An investigation
+ * is `done` when the gate says approve, including when the repo is
+ * `deliver=pr`. It does not enter `in-review`. A reject, a failure, a dead
+ * process, and an ok run with no readable approval do not unblock an
+ * after-merged dependent. A stacked job unblocks when its one upstream has
+ * landed, which includes `in-review`.
  */
 export const JOB_STATES = [
   "queued",

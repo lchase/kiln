@@ -68,7 +68,7 @@ npm run kiln -- repo list
 
 ## Add a job
 
-A job is one workflow run. The workflow name is a file `workflows/<name>.yaml`. `feature` is the factory loop. Bug, investigation, and security workflows are next. A later `pr-review` workflow is not in this repo yet.
+A job is one workflow run. The workflow name is a file `workflows/<name>.yaml`. `feature` is the factory loop. `investigation` answers a spike and stops for a person to approve the findings. Bug and security workflows are next. A later `pr-review` workflow is not in this repo yet.
 
 ```bash
 npm run kiln -- add feature --repo web --spec spec.md --title "Show a Sunday summary"
@@ -125,7 +125,7 @@ npm run kiln -- import ./tickets --repo web --workflow feature --context spec.md
 
 One file becomes one job. Blocked-by becomes `dependsOn` on the imported job ids. An unknown number is an error that names the ticket file, and no new job is written.
 
-`--workflow` defaults to `feature`. Kiln switches a ticket to `investigation` only when `workflows/investigation.yaml` exists and the ticket is a spike: front matter `type` is `spike`, `investigation`, or `research` (the word after a colon counts, as in `wayfinder:research`), the title contains spike or probe, or the text says "no product code". A body that only mentions an upstream spike stays on the requested workflow. `investigation` is not in this repo, so a spike ticket stays on the requested workflow and Kiln prints a warning.
+`--workflow` defaults to `feature`. Kiln switches a ticket to `investigation` when the ticket is a spike: front matter `type` is `spike`, `investigation`, or `research` (the word after a colon counts, as in `wayfinder:research`), the title contains spike or probe, or the text says "no product code". A body that only mentions an upstream spike stays on the requested workflow.
 
 `--context` defaults to `spec.md` in the parent of the ticket directory when that file is present. The text is appended to every job spec as a `## Background` section. A context file larger than 40KB is not copied in. The spec names its path instead.
 
@@ -152,7 +152,7 @@ Set `JIRA_BASE_URL` (for example `https://acme.atlassian.net`), `JIRA_EMAIL`, an
 
 Create a token at <https://id.atlassian.com/manage-profile/security/api-tokens>. Kiln sends it as Basic auth and does not write it into the job, the spec, or error text. A missing value is an error that names `JIRA_BASE_URL`, `JIRA_EMAIL`, or `JIRA_API_TOKEN`.
 
-A Blocks link where this issue is blocked by another key becomes `dependsOn` when a kiln job with `source` `jira` and that key already exists. Otherwise Kiln prints a warning naming the key and still creates the job. `--after` is merged with those ids. Issue type Spike or Research uses the same rule as a spike ticket: `investigation` when `workflows/investigation.yaml` exists, and a warning on the requested workflow when it does not. Running add again for the same key prints the existing job id and creates nothing. `--dry-run` prints the job and writes nothing.
+A Blocks link where this issue is blocked by another key becomes `dependsOn` when a kiln job with `source` `jira` and that key already exists. Otherwise Kiln prints a warning naming the key and still creates the job. `--after` is merged with those ids. Issue type Spike or Research uses the same rule as a spike ticket and is imported as `investigation`. Running add again for the same key prints the existing job id and creates nothing. `--dry-run` prints the job and writes nothing.
 
 `examples/spec.md` is a fictional spec you can copy.
 
@@ -166,7 +166,9 @@ kiln serve --no-tick
 
 `kiln serve` listens on `127.0.0.1` only (port 4100 unless `--port` is set). It reads the same derived state as `kiln status` and calls the same approve and reject functions. Nothing new is stored.
 
-`/` is the inbox: jobs in `needs-human`, with the gate prompt, the artifacts and review output yak wrote, links to the spec and the log, and Approve / Reject. `/board` groups every job by state, shows `dependsOn` (including blocked-by), the stacked flag, the pull request for `in-review` and `done`, and the failure or launch error for `failed`. Both pages refresh every 3 seconds.
+`/` is the inbox: jobs in `needs-human`, with the gate prompt, the artifacts and review output yak wrote, links to the spec and the log, and Approve / Reject. An investigation job also links to its findings. `/board` groups every job by state, shows `dependsOn` (including blocked-by), the stacked flag, the pull request for `in-review` and `done`, and the failure or launch error for `failed`. Both pages refresh every 3 seconds.
+
+`GET /jobs/<id>/findings` renders the approved findings markdown as text. HTML in that file is escaped. The page is read-only.
 
 `GET /api/jobs` and `GET /api/jobs/<id>` return that view as JSON. `POST /api/jobs/<id>/approve` and `POST /api/jobs/<id>/reject` answer the gate. A browser POST from another origin is rejected. The page and the stylesheet ship inside the package (`assets/serve.css`, read from the package root).
 
@@ -191,7 +193,7 @@ while true; do npm run kiln -- tick; sleep 30; done
 
 A job is ready when its dependencies are met and the number of jobs in flight is under `maxConcurrent`. The default is after merged: every job in `dependsOn` is `done`. `--stack` is met when that one upstream has landed. A rejected gate does not unblock the next job. An ok run with no readable approval does not either.
 
-`npm run kiln -- status` lists jobs across repos. When a job has `source`, status prints `source <kind> <ref>`. For `needs-human` it prints `approve: kiln approve <id>` and `reject: kiln reject <id>`. Run those as `npm run kiln -- approve <id>` and `npm run kiln -- reject <id>`. For `done` and `in-review` it prints `branch yak/<run-id>`. For `deliver=pr` it also prints the pull request url once one exists. For `blocked` on a dependency id that has no job file, it prints `blocked on missing job <id>`. While an upstream pull request is open, it prints `waiting for PR #N to merge`.
+`npm run kiln -- status` lists jobs across repos. When a job has `source`, status prints `source <kind> <ref>`. For `needs-human` it prints `approve: kiln approve <id>` and `reject: kiln reject <id>`. Run those as `npm run kiln -- approve <id>` and `npm run kiln -- reject <id>`. For `done` and `in-review` it prints `branch yak/<run-id>`. For `deliver=pr` it also prints the pull request url once one exists. For an investigation whose findings file exists, it prints `findings <path>`. That path is `findingsPath` on the same status view `kiln serve` renders, and the inbox and board link it. For `blocked` on a dependency id that has no job file, it prints `blocked on missing job <id>`. While an upstream pull request is open, it prints `waiting for PR #N to merge`.
 
 State is derived from the yak journal, the gate files, and (for `deliver=pr`) `gh pr view`:
 
@@ -206,7 +208,7 @@ State is derived from the yak journal, the gate files, and (for `deliver=pr`) `g
 | `failed` | The run failed, the launch died before a journal, the run finished ok with no readable approval, or a pull request could not be opened |
 | `dead` | The journal's process is gone. Status prints the cancel command |
 | `in-review` | `deliver=pr` and the run has landed. The pull request is open, or the next tick still has to open it |
-| `done` | `deliver=local`: the run finished ok and the gate says approve. `deliver=pr`: that pull request has merged |
+| `done` | `deliver=local`: the run finished ok and the gate says approve. `deliver=pr`: that pull request has merged. An investigation is `done` when the gate says approve, including when the repo is `deliver=pr`. It does not enter `in-review` |
 
 ## What a feature job runs
 
@@ -218,6 +220,18 @@ Verify runs the repo's `test` command with `failOn: never`. Stdout and stderr st
 
 The first launch adds `.runs/` and `.yak/` to that checkout's `.git/info/exclude`.
 
+## What an investigation job runs
+
+A spike, probe, or research ticket runs `workflows/investigation.yaml`. One agent explores the worktree. It may run commands and scripts. It must not change product code: the step has no Write or Edit tool, and the prompt forbids creating, editing, deleting, committing, and pushing. The agent returns a markdown document with four sections: Questions, Answers (each answer includes evidence: file paths and command output), Unconfirmed, and Implications for dependent tickets.
+
+The run then suspends on a human gate. There is no build, review, verify, or land step. `npm run kiln -- approve <job-id>` stores that markdown at `<kiln-dir>/findings/<job-id>.md` and the job is `done`. Writing the same text again does not change the file. `npm run kiln -- reject <job-id>` is `rejected` and writes no findings file. A rejected investigation does not unblock a dependent.
+
+`deliver=pr` does not change this. Kiln does not push the investigation branch and does not run `gh pr create`.
+
+A later job whose `dependsOn` includes that investigation receives the findings in the spec yak sees. Kiln appends a `## Findings from <title>` section for each investigation dependency. The copy under `<kiln-dir>/specs/` is left as it was. After merged still waits until the investigation is `done`. `--stack` onto an investigation is an error: there is no branch to target.
+
+`adapter: "mock"` reads `test/fixtures/kiln-investigation/explore.json` from the checkout. The prompt is `prompts/kiln/investigation.md`. The published package includes `prompts` and `workflows`.
+
 ## Delivery and dependencies
 
 `deliver` is set on the repo. The default is `local`: the job is `done` when the run lands on `yak/<run-id>`, and Kiln does not push. Existing repos and tests stay on that path.
@@ -228,7 +242,7 @@ npm run kiln -- repo add web /absolute/path/to/web --test "npm test" --deliver p
 
 `deliver` is `local` or `pr`. `base` is the pull request base branch. When `base` is omitted, Kiln uses origin's default branch, from `refs/remotes/origin/HEAD` after `git fetch`.
 
-With `deliver=pr`, the tick after an approved land pushes `yak/<run-id>` and runs `gh pr create --draft`. The title is the job title. The body is the spec's first paragraph, the line `Kiln job: <id>`, and the security, ux, ui, code, and approver verdicts. The branch, pull request number, and url are written to `~/.kiln/deliveries/<job-id>.json`, not the job file. A later tick looks up an existing pull request for that branch and does not push when origin already has the same commit. Kiln does not merge, and it does not push the base branch.
+With `deliver=pr`, the tick after an approved land pushes `yak/<run-id>` and runs `gh pr create --draft`. The title is the job title. The body is the spec's first paragraph, the line `Kiln job: <id>`, and the security, ux, ui, code, and approver verdicts. The branch, pull request number, and url are written to `~/.kiln/deliveries/<job-id>.json`, not the job file. A later tick looks up an existing pull request for that branch and does not push when origin already has the same commit. Kiln does not merge, and it does not push the base branch. An investigation is not delivered this way: approve stores findings and the job is `done`.
 
 If `gh` is missing or not authenticated, that job becomes `failed` and status prints what to run (`gh auth login`, then `kiln tick`). The rest of the tick still runs. The next tick tries again.
 
@@ -238,7 +252,7 @@ If `gh` is missing or not authenticated, that job becomes `failed` and status pr
 
 The default is after merged. A job stays `blocked` until every upstream is `done`. Status says `waiting for PR #N to merge` while an upstream pull request is open. A `deliver=pr` worktree is cut from `origin/<base>` after `git fetch`, not from checkout `HEAD`.
 
-`--stack` on `kiln add` or `kiln import` waits for one upstream to be approved and landed, then cuts the worktree from that upstream branch (`yak/<run-id>`). The pull request targets that branch. `stack` with any count other than one dependency is an error at add time, and the upstream job has to be in the same repo. Stacked work does not wait for the upstream pull request to merge.
+`--stack` on `kiln add` or `kiln import` waits for one upstream to be approved and landed, then cuts the worktree from that upstream branch (`yak/<run-id>`). The pull request targets that branch. `stack` with any count other than one dependency is an error at add time, and the upstream job has to be in the same repo. Stacking onto an investigation is an error, because that job does not land a branch. Stacked work does not wait for the upstream pull request to merge.
 
 ```bash
 npm run kiln -- add feature --repo web --spec spec.md --after <job-id> --stack
@@ -247,4 +261,4 @@ npm run kiln -- import ./tickets --repo web --stack
 
 ## Not included
 
-No requirement refinement. Bug, investigation, security, and pr-review workflows are not in this repo yet. Kiln does not merge pull requests and does not push the base branch.
+No requirement refinement. Bug, security, and pr-review workflows are not in this repo yet. Kiln does not merge pull requests and does not push the base branch.

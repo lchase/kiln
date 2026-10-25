@@ -2,6 +2,7 @@ import type { LoadedKilnConfig } from "../config.js";
 import { assertCanStack, listValidJobs, renderAddedJob, writeJob } from "../jobs.js";
 import type { Job } from "../schemas.js";
 import { assertWorkflowName } from "../workflow.js";
+import { INVESTIGATION_WORKFLOW } from "../findings.js";
 import { typeLooksLikeSpike, workflowForSpike } from "./tickets.js";
 
 /** Jira issue keys, stored and matched in uppercase (`PROJ-123`). */
@@ -86,7 +87,8 @@ export async function addFromJira(config: LoadedKilnConfig, input: AddJiraInput)
   }
   const issue = parseIssue(key, parseJson(issueResponse.body, key), acceptanceField);
   const warnings: string[] = [];
-  const workflow = workflowForSpike(key, typeLooksLikeSpike(issue.issueType), input.workflow, warnings);
+  const workflow = workflowForSpike(typeLooksLikeSpike(issue.issueType), input.workflow);
+  if (workflow === INVESTIGATION_WORKFLOW) assertWorkflowName(workflow);
   const dependsOn = mergeDepends(dependencyIds(config, issue.blockedBy, warnings), input.dependsOn);
   assertDependsExist(config, dependsOn);
   const specText = jiraIssueSpec({

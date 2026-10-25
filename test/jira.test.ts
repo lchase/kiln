@@ -605,7 +605,7 @@ describe("jira intake", () => {
     assert.equal(existsSync(join(config.kilnDir, "specs")), false);
   });
 
-  it("warns for Spike and Research issues when no investigation workflow exists", async () => {
+  it("routes Spike and Research issues to investigation", async () => {
     const { cwd, config } = tempKiln();
     for (const [key, issueType] of [
       ["PROJ-3", "Spike"],
@@ -624,13 +624,11 @@ describe("jira intake", () => {
       });
       const result = await addFromJira(config, addInput(key, stubFetch(routes(body)).fetch, envCreds()));
       assert.equal(result.created, true);
-      assert.equal(result.job?.workflow, "feature");
-      assert.equal(result.warnings.length, 1);
-      assert.match(result.warnings[0] ?? "", new RegExp(`^warning: ${key} looks like a spike or says no product code;`));
-      assert.match(result.warnings[0] ?? "", /investigation\.yaml is missing, using feature/);
+      assert.equal(result.job?.workflow, "investigation");
+      assert.deepEqual(result.warnings, []);
     }
     assert.equal(readJobs(config).length, 2);
-    for (const job of readJobs(config)) assert.equal(job.workflow, "feature");
+    for (const job of readJobs(config)) assert.equal(job.workflow, "investigation");
   });
 
   it("rejects a Jira key that is not KEY-123 before any request", async () => {

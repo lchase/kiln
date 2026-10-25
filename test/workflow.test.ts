@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { packageRoot } from "../src/paths.js";
 import { yakCliPath } from "../src/report.js";
-import { materializeWorkflow, workflowInputs } from "../src/workflow.js";
+import { materializeWorkflow, workflowInputs, workflowNeedsTestCommand } from "../src/workflow.js";
 
 const root = packageRoot();
 const keep: string[] = [];
@@ -161,5 +161,114 @@ describe("feature workflow", () => {
     assert.equal(input.baseRef, "0123456789abcdef0123456789abcdef01234567");
     assert.equal(input.runNonce, "nonce-1");
     assert.equal("spec" in input, false);
+  });
+});
+
+describe("investigation workflow", () => {
+  it("publishes the prompt, validates the rendered workflow, and suspends on the gate", () => {
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { files?: string[] };
+    assert.ok(pkg.files?.includes("prompts"));
+    assert.ok(pkg.files?.includes("workflows"));
+    const promptPath = join(root, "prompts", "kiln", "investigation.md");
+    const prompt = readFileSync(promptPath, "utf8");
+    assert.match(prompt, /## Questions/);
+    assert.match(prompt, /## Answers/);
+    assert.match(prompt, /## Unconfirmed/);
+    assert.match(prompt, /## Implications for dependent tickets/);
+    assert.match(prompt, /must not change product code/);
+    assert.doesNotMatch(prompt, /<!-- factory:/);
+    assert.equal(workflowNeedsTestCommand(readFileSync(join(root, "workflows", "investigation.yaml"), "utf8")), false);
+    assert.equal(workflowNeedsTestCommand(readFileSync(join(root, "workflows", "feature.yaml"), "utf8")), true);
+
+    const source = yak(["run", "workflows/investigation.yaml", "--adapter", "mock", "--isolation", "none"], root);
+    assert.equal(source.status, 1, source.stderr);
+    assert.match(source.stderr, /--input does not satisfy the workflow's inputSchema/);
+    assert.doesNotMatch(source.stderr, /prompt references/);
+
+    const foreign = mkdtempSync(join(tmpdir(), "kiln-investigation-"));
+    keep.push(foreign);
+    const kilnDir = join(foreign, "kiln");
+    const rendered = materializeWorkflow(kilnDir, "jinvestigate", "investigation");
+    const renderedText = readFileSync(rendered, "utf8");
+    assert.doesNotMatch(renderedText, /file: prompts\//);
+    assert.match(renderedText, /tools: \[Read, Grep, Glob, Bash\]/);
+    assert.doesNotMatch(renderedText, /\b(Write|Edit)\b/);
+    assert.doesNotMatch(renderedText, /\n\s*- id: land\b/);
+    assert.doesNotMatch(renderedText, /\bloop:/);
+    const promptFile = renderedText.match(/file: "([^"]*investigation-[0-9a-f]+\.md)"/)?.[1];
+    assert.ok(promptFile);
+    const combined = readFileSync(promptFile, "utf8");
+    assert.equal(combined.trimEnd(), prompt.trimEnd());
+    assert.doesNotMatch(combined, /name: spec-writer/);
+
+    const input = workflowInputs(readFileSync(join(root, "workflows", "investigation.yaml"), "utf8"), {
+      title: "Probe the unconfirmed platform facts",
+      specText: "# Probe\n\nWhich test runner is this?\n",
+      baseRef: "0123456789abcdef0123456789abcdef01234567",
+      runNonce: "nonce-1",
+    });
+    assert.equal(input.title, "Probe the unconfirmed platform facts");
+    assert.equal(input.spec, "# Probe\n\nWhich test runner is this?\n");
+    assert.equal(input.baseRef, "0123456789abcdef0123456789abcdef01234567");
+    assert.equal("description" in input, false);
+
+    const fixtures = join(foreign, "test", "fixtures", "kiln-investigation");
+    mkdirSync(fixtures, { recursive: true });
+    writeFileSync(
+      join(fixtures, "explore.json"),
+      `${JSON.stringify([
+        {
+          output: {
+            markdown: [
+              "# Findings: Probe the unconfirmed platform facts",
+              "",
+              "## Questions",
+              "",
+              "- Which test runner is this?",
+              "",
+              "## Answers",
+              "",
+              "node:test.",
+              "",
+              "Evidence:",
+              "",
+              "File: test.mjs",
+              "",
+              "## Unconfirmed",
+              "",
+              "None.",
+              "",
+              "## Implications for dependent tickets",
+              "",
+              "Keep node:test.",
+              "",
+            ].join("\n"),
+          },
+        },
+      ])}\n`,
+    );
+    const run = yak(
+      [
+        "run",
+        rendered,
+        "--adapter",
+        "mock",
+        "--isolation",
+        "none",
+        "--input",
+        "title=Probe the unconfirmed platform facts",
+        "--input",
+        "spec=Which test runner is this?",
+        "--input",
+        "runNonce=nonce-1",
+        "--input",
+        "baseRef=0123456789abcdef0123456789abcdef01234567",
+      ],
+      foreign,
+    );
+    assert.equal(run.status, 78, `${run.stdout}\n${run.stderr}`);
+    assert.match(run.stdout, /suspended/);
+    assert.match(run.stderr, /run \S+ started/);
+    assert.doesNotMatch(`${run.stdout}\n${run.stderr}`, /prompt references/);
   });
 });

@@ -1,3 +1,4 @@
+import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import type { JobSource, JobState } from "./schemas.js";
 
 /**
@@ -12,8 +13,10 @@ import type { JobSource, JobState } from "./schemas.js";
  * and a launch that exited before writing a journal are terminal and do not
  * take a slot. `deliver=local` unblocks after-merged dependents on `done`
  * (run finished ok, gate decision approve). `deliver=pr` unblocks them when
- * that landed run's pull request has merged. A stacked job unblocks when its
- * one upstream has landed, including while that pull request is `in-review`.
+ * that landed run's pull request has merged. An investigation unblocks them
+ * when its gate says approve: that job is `done` and is not delivered.
+ * A stacked job unblocks when its one upstream has landed, including while
+ * that pull request is `in-review`.
  */
 
 export type RunStatus = "alive" | "suspended" | "ok" | "failed" | "dead";
@@ -84,6 +87,12 @@ export interface ObservedJob {
     /** `gh pr view` failed. The job stays `in-review` when a number is known. */
     viewError?: string;
   };
+  /**
+   * Absolute path of `<kilnDir>/findings/<jobId>.md` once that file exists.
+   * Set for an investigation so a status UI can link the approved findings.
+   * Omitted until the file has been written.
+   */
+  findingsPath?: string;
   /** A launching breadcrumb exists, its child pid is alive, and no journal is visible yet. */
   launching: boolean;
   /** The child pid is dead and no journal was written. Terminal: do not relaunch. */
@@ -107,7 +116,8 @@ export interface Observation {
 export type Action =
   | { type: "clear-breadcrumb"; path: string }
   | { type: "launch"; jobId: string; repo: string }
-  | { type: "deliver"; jobId: string; repo: string };
+  | { type: "deliver"; jobId: string; repo: string }
+  | { type: "record-findings"; jobId: string };
 
 export function inFlightCount(observation: Observation): number {
   return observation.jobs.filter((job) => inFlight(job, observation)).length;
@@ -126,6 +136,7 @@ function inFlight(job: ObservedJob, observation: Observation): boolean {
  * `approved` is the approve decision while the run is still alive. It holds
  * a slot and does not unblock dependents. An ok run with no readable
  * decision is `failed`, so a missing artifact cannot unblock the next job.
+ * An investigation is `done` on approve and never `in-review`.
  */
 export function jobState(job: ObservedJob, observation: Observation): JobState {
   if (job.launchFailed && !job.run) return "failed";
@@ -163,14 +174,19 @@ export function isLanded(job: ObservedJob): boolean {
   return job.run?.status === "ok" && job.run.gateDecision === "approve";
 }
 
-/** `deliver=local`: landed. `deliver=pr`: landed and the pull request has merged. */
+/**
+ * `deliver=local`: landed. `deliver=pr`: landed and the pull request has merged.
+ * An investigation is done once the gate says approve. There is no pull request.
+ */
 export function isDone(job: ObservedJob): boolean {
   if (!isLanded(job)) return false;
+  if (job.workflow === INVESTIGATION_WORKFLOW) return true;
   if ((job.deliver ?? "local") !== "pr") return true;
   return job.delivery?.merged === true || job.delivery?.prState === "MERGED";
 }
 
 function landedState(job: ObservedJob): JobState {
+  if (job.workflow === INVESTIGATION_WORKFLOW) return "done";
   if ((job.deliver ?? "local") !== "pr") return "done";
   const delivery = job.delivery;
   if (delivery?.merged || delivery?.prState === "MERGED") return "done";
@@ -182,6 +198,7 @@ function landedState(job: ObservedJob): JobState {
 
 function needsDelivery(job: ObservedJob): boolean {
   if (job.error) return false;
+  if (job.workflow === INVESTIGATION_WORKFLOW) return false;
   if ((job.deliver ?? "local") !== "pr") return false;
   if (!isLanded(job)) return false;
   if (job.delivery?.merged || job.delivery?.prState === "MERGED") return false;
@@ -200,6 +217,12 @@ export function decide(observation: Observation): Action[] {
     type: "clear-breadcrumb",
     path: crumb.path,
   }));
+
+  for (const job of observation.jobs) {
+    if (job.error || job.workflow !== INVESTIGATION_WORKFLOW) continue;
+    if (!isLanded(job) || job.findingsPath) continue;
+    actions.push({ type: "record-findings", jobId: job.jobId });
+  }
 
   for (const job of observation.jobs) {
     if (!needsDelivery(job)) continue;

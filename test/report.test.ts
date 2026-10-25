@@ -162,3 +162,39 @@ describe("gateAnswerCommand", () => {
     assert.doesNotMatch(command, /node_modules\/\.bin/);
   });
 });
+
+describe("renderStatus", () => {
+  it("prints findingsPath for an approved investigation and not an in-review line", () => {
+    const job: ObservedJob = {
+      jobId: "j1",
+      repo: "web",
+      workflow: "investigation",
+      title: "Probe the unconfirmed platform facts",
+      dependsOn: [],
+      deliver: "pr",
+      launching: false,
+      launchFailed: false,
+      findingsPath: "/tmp/kiln/findings/j1.md",
+      run: {
+        runId: "run1",
+        checkout: "/tmp/web",
+        status: "ok",
+        gates: [],
+        gateDecision: "approve",
+      },
+    };
+    const observation: Observation = { maxConcurrent: 2, jobs: [job], breadcrumbsToClear: [] };
+    const view = statusView(observation);
+    assert.equal(view.jobs[0]?.findingsPath, "/tmp/kiln/findings/j1.md");
+    const text = renderStatus(view);
+    assert.match(text, /j1\s+web\s+investigation\s+done/);
+    assert.match(text, /findings \/tmp\/kiln\/findings\/j1\.md/);
+    assert.doesNotMatch(text, /in-review/);
+    assert.doesNotMatch(text, /pr https:/);
+
+    const missing: ObservedJob = { ...job, findingsPath: undefined };
+    const open = statusView({ maxConcurrent: 2, jobs: [missing], breadcrumbsToClear: [] });
+    assert.equal(open.jobs[0]?.findingsPath, undefined);
+    assert.match(renderStatus(open), /findings missing/);
+  });
+});
