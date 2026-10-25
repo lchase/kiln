@@ -21,4 +21,6 @@ stderr: {{verify.stderr}}
 
 Verify stdout and stderr may be truncated to the last 200 lines or 20480 bytes. A leading `[truncated:` line means the head was cut.
 
-The factory agent instructions follow. Their frontmatter is the original definition; follow the prose, and return the JSON above instead of writing the file they name.
+Use the verify output provided; do not re-run tests, builds, or anything that writes to the working tree. Read-only git and file inspection only.
+
+The factory agent instructions follow. Their frontmatter is the original definition. Follow that prose except where it says to re-run tests or builds, or to write a file. Return the JSON above instead of writing the file they name.

@@ -15,7 +15,4 @@ Task title: {{input.title}}
 Acceptance:
 {{input.acceptance}}
 
-Contracts this task publishes or depends on:
-{{input.contracts}}
-
 The factory agent instructions follow. Their frontmatter is the original definition; follow the prose, and return the JSON above instead of writing the file they name.

@@ -115,6 +115,42 @@ describe("kiln cli", () => {
     assert.equal(missingAfter.status, 1);
     assert.match(missingAfter.stderr, /missing-job/);
   });
+
+  it("names a missing dependency when a job is blocked on it", () => {
+    const { cwd, home } = tempWork();
+    const web = join(cwd, "web");
+    const api = join(cwd, "api");
+    mkdirSync(web);
+    mkdirSync(api);
+    const spec = join(cwd, "sunday.md");
+    writeFileSync(spec, "# Show the summary\n\nA person can read it.\n");
+    assert.equal(runCli(["repo", "add", "web", web, "--test", "npm test"], { cwd, home }).status, 0);
+    assert.equal(runCli(["repo", "add", "api", api, "--test", "npm test"], { cwd, home }).status, 0);
+
+    const upstream = runCli(["add", "feature", "--repo", "web", "--spec", spec, "--title", "Sunday summary"], {
+      cwd,
+      home,
+    });
+    const upstreamId = upstream.stdout.match(/^added (\S+)/m)?.[1];
+    assert.ok(upstreamId, upstream.stdout);
+    const downstream = runCli(
+      ["add", "feature", "--repo", "api", "--spec", spec, "--title", "API summary", "--after", upstreamId],
+      { cwd, home },
+    );
+    const downstreamId = downstream.stdout.match(/^added (\S+)/m)?.[1];
+    assert.ok(downstreamId, downstream.stderr);
+
+    const waiting = runCli(["status", downstreamId], { cwd, home });
+    assert.equal(waiting.status, 0, waiting.stderr);
+    assert.match(waiting.stdout, new RegExp(`${downstreamId}\\s+api\\s+feature\\s+blocked`));
+    assert.doesNotMatch(waiting.stdout, /missing job/);
+
+    rmSync(join(cwd, ".kiln", "jobs", `${upstreamId}.json`));
+    const missing = runCli(["status", downstreamId], { cwd, home });
+    assert.equal(missing.status, 0, missing.stderr);
+    assert.match(missing.stdout, new RegExp(`${downstreamId}\\s+api\\s+feature\\s+blocked`));
+    assert.match(missing.stdout, new RegExp(`blocked on missing job ${upstreamId}`));
+  });
 });
 
 function existsJobs(cwd: string): boolean {

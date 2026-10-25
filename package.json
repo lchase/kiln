@@ -17,7 +17,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@lchase/yak": "0.6.0",
+    "@lchase/yak": "0.6.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {

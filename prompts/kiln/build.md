@@ -31,7 +31,7 @@ Previous-round UI findings:
 Previous-round code findings:
 {{ code.findings || "(round 1: no prior review)" }}
 
-Previous verify exit code: {{ (verify.exitCode == 0 || verify.exitCode > 0) ? verify.exitCode : "(round 1: no prior verify)" }}
+Previous verify exit code: {{ verify == undefined ? "(round 1: no prior verify)" : (verify.exitCode == null ? "(signal, no exit code)" : verify.exitCode) }}
 Previous verify stdout: {{ verify.stdout || "(none)" }}
 Previous verify stderr: {{ verify.stderr || "(none)" }}
 

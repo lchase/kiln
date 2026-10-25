@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -17,6 +17,30 @@ import { packageRoot } from "../src/paths.js";
 const root = packageRoot();
 const keep: string[] = [];
 const testCommand = "node --test test.mjs && printf '%s\\n' landed > kiln-landed.txt";
+
+function runCliAsync(
+  args: string[],
+  options: { cwd: string; home: string },
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [join(root, "dist", "cli.js"), ...args], {
+      cwd: options.cwd,
+      env: { ...process.env, HOME: options.home },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr?.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
 
 function runCli(
   args: string[],
@@ -443,6 +467,67 @@ describe("kiln tick", { concurrency: 1 }, () => {
     assertBranchPreamble(build2.prompt, base);
   });
 
+  it("stops after two rounds when CHANGES are still open", () => {
+    const { cwd, home, web } = checkoutPair();
+    const promptLog = join(cwd, "prompt-log");
+    mkdirSync(promptLog);
+    const findings = "MUSTFIX week-id: the Sunday heading drops the week id";
+    commitFeatureFixtures(web, {
+      spec: [{ output: { goal: "Show the weekly summary.", design: "Touch the named module.", acceptance: "The job's checks pass." } }],
+      build: [{ output: { summary: "Mock build.", status: "READY" } }],
+      security: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
+      ux: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
+      ui: [{ output: { verdict: "PASS", findings: "Checked: no UI changes." } }],
+      code: [{ output: { verdict: "CHANGES", findings } }],
+      approver: [{ output: { decision: "ESCALATE", reason: "Code review still wants changes." } }],
+    });
+    const id = addJob(cwd, home, "feature", "web", "Sunday heading");
+    const launched = runCli(["tick"], { cwd, home, env: promptEnv(promptLog) });
+    assert.equal(launched.status, 0, launched.stderr);
+    const suspended = waitForStatus(cwd, home, id, /needs-human/, 60000);
+    const runId = runIdOf(suspended, id);
+    assert.deepEqual(stepIterations(web, runId, "build"), [1, 2]);
+    assert.deepEqual(stepIterations(web, runId, "code"), [1, 2]);
+    assert.equal(readArtifact(web, runId, "code.1.json").verdict, "CHANGES");
+    assert.equal(readArtifact(web, runId, "code.2.json").verdict, "CHANGES");
+    assert.equal(readArtifact(web, runId, "decision.json").decision, "ESCALATE");
+    assert.match(suspended, /Agent decision: ESCALATE/);
+    assert.deepEqual(
+      journalEvents(web, runId).filter((event) => event.stepId === "land"),
+      [],
+    );
+    const approverPrompt = readPrompts(promptLog).find((entry) => entry.stepId === "approver");
+    assert.ok(approverPrompt);
+    assert.match(approverPrompt.prompt, new RegExp(findings.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(approverPrompt.prompt, /Only the final round is provided/);
+  });
+
+  it("launches a job once when two ticks run together", async () => {
+    const { cwd, home, web } = checkoutPair();
+    addJob(cwd, home, "feature", "web", "Sunday heading");
+    const [first, second] = await Promise.all([
+      runCliAsync(["tick"], { cwd, home }),
+      runCliAsync(["tick"], { cwd, home }),
+    ]);
+    const results = [first, second];
+    const launched = results.filter((result) => result.status === 0 && /^launch \S+/m.test(result.stdout));
+    assert.equal(
+      launched.length,
+      1,
+      results.map((result) => `${result.status}\n${result.stdout}\n${result.stderr}`).join("\n---\n"),
+    );
+    const other = results.find((result) => result !== launched[0]);
+    assert.ok(other);
+    const tolerated =
+      (other.status === 0 && /nothing to launch/.test(other.stdout)) ||
+      (other.status === 1 && /Another kiln tick is running/.test(other.stderr));
+    assert.equal(tolerated, true, `${other.status}\n${other.stdout}\n${other.stderr}`);
+    const ids = waitForRunCount(web, 1, 30000);
+    assert.deepEqual(ids, runIds(web));
+    assert.equal(ids.length, 1, ids.join("\n"));
+    assert.equal(worktrees(web).length, 1);
+  });
+
   it("loops a red verify back to the builder instead of failing the run", () => {
     const { cwd, home, web } = checkoutPair();
     const promptLog = join(cwd, "prompt-log");
@@ -562,6 +647,35 @@ function commitFeatureFixtures(checkout: string, fixtures: Record<string, unknow
   }
   git(checkout, ["add", "test/fixtures"]);
   git(checkout, ["commit", "-q", "-m", "fixtures"]);
+}
+
+function waitForRunCount(checkout: string, count: number, timeoutMs: number): string[] {
+  const start = Date.now();
+  let ids = runIds(checkout);
+  while (Date.now() - start < timeoutMs) {
+    ids = runIds(checkout);
+    if (ids.length > count) return ids;
+    if (ids.length === count) {
+      sleep(1);
+      return runIds(checkout);
+    }
+    sleep(0.1);
+  }
+  return ids;
+}
+
+function journalEvents(checkout: string, runId: string): { t?: string; stepId?: string }[] {
+  const lines = readFileSync(join(checkout, ".runs", runId, "journal.jsonl"), "utf8").split("\n");
+  const events: { t?: string; stepId?: string }[] = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      events.push(JSON.parse(line) as { t?: string; stepId?: string });
+    } catch {
+      // A torn last line is ignored, same as the driver.
+    }
+  }
+  return events;
 }
 
 function stepIterations(checkout: string, runId: string, stepId: string): number[] {

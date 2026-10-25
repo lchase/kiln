@@ -16,9 +16,8 @@ export interface LaunchInput {
 
 /**
  * Values Kiln can pass into a workflow. A workflow's inputSchema lists the
- * ones it uses. `description`, `acceptance`, and `contracts` stay so
- * `workflows/feature.yaml` can keep its current schema: the spec text fills
- * the first two, and contracts is `none`.
+ * ones it uses. `description` and `acceptance` stay so
+ * `workflows/feature.yaml` can keep its schema: both are the spec text.
  */
 const INPUT_VALUES: Record<string, (input: LaunchInput) => string> = {
   title: (input) => input.title,
@@ -27,7 +26,6 @@ const INPUT_VALUES: Record<string, (input: LaunchInput) => string> = {
   runNonce: (input) => input.runNonce,
   description: (input) => input.specText,
   acceptance: (input) => input.specText,
-  contracts: () => "none",
 };
 
 export function assertWorkflowName(name: string): string {
