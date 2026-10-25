@@ -11,21 +11,34 @@ export const RepoEntrySchema = z.object({
 });
 export type RepoEntry = z.infer<typeof RepoEntrySchema>;
 
+/**
+ * Optional Jira Cloud credentials in the gitignored kiln config.
+ * `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN` override these.
+ * Empty strings are treated as unset. The token is never copied into a job.
+ */
+export const JiraConfigSchema = z.object({
+  baseUrl: z.string().optional(),
+  email: z.string().optional(),
+  apiToken: z.string().optional(),
+});
+export type JiraConfig = z.infer<typeof JiraConfigSchema>;
+
 export const KilnConfigFileSchema = z.object({
   note: z.string().min(1).optional(),
   maxConcurrent: z.number().int().min(1).optional(),
   adapter: z.enum(["mock", "claude-code"]).optional(),
   repos: z.record(z.string(), RepoEntrySchema),
+  jira: JiraConfigSchema.optional(),
 });
 export type KilnConfigFile = z.infer<typeof KilnConfigFileSchema>;
 
 /**
  * Where a job came from. Adapters set this; tick and reconcile do not branch on it.
- * `ref` is an absolute spec path (`file`), `inline` or `stdin` (`prompt`), or the
- * absolute ticket path (`tickets`).
+ * `ref` is an absolute spec path (`file`), `inline` or `stdin` (`prompt`), the
+ * absolute ticket path (`tickets`), or the issue key (`jira`, such as `PROJ-123`).
  */
 export const JobSourceSchema = z.object({
-  kind: z.enum(["file", "prompt", "tickets"]),
+  kind: z.enum(["file", "prompt", "tickets", "jira"]),
   ref: z.string().min(1),
 });
 export type JobSource = z.infer<typeof JobSourceSchema>;

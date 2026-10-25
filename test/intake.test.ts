@@ -541,7 +541,7 @@ describe("intake", () => {
     for (const name of ["driver.ts", "reconcile.ts", "report.ts"]) {
       const text = readFileSync(join(root, "src", name), "utf8");
       assert.doesNotMatch(text, /from ["'][^"']*intake\//);
-      assert.doesNotMatch(text, /kind === ["'](?:file|prompt|tickets)["']/);
+      assert.doesNotMatch(text, /kind === ["'](?:file|prompt|tickets|jira)["']/);
     }
   });
 });

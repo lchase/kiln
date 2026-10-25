@@ -44,12 +44,14 @@ describe("truncate verify output", () => {
     const dir = mkdtempSync(join(tmpdir(), "kiln-truncate-"));
     keep.push(dir);
     const script = join(dir, "run.mjs");
+    // process.exit drops stderr that has not reached the pipe. Under a parallel
+    // suite the wrapper then sees fewer than 200 lines and does not truncate.
     writeFileSync(
       script,
       [
         "for (let i = 0; i < 250; i += 1) console.error('err-' + i);",
         "console.log('hello-out');",
-        "process.exit(4);",
+        "process.exitCode = 4;",
         "",
       ].join("\n"),
     );

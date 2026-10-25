@@ -1,6 +1,6 @@
 # Kiln
 
-Kiln runs a workflow against a git checkout. Register any repo, add a job from a markdown spec, a prompt, or a directory of tickets, and tick. Tick launches ready jobs in yak worktrees. Status shows each job. Approve or reject answers a human gate.
+Kiln runs a workflow against a git checkout. Register any repo, add a job from a markdown spec, a prompt, a directory of tickets, or a Jira Cloud issue, and tick. Tick launches ready jobs in yak worktrees. Status shows each job. Approve or reject answers a human gate.
 
 A ready spec is the input. Kiln does not build or iterate requirements.
 
@@ -45,6 +45,7 @@ A job is one workflow run. The workflow name is a file `workflows/<name>.yaml`. 
 ```bash
 npm run kiln -- add feature --repo web --spec spec.md --title "Show a Sunday summary"
 npm run kiln -- add feature --repo api --spec api-spec.md --after <job-id>
+npm run kiln -- add feature --repo web --jira PROJ-123
 ```
 
 `--title` defaults to the first `#` heading in the spec, then the file name. `--after` may be repeated. Those jobs must already exist. Kiln copies the spec to `.kiln/specs/<id>.md` and writes `.kiln/jobs/<id>.json`:
@@ -66,9 +67,7 @@ npm run kiln -- add feature --repo api --spec api-spec.md --after <job-id>
 
 ## Intake
 
-Every intake writes the same job: `id`, `repo`, `workflow`, `spec`, `title`, optional `dependsOn`, and `source`. `source` is `{ "kind": "file" | "prompt" | "tickets", "ref": "..." }`. Status prints `source <kind> <ref>` when the job has one. Tick, reconcile, and status do not special-case an intake. The adapters are `src/intake/file.ts`, `src/intake/prompt.ts`, and `src/intake/tickets.ts`.
-
-Jira is the next adapter. It is not implemented here.
+Every intake writes the same job: `id`, `repo`, `workflow`, `spec`, `title`, optional `dependsOn`, and `source`. `source` is `{ "kind": "file" | "prompt" | "tickets" | "jira", "ref": "..." }`. Status prints `source <kind> <ref>` when the job has one. Tick, reconcile, and status do not special-case an intake. The adapters are `src/intake/file.ts`, `src/intake/prompt.ts`, `src/intake/tickets.ts`, and `src/intake/jira.ts`.
 
 ### File
 
@@ -85,7 +84,7 @@ npm run kiln -- add feature --repo web --prompt "Show a quiet empty state"
 npm run kiln -- add feature --repo api --prompt - < notes.md
 ```
 
-`--prompt -` reads stdin. The text is stored as that job's spec. The title defaults to the first non-empty line, truncated to 80 characters. `source.kind` is `prompt`. `source.ref` is `inline` for an argument and `stdin` when the prompt is read from stdin. `--title` and `--after` work the same way as file intake. Pass either `--spec` or `--prompt`, not both.
+`--prompt -` reads stdin. The text is stored as that job's spec. The title defaults to the first non-empty line, truncated to 80 characters. `source.kind` is `prompt`. `source.ref` is `inline` for an argument and `stdin` when the prompt is read from stdin. `--title` and `--after` work the same way as file intake. Pass one of `--spec`, `--prompt`, or `--jira`.
 
 ### Tickets
 
@@ -103,6 +102,29 @@ One file becomes one job. Blocked-by becomes `dependsOn` on the imported job ids
 `--context` defaults to `spec.md` in the parent of the ticket directory when that file is present. The text is appended to every job spec as a `## Background` section. A context file larger than 40KB is not copied in. The spec names its path instead.
 
 Import is idempotent. The key is the ticket directory plus the filename, stored as `source.ref` (an absolute path) with `source.kind` `tickets`. Running import again on the same directory does not create a second job for a file already imported. The report says how many jobs are new and how many are unchanged. `--dry-run` prints each ticket, its workflow, and its dependencies, and writes nothing.
+
+### Jira
+
+```bash
+npm run kiln -- add feature --repo web --jira PROJ-123
+npm run kiln -- add feature --repo web --jira PROJ-123 --after <job-id> --dry-run
+```
+
+`--jira` reads one Jira Cloud issue over REST API v3 and writes the same job as the other intakes. `source.kind` is `jira`. `source.ref` is the issue key (`PROJ-123`). The title is `PROJ-123: <summary>`. The spec is that heading, a `Source:` line with the issue's browse URL, then the description converted from Atlassian document format to markdown.
+
+Set `JIRA_BASE_URL` (for example `https://acme.atlassian.net`), `JIRA_EMAIL`, and `JIRA_API_TOKEN`. Each value falls back to the optional `jira` block in the gitignored kiln config (`./.kiln/kiln.config.json`, or `~/.kiln/kiln.config.json` when the working directory has no config):
+
+```json
+"jira": {
+  "baseUrl": "https://acme.atlassian.net",
+  "email": "dev@example.com",
+  "apiToken": "<token>"
+}
+```
+
+Create a token at <https://id.atlassian.com/manage-profile/security/api-tokens>. Kiln sends it as Basic auth and does not write it into the job, the spec, or error text. A missing value is an error that names `JIRA_BASE_URL`, `JIRA_EMAIL`, or `JIRA_API_TOKEN`.
+
+A Blocks link where this issue is blocked by another key becomes `dependsOn` when a kiln job with `source` `jira` and that key already exists. Otherwise Kiln prints a warning naming the key and still creates the job. `--after` is merged with those ids. Issue type Spike or Research uses the same rule as a spike ticket: `investigation` when `workflows/investigation.yaml` exists, and a warning on the requested workflow when it does not. Running add again for the same key prints the existing job id and creates nothing. `--dry-run` prints the job and writes nothing.
 
 `examples/spec.md` is a fictional spec you can copy.
 
@@ -151,4 +173,4 @@ The first launch adds `.runs/` and `.yak/` to that checkout's `.git/info/exclude
 
 ## Not included
 
-No requirement refinement. Jira is the next intake adapter and is not implemented. Bug, investigation, security, and pr-review workflows are not in this repo yet. Kiln does not push. Dependency blocking is unchanged: a job stays blocked until every id in `dependsOn` is `done`.
+No requirement refinement. Bug, investigation, security, and pr-review workflows are not in this repo yet. Kiln does not push. Dependency blocking is unchanged: a job stays blocked until every id in `dependsOn` is `done`.

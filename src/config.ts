@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { KilnConfigError } from "./errors.js";
-import { KilnConfigFileSchema, type RepoEntry } from "./schemas.js";
+import { KilnConfigFileSchema, type JiraConfig, type RepoEntry } from "./schemas.js";
 
 export interface LoadedKilnConfig {
   configPath: string;
@@ -21,6 +21,11 @@ export interface LoadedKilnConfig {
   maxConcurrent: number;
   /** Passed to `yak run --adapter`. Default `claude-code`. */
   adapter: "mock" | "claude-code";
+  /**
+   * Jira Cloud credentials from the config file, with empty strings removed.
+   * Environment variables override these at intake time. Absent when unset.
+   */
+  jira?: JiraConfig;
 }
 
 export interface LoadKilnConfigOptions {
@@ -68,6 +73,7 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
   }
 
   const kilnDir = basename(configDir) === ".kiln" ? configDir : join(cwd, ".kiln");
+  const jira = jiraFromFile(parsed.data.jira);
   return {
     configPath: resolvedPath,
     configDir,
@@ -77,6 +83,7 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
     jobsDir: join(kilnDir, "jobs"),
     maxConcurrent: parsed.data.maxConcurrent ?? 2,
     adapter: parsed.data.adapter ?? "claude-code",
+    ...(jira ? { jira } : {}),
   };
 }
 
@@ -221,6 +228,19 @@ function pathToStore(userPath: string, configDir: string, cwd: string, home: str
   const absolute = resolve(cwd, userPath);
   const stored = relative(configDir, absolute);
   return stored === "" ? "." : stored;
+}
+
+function jiraFromFile(jira: JiraConfig | undefined): JiraConfig | undefined {
+  if (!jira) return undefined;
+  const baseUrl = jira.baseUrl?.trim();
+  const email = jira.email?.trim();
+  const apiToken = jira.apiToken?.trim();
+  if (!baseUrl && !email && !apiToken) return undefined;
+  return {
+    ...(baseUrl ? { baseUrl } : {}),
+    ...(email ? { email } : {}),
+    ...(apiToken ? { apiToken } : {}),
+  };
 }
 
 function expandHome(value: string, home: string): string {
