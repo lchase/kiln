@@ -11,8 +11,9 @@ This repository is public. Checkout paths and jobs stay in gitignored `.kiln/` o
 - Node.js >= 22 (the `engines` field in `package.json`)
 - git
 - Claude Code, installed and logged in, for a real run. `adapter: "mock"` does not call a model.
+- `gh`, installed and logged in, only when a repo uses `deliver: "pr"`.
 
-Each checkout is a git repo with a commit at `HEAD`. `tick` adds a worktree from that commit. Uncommitted files in the checkout are left as they are. The job edits the worktree, on branch `yak/<run-id>`. Kiln does not push.
+Each checkout is a git repo with a commit at `HEAD`. `tick` adds a worktree and leaves uncommitted files in the checkout as they are. The job edits the worktree, on branch `yak/<run-id>`. With the default `deliver: "local"`, Kiln does not push. `deliver: "pr"` pushes that branch and opens a draft pull request. See [Delivery and dependencies](#delivery-and-dependencies).
 
 ## Register repos
 
@@ -63,7 +64,7 @@ npm run kiln -- add feature --repo web --jira PROJ-123
 }
 ```
 
-`dependsOn` is omitted when the job has no `--after`. `source` records which intake created the job. Jobs written before intake omit `source` and still run. State is not stored.
+`dependsOn` is omitted when the job has no `--after`. `stack: true` is set by `--stack` and is omitted otherwise. `source` records which intake created the job. Jobs written before intake omit `source` and still run. State is not stored. The pull request url is not stored on the job; Kiln writes it under `.kiln/deliveries/`.
 
 ## Intake
 
@@ -143,27 +144,28 @@ npm run kiln -- reject <job-id>
 while true; do npm run kiln -- tick; sleep 30; done
 ```
 
-A job is ready when every job in `dependsOn` is `done` and the number of jobs in flight is under `maxConcurrent`. A rejected gate does not unblock the next job. An ok run with no readable approval does not either.
+A job is ready when its dependencies are met and the number of jobs in flight is under `maxConcurrent`. The default is after merged: every job in `dependsOn` is `done`. `--stack` is met when that one upstream has landed. A rejected gate does not unblock the next job. An ok run with no readable approval does not either.
 
-`npm run kiln -- status` lists jobs across repos. When a job has `source`, status prints `source <kind> <ref>`. For `needs-human` it prints `approve: kiln approve <id>` and `reject: kiln reject <id>`. Run those as `npm run kiln -- approve <id>` and `npm run kiln -- reject <id>`. For `done` it prints `branch yak/<run-id>` in that repo's checkout. For `blocked` on a dependency id that has no job file, it prints `blocked on missing job <id>`.
+`npm run kiln -- status` lists jobs across repos. When a job has `source`, status prints `source <kind> <ref>`. For `needs-human` it prints `approve: kiln approve <id>` and `reject: kiln reject <id>`. Run those as `npm run kiln -- approve <id>` and `npm run kiln -- reject <id>`. For `done` and `in-review` it prints `branch yak/<run-id>`. For `deliver=pr` it also prints the pull request url once one exists. For `blocked` on a dependency id that has no job file, it prints `blocked on missing job <id>`. While an upstream pull request is open, it prints `waiting for PR #N to merge`.
 
-State is derived from the yak journal and gate files:
+State is derived from the yak journal, the gate files, and (for `deliver=pr`) `gh pr view`:
 
 | State | Meaning |
 | --- | --- |
-| `queued` | Dependencies are done, and the job has not started |
-| `blocked` | A dependency is not `done`. A missing job id is named |
+| `queued` | Dependencies are met, and the job has not started |
+| `blocked` | An after-merged dependency is not `done`, or a stacked dependency has not landed. A missing job id is named |
 | `running` | Yak is alive, or the launch process is alive and has not written a journal |
 | `needs-human` | The run is suspended on an open gate |
 | `approved` | The gate says approve and the run has not finished. This still holds a slot |
 | `rejected` | The run finished ok and the gate says reject |
-| `failed` | The run failed, the launch died before a journal, or the run finished ok with no readable approval |
+| `failed` | The run failed, the launch died before a journal, the run finished ok with no readable approval, or a pull request could not be opened |
 | `dead` | The journal's process is gone. Status prints the cancel command |
-| `done` | The run finished ok and the gate says approve. This is the only state that unblocks dependents |
+| `in-review` | `deliver=pr` and the run has landed. The pull request is open, or the next tick still has to open it |
+| `done` | `deliver=local`: the run finished ok and the gate says approve. `deliver=pr`: that pull request has merged |
 
 ## What a feature job runs
 
-`npm run kiln -- tick` starts `yak run --isolation worktree` in the repo, tagged `kiln:<jobId>`, with logs in `<kiln-dir>/logs/<jobId>.log`. Kiln passes `title`, the spec text as `description` and `acceptance`, `baseRef` (checkout `HEAD` at launch), and `runNonce`. The test command is `KILN_TEST`.
+`npm run kiln -- tick` starts `yak run --isolation worktree` in the repo, tagged `kiln:<jobId>`, with logs in `<kiln-dir>/logs/<jobId>.log`. Kiln passes `title`, the spec text as `description` and `acceptance`, `baseRef` (the commit the worktree is cut from), and `runNonce`. For `deliver=local` that commit is checkout `HEAD`. For `deliver=pr` it is `origin/<base>` after `git fetch`, or the upstream branch tip when the job is stacked. The test command is `KILN_TEST`. Yak always cuts the worktree from `HEAD`, so Kiln puts a `git` shim on that child only and rewrites the one `worktree add` to the chosen commit. The checkout's own `HEAD` and files stay put.
 
 The job runs the factory loop from Lawrence Chase's factory plugin v0.7.0 (MIT), copied from commit `4c84a2ce7fbde5ac298c0de9f0b90141eac4ed98`: spec, then up to two rounds of build, verify, and the security, ux, ui, and code reviewers, then the approver, a human gate, and a commit. The prompts in `prompts/factory/` are those agent files, copied verbatim. `prompts/kiln/` maps the factory's job-folder files onto the artifacts yak passes in. `npm run kiln -- tick` writes a per-run copy of the workflow under the kiln directory, with absolute prompt paths, before it starts yak.
 
@@ -171,6 +173,33 @@ Verify runs the repo's `test` command with `failOn: never`. Stdout and stderr st
 
 The first launch adds `.runs/` and `.yak/` to that checkout's `.git/info/exclude`.
 
+## Delivery and dependencies
+
+`deliver` is set on the repo. The default is `local`: the job is `done` when the run lands on `yak/<run-id>`, and Kiln does not push. Existing repos and tests stay on that path.
+
+```bash
+npm run kiln -- repo add web /absolute/path/to/web --test "npm test" --deliver pr --base main
+```
+
+`deliver` is `local` or `pr`. `base` is the pull request base branch. When `base` is omitted, Kiln uses origin's default branch, from `refs/remotes/origin/HEAD` after `git fetch`.
+
+With `deliver=pr`, the tick after an approved land pushes `yak/<run-id>` and runs `gh pr create --draft`. The title is the job title. The body is the spec's first paragraph, the line `Kiln job: <id>`, and the security, ux, ui, code, and approver verdicts. The branch, pull request number, and url are written to `.kiln/deliveries/<job-id>.json`, not the job file. A later tick looks up an existing pull request for that branch and does not push when origin already has the same commit. Kiln does not merge, and it does not push the base branch.
+
+If `gh` is missing or not authenticated, that job becomes `failed` and status prints what to run (`gh auth login`, then `kiln tick`). The rest of the tick still runs. The next tick tries again.
+
+`done` for `deliver=pr` is `gh pr view --json state,mergedAt`. A squash merge counts. Kiln does not ask git whether the landed commit is an ancestor of the base.
+
+### After merged and stacked
+
+The default is after merged. A job stays `blocked` until every upstream is `done`. Status says `waiting for PR #N to merge` while an upstream pull request is open. A `deliver=pr` worktree is cut from `origin/<base>` after `git fetch`, not from checkout `HEAD`.
+
+`--stack` on `kiln add` or `kiln import` waits for one upstream to be approved and landed, then cuts the worktree from that upstream branch (`yak/<run-id>`). The pull request targets that branch. `stack` with any count other than one dependency is an error at add time, and the upstream job has to be in the same repo. Stacked work does not wait for the upstream pull request to merge.
+
+```bash
+npm run kiln -- add feature --repo web --spec spec.md --after <job-id> --stack
+npm run kiln -- import ./tickets --repo web --stack
+```
+
 ## Not included
 
-No requirement refinement. Bug, investigation, security, and pr-review workflows are not in this repo yet. Kiln does not push. Dependency blocking is unchanged: a job stays blocked until every id in `dependsOn` is `done`.
+No requirement refinement. Bug, investigation, security, and pr-review workflows are not in this repo yet. Kiln does not merge pull requests and does not push the base branch.

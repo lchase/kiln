@@ -10,10 +10,10 @@ import { renderAddedJob } from "./jobs.js";
 function usage(): never {
   console.error(
     [
-      "Usage: kiln repo add <name> <path> [--test <cmd>] [--config <file>]",
+      "Usage: kiln repo add <name> <path> [--test <cmd>] [--deliver local|pr] [--base <branch>] [--config <file>]",
       "       kiln repo list [--config <file>]",
-      "       kiln add <workflow> --repo <name> (--spec <file.md> | --prompt <text> | --jira <KEY>) [--title <text>] [--after <jobId>]... [--dry-run] [--config <file>]",
-      "       kiln import <dir> --repo <name> [--workflow <name>] [--context <file.md>] [--dry-run] [--config <file>]",
+      "       kiln add <workflow> --repo <name> (--spec <file.md> | --prompt <text> | --jira <KEY>) [--title <text>] [--after <jobId>]... [--stack] [--dry-run] [--config <file>]",
+      "       kiln import <dir> --repo <name> [--workflow <name>] [--context <file.md>] [--stack] [--dry-run] [--config <file>]",
       "       kiln tick [--config <file>]",
       "       kiln status [jobId] [--config <file>]",
       "       kiln approve <jobId> [--config <file>]",
@@ -25,9 +25,10 @@ function usage(): never {
       "add writes one job from a spec file, from --prompt text (--prompt - reads stdin),",
       "or from a Jira Cloud issue (--jira PROJ-123). Pass one of those, not more.",
       "The repo and the workflow (workflows/<name>.yaml) must already exist.",
-      "--after names jobs that must be done before this one launches. A Jira Blocks",
-      "link where this issue is blocked by another key is included when a kiln job",
-      "for that key already exists.",
+      "--after names jobs that must be done before this one launches. --stack waits",
+      "for one upstream to land and opens the pull request against that branch.",
+      "A Jira Blocks link where this issue is blocked by another key is included",
+      "when a kiln job for that key already exists.",
       "--dry-run with --jira prints the job and writes nothing. Running add again",
       "for the same Jira key prints the existing job id and creates nothing.",
       "",
@@ -35,8 +36,10 @@ function usage(): never {
       "Blocked-by becomes dependsOn. Re-running the same directory does not duplicate jobs.",
       "--dry-run prints the jobs and writes nothing.",
       "",
-      "tick launches at most one ready job: dependencies done, under maxConcurrent.",
-      "status prints the derived state. approve and reject answer the human gate.",
+      "tick launches at most one ready job. After merged, dependencies must be done.",
+      "Stacked jobs launch once the upstream has landed. deliver=pr then pushes",
+      "yak/<run-id> and opens a draft pull request. status prints the derived state.",
+      "approve and reject answer the human gate.",
     ].join("\n"),
   );
   process.exit(2);
@@ -54,11 +57,14 @@ interface FlagBag {
   workflow?: string;
   context?: string;
   dryRun: boolean;
+  stack: boolean;
+  deliver?: "local" | "pr";
+  base?: string;
   after: string[];
 }
 
 function parseFlags(argv: string[]): FlagBag {
-  const bag: FlagBag = { positionals: [], after: [], dryRun: false };
+  const bag: FlagBag = { positionals: [], after: [], dryRun: false, stack: false };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const next = argv[i + 1];
@@ -126,6 +132,22 @@ function parseFlags(argv: string[]): FlagBag {
       i += 1;
       continue;
     }
+    if (flag === "--stack") {
+      bag.stack = true;
+      continue;
+    }
+    if (flag === "--deliver") {
+      if (next !== "local" && next !== "pr") usage();
+      bag.deliver = next;
+      i += 1;
+      continue;
+    }
+    if (flag === "--base") {
+      if (!next || next.startsWith("--")) usage();
+      bag.base = next;
+      i += 1;
+      continue;
+    }
     if (flag?.startsWith("--")) usage();
     if (flag !== undefined) bag.positionals.push(flag);
   }
@@ -136,7 +158,7 @@ function repoCommand(argv: string[]): void {
   const sub = argv[0];
   const flags = parseFlags(argv.slice(1));
   if (sub === "list") {
-    if (flags.positionals.length !== 0 || hasIntakeFlags(flags) || flags.test) usage();
+    if (flags.positionals.length !== 0 || hasIntakeFlags(flags) || flags.test || flags.deliver || flags.base) usage();
     const config = resolveKilnConfig({ configPath: flags.configPath });
     process.stdout.write(renderRepoList(config));
     return;
@@ -151,6 +173,8 @@ function repoCommand(argv: string[]): void {
         name,
         repoPath,
         ...(flags.test !== undefined ? { test: flags.test } : {}),
+        ...(flags.deliver !== undefined ? { deliver: flags.deliver } : {}),
+        ...(flags.base !== undefined ? { base: flags.base } : {}),
       }),
     );
     return;
@@ -170,6 +194,8 @@ async function addCommand(argv: string[]): Promise<void> {
     flags.test ||
     flags.workflow ||
     flags.context ||
+    flags.deliver ||
+    flags.base ||
     (flags.dryRun && flags.jira === undefined)
   ) {
     usage();
@@ -182,6 +208,7 @@ async function addCommand(argv: string[]): Promise<void> {
       key: flags.jira,
       ...(flags.title !== undefined ? { title: flags.title } : {}),
       dependsOn: flags.after,
+      ...(flags.stack ? { stack: true } : {}),
       dryRun: flags.dryRun,
     });
     process.stdout.write(result.report);
@@ -196,6 +223,7 @@ async function addCommand(argv: string[]): Promise<void> {
           specPath: flags.spec,
           ...(flags.title !== undefined ? { title: flags.title } : {}),
           dependsOn: flags.after,
+          ...(flags.stack ? { stack: true } : {}),
           cwd: process.cwd(),
         })
       : addFromPrompt(config, {
@@ -204,6 +232,7 @@ async function addCommand(argv: string[]): Promise<void> {
           prompt: flags.prompt ?? "",
           ...(flags.title !== undefined ? { title: flags.title } : {}),
           dependsOn: flags.after,
+          ...(flags.stack ? { stack: true } : {}),
         });
   process.stdout.write(renderAddedJob(job, jsonPath));
 }
@@ -219,7 +248,9 @@ function importCommand(argv: string[]): void {
     flags.prompt ||
     flags.title ||
     flags.after.length > 0 ||
-    flags.test
+    flags.test ||
+    flags.deliver ||
+    flags.base
   ) {
     usage();
   }
@@ -230,6 +261,7 @@ function importCommand(argv: string[]): void {
     ...(flags.workflow !== undefined ? { workflow: flags.workflow } : {}),
     ...(flags.context !== undefined ? { contextPath: flags.context } : {}),
     dryRun: flags.dryRun,
+    ...(flags.stack ? { stack: true } : {}),
     cwd: process.cwd(),
   });
   process.stdout.write(result.report);
@@ -238,14 +270,18 @@ function importCommand(argv: string[]): void {
 
 function tickCommand(argv: string[]): void {
   const flags = parseFlags(argv);
-  if (flags.positionals.length !== 0 || flags.test || hasIntakeFlags(flags)) usage();
+  if (flags.positionals.length !== 0 || flags.test || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.stack) {
+    usage();
+  }
   const config = resolveKilnConfig({ configPath: flags.configPath });
   process.stdout.write(runTick(config));
 }
 
 function statusCommand(argv: string[]): void {
   const flags = parseFlags(argv);
-  if (flags.positionals.length > 1 || flags.test || hasIntakeFlags(flags)) usage();
+  if (flags.positionals.length > 1 || flags.test || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.stack) {
+    usage();
+  }
   const config = resolveKilnConfig({ configPath: flags.configPath });
   process.stdout.write(runStatus(config, flags.positionals[0]));
 }
@@ -253,7 +289,9 @@ function statusCommand(argv: string[]): void {
 function gateCommand(choice: "approve" | "reject", argv: string[]): void {
   const flags = parseFlags(argv);
   const jobId = flags.positionals[0];
-  if (!jobId || flags.positionals.length !== 1 || flags.test || hasIntakeFlags(flags)) usage();
+  if (!jobId || flags.positionals.length !== 1 || flags.test || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.stack) {
+    usage();
+  }
   const config = resolveKilnConfig({ configPath: flags.configPath });
   process.stdout.write(answerJob(config, jobId, choice));
 }
@@ -268,6 +306,7 @@ function hasIntakeFlags(flags: FlagBag): boolean {
       flags.workflow ||
       flags.context ||
       flags.dryRun ||
+      flags.stack ||
       flags.after.length > 0,
   );
 }

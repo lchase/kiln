@@ -9,8 +9,11 @@ export interface LoadedKilnConfig {
   /** Directory that holds the config file. Relative repo paths resolve from here. */
   configDir: string;
   note?: string;
-  /** Repo name → checkout path (absolute) and optional verify command. */
-  repos: Record<string, { path: string; test?: string }>;
+  /**
+   * Repo name → checkout. `deliver` defaults to `local`. `base` is unset when
+   * the config omits it; tick discovers origin's default branch then.
+   */
+  repos: Record<string, { path: string; test?: string; deliver: "local" | "pr"; base?: string }>;
   /**
    * Local kiln directory. The config's own directory when it is named `.kiln`
    * (for example `./.kiln` or `~/.kiln`). Otherwise `<cwd>/.kiln`.
@@ -69,7 +72,12 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
         `Checkout for ${name} does not exist or is not a directory: ${checkout}. Set repos.${name}.path in the kiln config.`,
       );
     }
-    repos[name] = { path: checkout, ...(entry.test ? { test: entry.test } : {}) };
+    repos[name] = {
+      path: checkout,
+      ...(entry.test ? { test: entry.test } : {}),
+      deliver: entry.deliver ?? "local",
+      ...(entry.base ? { base: entry.base } : {}),
+    };
   }
 
   const kilnDir = basename(configDir) === ".kiln" ? configDir : join(cwd, ".kiln");
@@ -118,7 +126,13 @@ export interface AddRepoOptions extends ResolveKilnConfigOptions {
   /** Path as the user typed it. Relative paths are stored relative to the config directory. */
   repoPath: string;
   test?: string;
+  /** `local` (default) or `pr`. Omitted on update keeps the stored value. */
+  deliver?: "local" | "pr";
+  /** Pull request base branch. Omitted on update keeps the stored value. */
+  base?: string;
 }
+
+const BRANCH_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 
 /** Create or update one repo entry. Returns the text to print. */
 export function addRepo(options: AddRepoOptions): string {
@@ -128,6 +142,7 @@ export function addRepo(options: AddRepoOptions): string {
   if (options.test !== undefined && !options.test.trim()) {
     throw new KilnConfigError("The test command is empty. Omit --test, or pass a command.");
   }
+  if (options.base !== undefined) assertBranchName(options.base);
 
   const configPath = configPathForWrite(options);
   const configDir = dirname(configPath);
@@ -141,12 +156,13 @@ export function addRepo(options: AddRepoOptions): string {
   const repos = repoMap(raw);
   const previous = repos[options.name];
   const entry: RepoEntry = { path: storedPath };
-  const previousTest =
-    previous && typeof previous === "object" && previous !== null && "test" in previous
-      ? previous.test
-      : undefined;
-  const test = options.test ?? (typeof previousTest === "string" ? previousTest : undefined);
+  const previousTest = previousString(previous, "test");
+  const test = options.test ?? previousTest;
   if (test) entry.test = test;
+  const deliver = options.deliver ?? previousDeliver(previous);
+  if (deliver) entry.deliver = deliver;
+  const base = options.base ?? previousString(previous, "base");
+  if (base) entry.base = base;
   repos[options.name] = entry;
   raw.repos = repos;
 
@@ -159,6 +175,8 @@ export function addRepo(options: AddRepoOptions): string {
   writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`);
   const lines = [`added ${options.name}`, `path ${checkout}`];
   if (entry.test) lines.push(`test ${entry.test}`);
+  if (entry.deliver) lines.push(`deliver ${entry.deliver}`);
+  if (entry.base) lines.push(`base ${entry.base}`);
   lines.push(`wrote ${configPath}`);
   return `${lines.join("\n")}\n`;
 }
@@ -169,9 +187,21 @@ export function renderRepoList(config: LoadedKilnConfig): string {
   const lines = names.map((name) => {
     const repo = config.repos[name];
     if (!repo) return name;
-    return repo.test ? `${name}  ${repo.path}  test ${repo.test}` : `${name}  ${repo.path}`;
+    const bits = [name, repo.path];
+    if (repo.test) bits.push(`test ${repo.test}`);
+    if (repo.deliver === "pr") bits.push("deliver pr");
+    if (repo.base) bits.push(`base ${repo.base}`);
+    return bits.join("  ");
   });
   return `${lines.join("\n")}\n`;
+}
+
+export function assertBranchName(name: string): void {
+  if (!BRANCH_NAME.test(name) || name.includes("..") || name.endsWith("/") || name.includes("//")) {
+    throw new KilnConfigError(
+      `--base ${JSON.stringify(name)} must be a branch name (letters, digits, dots, underscores, hyphens, and slashes).`,
+    );
+  }
 }
 
 export function assertRepoName(name: string): void {
@@ -206,6 +236,18 @@ function readConfigObject(configPath: string): Record<string, unknown> {
     throw new KilnConfigError(`Kiln config ${configPath} must be a JSON object.`);
   }
   return raw as Record<string, unknown>;
+}
+
+function previousString(previous: unknown, key: string): string | undefined {
+  if (typeof previous !== "object" || previous === null || !(key in previous)) return undefined;
+  const value = (previous as Record<string, unknown>)[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function previousDeliver(previous: unknown): "local" | "pr" | undefined {
+  const value = previousString(previous, "deliver");
+  if (value === "local" || value === "pr") return value;
+  return undefined;
 }
 
 function repoMap(raw: Record<string, unknown>): Record<string, unknown> {

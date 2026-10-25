@@ -49,6 +49,8 @@ export interface WriteJobInput {
   specText: string;
   title: string;
   dependsOn: string[];
+  /** True when this job stacks on its single upstream. Omitted means after-merged. */
+  stack?: boolean;
   source: JobSource;
   now?: Date;
   /**
@@ -80,7 +82,9 @@ export function writeJob(config: LoadedKilnConfig, input: WriteJobInput): { job:
   if (dependsOn.includes(id)) {
     throw new Error(`Job ${id} cannot depend on itself.`);
   }
-  const knownIds = new Set(listValidJobs(config).map((job) => job.id));
+  const known = listValidJobs(config);
+  assertCanStack(input.repo, dependsOn, input.stack, known);
+  const knownIds = new Set(known.map((job) => job.id));
   for (const pending of input.pendingIds ?? []) knownIds.add(pending);
   for (const dep of dependsOn) {
     if (!knownIds.has(dep)) {
@@ -100,6 +104,7 @@ export function writeJob(config: LoadedKilnConfig, input: WriteJobInput): { job:
     spec: specRel,
     title,
     ...(dependsOn.length > 0 ? { dependsOn } : {}),
+    ...(input.stack ? { stack: true } : {}),
     source: input.source,
     createdAt: now.toISOString(),
   });
@@ -111,6 +116,7 @@ export function writeJob(config: LoadedKilnConfig, input: WriteJobInput): { job:
 
 export function renderAddedJob(job: Job, jsonPath: string): string {
   const lines = [`added ${job.id}`, `repo ${job.repo}`, `workflow ${job.workflow}`, `spec ${job.spec}`];
+  if (job.stack) lines.push("stack");
   if (job.source) lines.push(`source ${job.source.kind} ${job.source.ref}`);
   lines.push(`wrote ${jsonPath}`, "");
   return lines.join("\n");
@@ -131,6 +137,34 @@ export function listValidJobs(config: LoadedKilnConfig): Job[] {
     }
   }
   return jobs;
+}
+
+/**
+ * `stack` needs one upstream in the same repo: the pull request has one base
+ * branch, and the worktree is cut from that branch. Zero dependencies and
+ * two or more are both rejected. An upstream that is not on disk yet is
+ * allowed here so an import batch can validate the count before every job
+ * exists; the same-repo check runs when the upstream file is already there.
+ */
+export function assertCanStack(
+  repo: string,
+  dependsOn: string[],
+  stack: boolean | undefined,
+  known: readonly Job[] = [],
+): void {
+  if (!stack) return;
+  if (dependsOn.length !== 1) {
+    throw new Error(
+      `stack needs exactly one dependency so the pull request has one base branch. Got ${dependsOn.length}.`,
+    );
+  }
+  const upstreamId = dependsOn[0];
+  const upstream = known.find((job) => job.id === upstreamId);
+  if (upstream && upstream.repo !== repo) {
+    throw new Error(
+      `stack needs upstream ${upstreamId} to be in repo ${repo}. That job is in repo ${upstream.repo}.`,
+    );
+  }
 }
 
 function normalizedDepends(dependsOn: string[]): string[] {

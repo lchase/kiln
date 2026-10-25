@@ -36,6 +36,7 @@ export interface AddPromptInput {
   prompt: string;
   title?: string;
   dependsOn: string[];
+  stack?: boolean;
   now?: Date;
 }
 
@@ -52,6 +53,7 @@ export function addFromPrompt(config: LoadedKilnConfig, input: AddPromptInput): 
     specText: text,
     title,
     dependsOn: input.dependsOn,
+    ...(input.stack ? { stack: true } : {}),
     source: { kind: "prompt", ref: fromStdin ? "stdin" : "inline" },
     ...(input.now ? { now: input.now } : {}),
   });

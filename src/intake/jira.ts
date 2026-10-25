@@ -1,5 +1,5 @@
 import type { LoadedKilnConfig } from "../config.js";
-import { listValidJobs, renderAddedJob, writeJob } from "../jobs.js";
+import { assertCanStack, listValidJobs, renderAddedJob, writeJob } from "../jobs.js";
 import type { Job } from "../schemas.js";
 import { assertWorkflowName } from "../workflow.js";
 import { typeLooksLikeSpike, workflowForSpike } from "./tickets.js";
@@ -44,6 +44,7 @@ export interface AddJiraInput {
   key: string;
   title?: string;
   dependsOn: string[];
+  stack?: boolean;
   dryRun: boolean;
   now?: Date;
   /** Tests pass a stub. The CLI uses the global fetch. */
@@ -95,6 +96,7 @@ export async function addFromJira(config: LoadedKilnConfig, input: AddJiraInput)
     descriptionMarkdown: adfToMarkdown(issue.description),
     acceptanceMarkdown: acceptanceMarkdown(issue.acceptance),
   });
+  assertCanStack(input.repo, dependsOn, input.stack, listValidJobs(config));
   const title = input.title?.trim() || `${key}: ${issue.summary}`;
   if (!title) {
     throw new Error("Job title is empty. Pass --title.");
@@ -120,6 +122,7 @@ export async function addFromJira(config: LoadedKilnConfig, input: AddJiraInput)
     specText: safeSpec,
     title: redactSecrets(title, credentials),
     dependsOn,
+    ...(input.stack ? { stack: true } : {}),
     source: { kind: "jira", ref: key },
     ...(input.now ? { now: input.now } : {}),
   });

@@ -5,9 +5,16 @@ import { z } from "zod";
  * `path` is absolute, relative to the config file's directory, or `~`.
  * `test` is the shell command a workflow runs as its verify step (`KILN_TEST`).
  */
+/**
+ * `deliver` defaults to `local` when omitted: land on `yak/<run-id>` and do not push.
+ * `pr` pushes that branch and opens a draft pull request against `base`.
+ * `base` defaults to origin's default branch, discovered with git, when omitted.
+ */
 export const RepoEntrySchema = z.object({
   path: z.string().min(1),
   test: z.string().min(1).optional(),
+  deliver: z.enum(["local", "pr"]).optional(),
+  base: z.string().min(1).optional(),
 });
 export type RepoEntry = z.infer<typeof RepoEntrySchema>;
 
@@ -57,17 +64,28 @@ export const JobSchema = z.object({
   spec: z.string().min(1),
   title: z.string().min(1),
   dependsOn: z.array(z.string().min(1)).optional(),
+  /**
+   * When true, this job starts once its single upstream has landed, on that
+   * upstream's branch. Omitted means after-merged: wait until every upstream
+   * is `done`. More than one `dependsOn` with `stack` is rejected at add time.
+   */
+  stack: z.boolean().optional(),
   source: JobSourceSchema.optional(),
   createdAt: z.string().min(1),
 });
 export type Job = z.infer<typeof JobSchema>;
 
 /**
- * Derived from the yak journal and gate files. Never written into the job file.
+ * Derived from the yak journal, gate files, and (for `deliver=pr`) the
+ * delivery record plus `gh pr view`. Never written into the job file.
  *
- * `done` is the only state that unblocks dependents: the run finished ok and
- * the gate decision is approve. A reject, a failure, a dead process, and an
- * ok run with no readable approval do not unblock.
+ * For `deliver=local`, `done` is a run that finished ok with an approve
+ * decision. For `deliver=pr`, `done` is that landed run whose pull request
+ * has merged (`state` or `mergedAt`, so a squash merge counts). `in-review`
+ * is the landed run while the pull request is still open. A reject, a
+ * failure, a dead process, and an ok run with no readable approval do not
+ * unblock an after-merged dependent. A stacked job unblocks when its one
+ * upstream has landed, which includes `in-review`.
  */
 export const JOB_STATES = [
   "queued",
@@ -78,6 +96,7 @@ export const JOB_STATES = [
   "rejected",
   "failed",
   "dead",
+  "in-review",
   "done",
 ] as const;
 export type JobState = (typeof JOB_STATES)[number];
