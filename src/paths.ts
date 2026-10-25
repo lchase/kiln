@@ -2,7 +2,14 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** Repository root. Works for `src/` under tsx and for the compiled `dist/` tree. */
+/**
+ * Directory of the Kiln package that contains this file.
+ *
+ * Starts at `import.meta.url` and walks up to the nearest `package.json`.
+ * That is the repo root in a checkout (`src/` via tsx, or compiled `dist/`)
+ * and the installed package root for `node_modules/@lchase/kiln`. Workflows
+ * and prompts are read from there, not from `process.cwd()`.
+ */
 export function packageRoot(): string {
   let dir = dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 6; i += 1) {

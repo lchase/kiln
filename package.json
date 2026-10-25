@@ -1,15 +1,30 @@
 {
-  "name": "kiln",
-  "version": "0.0.1",
+  "name": "@lchase/kiln",
+  "version": "0.1.0",
   "description": "Run a workflow on any registered repo. A markdown spec is the input.",
   "type": "module",
   "bin": {
     "kiln": "./dist/cli.js"
   },
+  "files": [
+    "dist",
+    "workflows",
+    "prompts",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lchase/kiln.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
     "kiln": "node dist/cli.js",
     "prekiln": "npm run build",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run build",
     "test": "tsc -p tsconfig.json && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit"
   },

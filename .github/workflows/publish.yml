@@ -1,0 +1,32 @@
+name: Publish to npm
+
+# Dispatched by release-please.yml right after it cuts a release (and
+# available manually for recovery). Not triggered by the release tag
+# itself — release-please tags with GITHUB_TOKEN, which cannot trigger
+# workflows, and the tag is `kiln-v*` anyway.
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - run: npm install -g npm@latest # trusted publishing (OIDC) needs npm >=11.5.1
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      - run: npm publish --provenance --access public
