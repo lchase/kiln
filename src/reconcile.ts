@@ -18,10 +18,22 @@ import type { JobSource, JobState } from "./schemas.js";
 
 export type RunStatus = "alive" | "suspended" | "ok" | "failed" | "dead";
 
+/** A short, secret-redacted reading of one yak artifact. */
+export interface ObservedArtifact {
+  name: string;
+  summary: string;
+}
+
 export interface ObservedGate {
   stepId: string;
   /** First line of the gate prompt. */
   prompt: string;
+  /** Full gate text yak wrote on the request, when it differs from the first line. */
+  rendered?: string;
+  /** Artifacts named on the gate request (`context.artifacts`). */
+  artifacts?: ObservedArtifact[];
+  /** Latest security, ux, ui, and code artifacts in the run. */
+  reviews?: ObservedArtifact[];
   /** Required answer field, when the request schema names one. */
   answerField?: string;
   /** Enum values for that field, so status can print each variant. */
@@ -49,6 +61,8 @@ export interface ObservedJob {
   workflow: string;
   title: string;
   dependsOn: string[];
+  /** Absolute path of the job spec. Status does not print it; the local UI links to it. */
+  specPath?: string;
   /** Set from the job file. Status prints it. Decide ignores it. */
   source?: JobSource;
   /** Repo delivery mode. Omitted means `local`, which keeps land = `done`. */
