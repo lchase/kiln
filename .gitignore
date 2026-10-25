@@ -2,8 +2,8 @@ node_modules/
 dist/
 dist-test/
 
-# Local machine state. Checkout paths, real ownership maps, real requirements,
-# and generated plans live here (or in ~/.kiln/) and must not be committed.
+# Local machine state. Checkout paths and job files live here (or in ~/.kiln/)
+# and must not be committed.
 .kiln/
 
 # yak journals and cache, if a checkout inside this repo is ever ticked.

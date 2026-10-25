@@ -14,6 +14,14 @@ export function packageRoot(): string {
   throw new Error("Could not find package.json above the running file.");
 }
 
-export function exampleConfigPath(): string {
-  return join(packageRoot(), "examples", "kiln.config.json");
+/** One path segment. Job ids we generate already pass; this rejects `..` and slashes. */
+export function jobBasename(id: string): string {
+  const safe = id
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^[-.]+/, "")
+    .replace(/[-.]+$/, "");
+  if (!safe) {
+    throw new Error(`Job id ${JSON.stringify(id)} cannot be used as a file name.`);
+  }
+  return safe;
 }

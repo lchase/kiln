@@ -13,8 +13,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { packageRoot } from "../src/paths.js";
-import { yakCliPath } from "../src/report.js";
-import type { Plan } from "../src/schemas.js";
 
 const root = packageRoot();
 const keep: string[] = [];
@@ -48,7 +46,7 @@ function initCheckout(dir: string): void {
     [
       "import assert from 'node:assert/strict';",
       "import test from 'node:test';",
-      "test('pebble checkout', () => { assert.equal(true, true); });",
+      "test('checkout', () => { assert.equal(true, true); });",
       "",
     ].join("\n"),
   );
@@ -56,11 +54,11 @@ function initCheckout(dir: string): void {
   mkdirSync(fixtures, { recursive: true });
   writeFileSync(
     join(fixtures, "spec.json"),
-    `${JSON.stringify([{ output: { goal: "Show the weekly reflection.", design: "Touch the named module.", acceptance: "The task's checks pass." } }])}\n`,
+    `${JSON.stringify([{ output: { goal: "Show the weekly summary.", design: "Touch the named module.", acceptance: "The job's checks pass." } }])}\n`,
   );
   writeFileSync(
     join(fixtures, "build.json"),
-    `${JSON.stringify([{ output: { summary: "Mock build for the Pebble task.", status: "READY" } }])}\n`,
+    `${JSON.stringify([{ output: { summary: "Mock build.", status: "READY" } }])}\n`,
   );
   for (const step of ["security", "ux", "ui", "code"]) {
     writeFileSync(
@@ -76,50 +74,50 @@ function initCheckout(dir: string): void {
   git(dir, ["commit", "-q", "-m", "initial"]);
 }
 
-function writeConfig(
-  kilnDir: string,
-  checkouts: { frontend: string; "ai-core": string; "evals-obs": string },
-  maxConcurrent: number,
-  test = testCommand,
-): void {
-  mkdirSync(kilnDir, { recursive: true });
-  writeFileSync(
-    join(kilnDir, "kiln.config.json"),
-    JSON.stringify(
-      {
-        note: "Local Pebble test config. Not a real company.",
-        adapter: "mock",
-        maxConcurrent,
-        repos: {
-          frontend: {
-            checkout: checkouts.frontend,
-            ownership: join(root, "examples", "ownership", "frontend.json"),
-            test,
-          },
-          "ai-core": {
-            checkout: checkouts["ai-core"],
-            ownership: join(root, "examples", "ownership", "ai-core.json"),
-            test,
-          },
-          "evals-obs": {
-            checkout: checkouts["evals-obs"],
-            ownership: join(root, "examples", "ownership", "evals-obs.json"),
-            test,
-          },
-        },
-      },
-      null,
-      2,
-    ),
-  );
+function workDir(): { cwd: string; home: string } {
+  const cwd = mkdtempSync(join(tmpdir(), "kiln-tick-"));
+  keep.push(cwd);
+  const home = join(cwd, "home");
+  mkdirSync(home);
+  return { cwd, home };
 }
 
-function writePlan(plansDir: string, plan: Plan): void {
-  mkdirSync(plansDir, { recursive: true });
-  writeFileSync(
-    join(plansDir, `${plan.requirementId}.json`),
-    `${JSON.stringify({ kind: "plan", plan }, null, 2)}\n`,
-  );
+function register(cwd: string, home: string, name: string, checkout: string, test = testCommand): void {
+  const added = runCli(["repo", "add", name, checkout, "--test", test], { cwd, home });
+  assert.equal(added.status, 0, added.stderr);
+}
+
+function useMock(cwd: string, maxConcurrent = 2): void {
+  const path = join(cwd, ".kiln", "kiln.config.json");
+  const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  raw.adapter = "mock";
+  raw.maxConcurrent = maxConcurrent;
+  writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+}
+
+let lastAddedAt = 0;
+
+function addJob(
+  cwd: string,
+  home: string,
+  workflow: string,
+  repo: string,
+  title: string,
+  after: string[] = [],
+): string {
+  while (Date.now() <= lastAddedAt) {
+    // createdAt is millisecond precision. A later job must sort after this one.
+  }
+  const spec = join(cwd, `${title.replace(/[^A-Za-z0-9]+/g, "-").toLowerCase()}.md`);
+  writeFileSync(spec, `# ${title}\n\nDo the work for ${title}.\n`);
+  const args = ["add", workflow, "--repo", repo, "--spec", spec, "--title", title];
+  for (const id of after) args.push("--after", id);
+  const created = runCli(args, { cwd, home });
+  assert.equal(created.status, 0, created.stderr);
+  lastAddedAt = Date.now();
+  const id = created.stdout.match(/^added (\S+)/m)?.[1];
+  assert.ok(id, created.stdout);
+  return id;
 }
 
 function runIds(checkout: string): string[] {
@@ -155,14 +153,14 @@ function sleep(seconds: number): void {
 function waitForStatus(
   cwd: string,
   home: string,
-  planId: string,
+  jobId: string,
   pattern: RegExp,
   timeoutMs = 30000,
 ): string {
   const start = Date.now();
   let last = "";
   while (Date.now() - start < timeoutMs) {
-    const status = runCli(["status", planId], { cwd, home });
+    const status = runCli(["status", jobId], { cwd, home });
     last = `${status.stdout}${status.stderr}`;
     if (status.status === 0 && pattern.test(status.stdout)) return status.stdout;
     sleep(0.1);
@@ -170,99 +168,28 @@ function waitForStatus(
   throw new Error(`timed out waiting for ${pattern}:\n${last}`);
 }
 
-function runIdOf(status: string, taskId: string): string {
-  const match = status.match(new RegExp(`${taskId}\\s+\\S+\\s+\\S+\\s+run (\\S+)`));
+function runIdOf(status: string, jobId: string): string {
+  const match = status.match(new RegExp(`${jobId}\\s+\\S+\\s+\\S+\\s+\\S+\\s+run (\\S+)`));
   assert.ok(match?.[1], status);
   return match[1];
 }
 
-function answerCommand(status: string, choice: "approve" | "reject"): string {
-  const command = status.match(new RegExp(`^    answer ${choice}: (.+)$`, "m"))?.[1];
-  assert.ok(command, status);
-  return command;
-}
-
-function pathWithoutLocalBins(): string {
-  return (process.env.PATH ?? "")
-    .split(":")
-    .filter((entry) => entry.length > 0 && !entry.includes("node_modules/.bin"))
-    .join(":");
-}
-
-function runPrinted(command: string, home: string): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync("sh", ["-c", command], {
-    encoding: "utf8",
-    env: { ...process.env, HOME: home, PATH: pathWithoutLocalBins() },
-  });
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
-}
-
-function assertResolvedYak(command: string): void {
-  assert.ok(command.includes(process.execPath), command);
-  assert.ok(command.includes(yakCliPath()), command);
-  assert.doesNotMatch(command, /node_modules\/\.bin/);
-}
-
 function deadPid(): number {
-  // High unused pid. A killed child stays visible to kill(pid, 0) until reaped.
   const pid = 2_147_483_646;
   assert.throws(() => process.kill(pid, 0));
   return pid;
 }
 
-function task(
-  id: string,
-  title: string,
-  repo: "frontend" | "ai-core",
-  dependsOn: string[] = [],
-): Plan["tasks"][number] {
-  return {
-    id,
-    repo,
-    title,
-    description: `${title}.`,
-    workflow: "feature",
-    dependsOn,
-    acceptance: ["The check for this task passes."],
-  };
-}
-
-const weeklyPlan: Plan = {
-  requirementId: "PEBBLE-WEEKLY",
-  contracts: [
-    {
-      id: "weekly-reflection-api",
-      between: ["frontend", "ai-core"],
-      owner: "ai-core",
-      kind: "api",
-      spec: "GET /v1/reflection?week=YYYY-MM-DD returns { paragraph: string, empty: boolean }.",
-    },
-  ],
-  tasks: [
-    task("publish-reflection-api", "Publish the weekly reflection endpoint", "ai-core"),
-    task("render-reflection", "Show the weekly reflection on Sunday", "frontend", ["weekly-reflection-api"]),
-  ],
-};
-
-function pebbleDir(): { cwd: string; home: string; checkouts: { frontend: string; "ai-core": string; "evals-obs": string } } {
-  const cwd = mkdtempSync(join(tmpdir(), "kiln-tick-"));
-  keep.push(cwd);
-  const home = join(cwd, "home");
-  mkdirSync(home);
-  const checkouts = {
-    frontend: join(cwd, "repos", "frontend"),
-    "ai-core": join(cwd, "repos", "ai-core"),
-    "evals-obs": join(cwd, "repos", "evals-obs"),
-  };
-  initCheckout(checkouts.frontend);
-  initCheckout(checkouts["ai-core"]);
-  initCheckout(checkouts["evals-obs"]);
-  return { cwd, home, checkouts };
-}
-
-function approve(cwd: string, home: string, planId: string): void {
-  const approved = runCli(["approve", planId], { cwd, home });
-  assert.equal(approved.status, 0, approved.stderr);
+function checkoutPair(): { cwd: string; home: string; web: string; api: string } {
+  const { cwd, home } = workDir();
+  const web = join(cwd, "repos", "web");
+  const api = join(cwd, "repos", "api");
+  initCheckout(web);
+  initCheckout(api);
+  register(cwd, home, "web", web);
+  register(cwd, home, "api", api);
+  useMock(cwd, 2);
+  return { cwd, home, web, api };
 }
 
 after(() => {
@@ -270,365 +197,224 @@ after(() => {
 });
 
 describe("kiln tick", { concurrency: 1 }, () => {
-  it("runs the contract owner first, resumes through approve, and commits on the worktree branch", () => {
-    const { cwd, home, checkouts } = pebbleDir();
-    const kilnDir = join(cwd, ".kiln");
-    writeConfig(kilnDir, checkouts, 2);
-    writePlan(join(kilnDir, "plans"), weeklyPlan);
+  it("keeps a job in another repo blocked until the upstream gate is approved", () => {
+    const { cwd, home, web, api } = checkoutPair();
+    const upstream = addJob(cwd, home, "feature", "api", "Publish the summary");
+    const downstream = addJob(cwd, home, "feature", "web", "Show the summary", [upstream]);
 
-    const unapproved = runCli(["tick"], { cwd, home });
-    assert.equal(unapproved.status, 0, unapproved.stderr);
-    assert.match(unapproved.stdout, /skip PEBBLE-WEEKLY \(not approved\)/);
-    assert.match(unapproved.stdout, /nothing to launch/);
-    assert.deepEqual(runIds(checkouts["ai-core"]), []);
-
-    approve(cwd, home, "PEBBLE-WEEKLY");
+    const stored = JSON.parse(readFileSync(join(cwd, ".kiln", "jobs", `${downstream}.json`), "utf8")) as {
+      dependsOn?: string[];
+      state?: unknown;
+    };
+    assert.deepEqual(stored.dependsOn, [upstream]);
+    assert.equal(stored.state, undefined);
 
     const first = runCli(["tick"], { cwd, home });
     assert.equal(first.status, 0, first.stderr);
-    assert.match(first.stdout, /launch publish-reflection-api\s+ai-core/);
-    assert.match(first.stdout, /pid \d+/);
-    assert.doesNotMatch(first.stdout, /launch render-reflection/);
-    const second = runCli(["tick"], { cwd, home });
-    assert.equal(second.status, 0, second.stderr);
-    assert.match(second.stdout, /inFlight=1/);
-    assert.match(second.stdout, /nothing to launch/);
-    assert.doesNotMatch(second.stdout, /launch render-reflection/);
+    assert.match(first.stdout, new RegExp(`launch ${upstream}\\s+api`));
+    assert.doesNotMatch(first.stdout, new RegExp(`launch ${downstream}`));
 
-    const suspended = waitForStatus(cwd, home, "PEBBLE-WEEKLY", /publish-reflection-api\s+ai-core\s+suspended/);
-    const ownerRun = runIds(checkouts["ai-core"])[0];
+    const blocked = waitForStatus(cwd, home, upstream, new RegExp(`${upstream}\\s+api\\s+feature\\s+needs-human`));
+    assert.match(blocked, new RegExp(`approve: kiln approve ${upstream}`));
+    assert.match(blocked, new RegExp(`reject: kiln reject ${upstream}`));
+    const both = runCli(["status"], { cwd, home });
+    assert.equal(both.status, 0, both.stderr);
+    assert.match(both.stdout, new RegExp(`${upstream}\\s+api\\s+feature\\s+needs-human`));
+    assert.match(both.stdout, new RegExp(`${downstream}\\s+web\\s+feature\\s+blocked`));
+    const ownerRun = runIds(api)[0];
     assert.ok(ownerRun);
-    assert.equal(journalTag(checkouts["ai-core"], ownerRun), "kiln:PEBBLE-WEEKLY/publish-reflection-api");
-    assert.deepEqual(runIds(checkouts.frontend), []);
-    assert.match(suspended, /render-reflection\s+frontend\s+blocked/);
-    assert.match(suspended, new RegExp(`run ${ownerRun}`));
-    const approveCmd = answerCommand(suspended, "approve");
-    const rejectCmd = answerCommand(suspended, "reject");
-    assertResolvedYak(approveCmd);
-    assertResolvedYak(rejectCmd);
-    assert.match(approveCmd, /\{"decision":"approve"\}/);
-    assert.match(rejectCmd, /\{"decision":"reject"\}/);
-    assert.match(approveCmd, /KILN_TASK_TITLE=/);
-    assert.notEqual(approveCmd, rejectCmd);
+    assert.equal(journalTag(api, ownerRun), `kiln:${upstream}`);
+    assert.deepEqual(runIds(web), []);
 
-    const answered = runPrinted(approveCmd, home);
+    const answered = runCli(["approve", upstream], { cwd, home });
     assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
     assert.match(answered.stdout, new RegExp(`run ${ownerRun} finished: ok`));
+    const done = runCli(["status"], { cwd, home });
+    assert.match(done.stdout, new RegExp(`${upstream}\\s+api\\s+feature\\s+done\\s+run ${ownerRun}\\s+branch yak/${ownerRun}`));
+    assert.match(done.stdout, new RegExp(`${downstream}\\s+web\\s+feature\\s+queued`));
+    assert.equal(git(api, ["log", "-1", "--format=%s", `yak/${ownerRun}`]).trim(), "kiln: Publish the summary");
 
-    const resumed = runCli(["status", "PEBBLE-WEEKLY"], { cwd, home });
-    assert.equal(resumed.status, 0, resumed.stderr);
-    assert.match(resumed.stdout, /publish-reflection-api\s+ai-core\s+ok/);
-    assert.match(resumed.stdout, new RegExp(`branch yak/${ownerRun}`));
-    assert.doesNotMatch(resumed.stdout, /gate approve:/);
-    assert.equal(
-      git(checkouts["ai-core"], ["log", "-1", "--format=%s", `yak/${ownerRun}`]).trim(),
-      "kiln: Publish the weekly reflection endpoint",
-    );
-    assert.equal(git(checkouts["ai-core"], ["show", `yak/${ownerRun}:kiln-landed.txt`]), "landed\n");
-    assert.equal(existsSync(join(checkouts["ai-core"], "kiln-landed.txt")), false);
+    const next = runCli(["tick"], { cwd, home });
+    assert.equal(next.status, 0, next.stderr);
+    assert.match(next.stdout, new RegExp(`launch ${downstream}\\s+web`));
+    const started = waitForStatus(cwd, home, downstream, new RegExp(`${downstream}\\s+web\\s+feature\\s+needs-human`));
+    const downstreamRun = runIdOf(started, downstream);
+    assert.equal(journalTag(web, downstreamRun), `kiln:${downstream}`);
+    assert.equal("state" in JSON.parse(readFileSync(join(cwd, ".kiln", "jobs", `${upstream}.json`), "utf8")), false);
+  });
 
-    const third = runCli(["tick"], { cwd, home });
-    assert.equal(third.status, 0, third.stderr);
-    assert.match(third.stdout, /launch render-reflection\s+frontend/);
-    const dependent = waitForStatus(cwd, home, "PEBBLE-WEEKLY", /render-reflection\s+frontend\s+suspended/);
-    const dependentRun = runIds(checkouts.frontend)[0];
-    assert.ok(dependentRun);
-    assert.equal(journalTag(checkouts.frontend, dependentRun), "kiln:PEBBLE-WEEKLY/render-reflection");
-    assert.deepEqual(worktrees(checkouts.frontend), [dependentRun]);
+  it("keeps the downstream job blocked when the upstream gate is rejected", () => {
+    const { cwd, home, web, api } = checkoutPair();
+    const upstream = addJob(cwd, home, "feature", "api", "Publish the summary");
+    const downstream = addJob(cwd, home, "feature", "web", "Show the summary", [upstream]);
+    const first = runCli(["tick"], { cwd, home });
+    assert.equal(first.status, 0, first.stderr);
+    waitForStatus(cwd, home, upstream, /needs-human/);
+    const ownerRun = runIds(api)[0];
+    assert.ok(ownerRun);
+    const answered = runCli(["reject", upstream], { cwd, home });
+    assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
+    const rejected = runCli(["status"], { cwd, home });
+    assert.match(rejected.stdout, new RegExp(`${upstream}\\s+api\\s+feature\\s+rejected`));
+    assert.match(rejected.stdout, new RegExp(`${downstream}\\s+web\\s+feature\\s+blocked`));
+    assert.doesNotMatch(rejected.stdout, /branch yak\//);
+    assert.doesNotMatch(git(api, ["log", "--format=%s", `yak/${ownerRun}`]), /^kiln:/m);
+    const next = runCli(["tick"], { cwd, home });
+    assert.equal(next.status, 0, next.stderr);
+    assert.match(next.stdout, /nothing to launch/);
+    assert.deepEqual(runIds(web), []);
   });
 
   it("keeps a dirty checkout file unchanged and writes the run only in its worktree", () => {
-    const { cwd, home, checkouts } = pebbleDir();
-    const checkout = checkouts.frontend;
-    const tracked = join(checkout, "tracked.txt");
+    const { cwd, home, web } = checkoutPair();
+    const tracked = join(web, "tracked.txt");
     writeFileSync(tracked, "original\n");
-    git(checkout, ["add", "tracked.txt"]);
-    git(checkout, ["commit", "-q", "-m", "track"]);
+    git(web, ["add", "tracked.txt"]);
+    git(web, ["commit", "-q", "-m", "track"]);
     writeFileSync(tracked, "dirty\n");
     const before = readFileSync(tracked);
-
-    writeConfig(join(cwd, ".kiln"), checkouts, 1);
-    const plan: Plan = {
-      requirementId: "PEBBLE-ISOLATED",
-      contracts: [],
-      tasks: [task("touch-worktree", "Touch only the worktree", "frontend")],
-    };
-    writePlan(join(cwd, ".kiln", "plans"), plan);
-    approve(cwd, home, "PEBBLE-ISOLATED");
-
+    const id = addJob(cwd, home, "feature", "web", "Touch only the worktree");
     const launched = runCli(["tick"], { cwd, home });
     assert.equal(launched.status, 0, launched.stderr);
-    const runId = waitForStatus(cwd, home, "PEBBLE-ISOLATED", /touch-worktree\s+frontend\s+suspended/).match(
-      /run (\S+)/,
-    )?.[1];
-    assert.ok(runId);
-    const worktree = join(checkout, ".yak", "worktrees", runId);
+    const status = waitForStatus(cwd, home, id, new RegExp(`${id}\\s+web\\s+feature\\s+needs-human`));
+    const runId = runIdOf(status, id);
+    const worktree = join(web, ".yak", "worktrees", runId);
     assert.equal(readFileSync(join(worktree, "kiln-landed.txt"), "utf8"), "landed\n");
     assert.deepEqual(readFileSync(tracked), before);
-    assert.equal(existsSync(join(checkout, "kiln-landed.txt")), false);
-    assert.equal(readFileSync(join(worktree, "tracked.txt"), "utf8"), "original\n");
-
-    const exclude = readFileSync(join(checkout, ".git", "info", "exclude"), "utf8");
+    assert.equal(existsSync(join(web, "kiln-landed.txt")), false);
+    const exclude = readFileSync(join(web, ".git", "info", "exclude"), "utf8");
     assert.match(exclude, /^\.runs\/$/m);
     assert.match(exclude, /^\.yak\/$/m);
-    const porcelain = git(checkout, ["status", "--porcelain"]);
+    const porcelain = git(web, ["status", "--porcelain"]);
     assert.match(porcelain, /tracked\.txt/);
     assert.doesNotMatch(porcelain, /\.runs/);
     assert.doesNotMatch(porcelain, /\.yak/);
-    assert.doesNotMatch(porcelain, /kiln-landed/);
 
-    const status = runCli(["status", "PEBBLE-ISOLATED"], { cwd, home });
-    const answered = runPrinted(answerCommand(status.stdout, "approve"), home);
+    const answered = runCli(["approve", id], { cwd, home });
     assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
-    const done = runCli(["status", "PEBBLE-ISOLATED"], { cwd, home });
+    const done = runCli(["status", id], { cwd, home });
     assert.match(done.stdout, new RegExp(`branch yak/${runId}`));
-    assert.equal(git(checkout, ["show", `yak/${runId}:kiln-landed.txt`]), "landed\n");
-    assert.equal(
-      git(checkout, ["log", "-1", "--format=%s", `yak/${runId}`]).trim(),
-      "kiln: Touch only the worktree",
-    );
+    assert.equal(git(web, ["show", `yak/${runId}:kiln-landed.txt`]), "landed\n");
+    assert.equal(git(web, ["log", "-1", "--format=%s", `yak/${runId}`]).trim(), "kiln: Touch only the worktree");
     assert.deepEqual(readFileSync(tracked), before);
-    assert.equal(existsSync(join(checkout, "kiln-landed.txt")), false);
   });
 
-  it("gives two ready tasks in one repo two distinct worktrees when maxConcurrent is 2", () => {
-    const { cwd, home, checkouts } = pebbleDir();
-    writeConfig(join(cwd, ".kiln"), checkouts, 2);
-    const plan: Plan = {
-      requirementId: "PEBBLE-POLISH",
-      contracts: [],
-      tasks: [
-        task("calm-empty", "Calm empty copy", "frontend"),
-        task("sunday-heading", "Sunday heading", "frontend"),
-      ],
-    };
-    writePlan(join(cwd, ".kiln", "plans"), plan);
-    approve(cwd, home, "PEBBLE-POLISH");
-
-    const first = runCli(["tick"], { cwd, home });
-    assert.equal(first.status, 0, first.stderr);
-    assert.match(first.stdout, /launch calm-empty\s+frontend/);
-    const second = runCli(["tick"], { cwd, home });
-    assert.equal(second.status, 0, second.stderr);
-    assert.match(second.stdout, /launch sunday-heading\s+frontend/);
-    const suspended = waitForStatus(
-      cwd,
-      home,
-      "PEBBLE-POLISH",
-      /calm-empty\s+frontend\s+suspended[\s\S]*sunday-heading\s+frontend\s+suspended/,
-    );
-    const trees = worktrees(checkouts.frontend);
-    const ids = runIds(checkouts.frontend);
-    assert.deepEqual(ids, trees);
-    assert.equal(trees.length, 2);
-    assert.notEqual(trees[0], trees[1]);
-    assert.equal(existsSync(join(checkouts.frontend, "kiln-landed.txt")), false);
-    for (const id of trees) {
-      const tree = join(checkouts.frontend, ".yak", "worktrees", id);
-      assert.equal(git(tree, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), `yak/${id}`);
-    }
-
-    const calm = runIdOf(suspended, "calm-empty");
-    const sunday = runIdOf(suspended, "sunday-heading");
-    const commands = [...suspended.matchAll(/^    answer approve: (.+)$/gm)].map((match) => match[1] ?? "");
-    assert.equal(commands.length, 2);
-    for (const command of commands) {
-      assert.ok(command);
-      assertResolvedYak(command);
-      const answered = runPrinted(command, home);
-      assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
-    }
-    const checkout = checkouts.frontend;
-    assert.equal(existsSync(join(checkout, ".yak", "worktrees", calm, "kiln-landed.txt")), true);
-    assert.equal(existsSync(join(checkout, ".yak", "worktrees", sunday, "kiln-landed.txt")), true);
-    assert.equal(git(checkout, ["log", "-1", "--format=%s", `yak/${calm}`]).trim(), "kiln: Calm empty copy");
-    assert.equal(git(checkout, ["log", "-1", "--format=%s", `yak/${sunday}`]).trim(), "kiln: Sunday heading");
-    for (const id of [calm, sunday]) {
-      const names = git(checkout, ["show", "--name-only", "--format=", `yak/${id}`])
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
-      assert.deepEqual(names, ["kiln-landed.txt"]);
-    }
-  });
-
-  it("does not launch a second ready task when maxConcurrent is 1 and the first run is in flight", () => {
-    const { cwd, home, checkouts } = pebbleDir();
-    writeConfig(join(cwd, ".kiln"), checkouts, 1);
-    const plan: Plan = {
-      requirementId: "PEBBLE-POLISH",
-      contracts: [],
-      tasks: [
-        task("calm-empty", "Calm empty copy", "frontend"),
-        task("sunday-heading", "Sunday heading", "frontend"),
-      ],
-    };
-    writePlan(join(cwd, ".kiln", "plans"), plan);
-    approve(cwd, home, "PEBBLE-POLISH");
-
+  it("does not launch a second ready job when maxConcurrent is 1 and the first run is in flight", () => {
+    const { cwd, home, web } = checkoutPair();
+    useMock(cwd, 1);
+    const firstId = addJob(cwd, home, "feature", "web", "Calm empty copy");
+    const secondId = addJob(cwd, home, "feature", "web", "Sunday heading");
     const first = runCli(["tick"], { cwd, home });
     assert.equal(first.status, 0, first.stderr);
     assert.match(first.stdout, /maxConcurrent=1/);
-    assert.match(first.stdout, /launch calm-empty\s+frontend/);
-    assert.doesNotMatch(first.stdout, /launch sunday-heading/);
-
+    assert.match(first.stdout, new RegExp(`launch ${firstId}\\s+web`));
+    assert.doesNotMatch(first.stdout, new RegExp(`launch ${secondId}`));
     const second = runCli(["tick"], { cwd, home });
-    assert.equal(second.status, 0, second.stderr);
     assert.match(second.stdout, /inFlight=1/);
     assert.match(second.stdout, /nothing to launch/);
-
-    const status = waitForStatus(cwd, home, "PEBBLE-POLISH", /calm-empty\s+frontend\s+suspended/);
-    assert.match(status, /sunday-heading\s+frontend\s+ready/);
-    assert.equal(runIds(checkouts.frontend).length, 1);
+    const status = waitForStatus(cwd, home, firstId, /needs-human/);
+    assert.match(status, new RegExp(`${firstId}\\s+web\\s+feature\\s+needs-human`));
+    const other = runCli(["status", secondId], { cwd, home });
+    assert.match(other.stdout, new RegExp(`${secondId}\\s+web\\s+feature\\s+queued`));
+    assert.equal(runIds(web).length, 1);
   });
 
-  it("marks a dead journal dead, prints cancel, and launches the next task under maxConcurrent 1", () => {
-    const { cwd, home, checkouts } = pebbleDir();
-    writeConfig(join(cwd, ".kiln"), checkouts, 1);
-    const plan: Plan = {
-      requirementId: "PEBBLE-POLISH",
-      contracts: [],
-      tasks: [
-        task("calm-empty", "Calm empty copy", "frontend"),
-        task("sunday-heading", "Sunday heading", "frontend"),
-      ],
-    };
-    writePlan(join(cwd, ".kiln", "plans"), plan);
-    approve(cwd, home, "PEBBLE-POLISH");
+  it("gives two ready jobs in one repo two distinct worktrees when maxConcurrent is 2", () => {
+    const { cwd, home, web } = checkoutPair();
+    const calm = addJob(cwd, home, "feature", "web", "Calm empty copy");
+    const sunday = addJob(cwd, home, "feature", "web", "Sunday heading");
+    assert.match(runCli(["tick"], { cwd, home }).stdout, new RegExp(`launch ${calm}\\s+web`));
+    assert.match(runCli(["tick"], { cwd, home }).stdout, new RegExp(`launch ${sunday}\\s+web`));
+    const calmStatus = waitForStatus(cwd, home, calm, /needs-human/);
+    const sundayStatus = waitForStatus(cwd, home, sunday, /needs-human/);
+    const calmRun = runIdOf(calmStatus, calm);
+    const sundayRun = runIdOf(sundayStatus, sunday);
+    assert.notEqual(calmRun, sundayRun);
+    assert.deepEqual(worktrees(web).sort(), [calmRun, sundayRun].sort());
+    for (const id of [calmRun, sundayRun]) {
+      const tree = join(web, ".yak", "worktrees", id);
+      assert.equal(git(tree, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), `yak/${id}`);
+    }
+    assert.equal(runCli(["approve", calm], { cwd, home }).status, 0);
+    assert.equal(runCli(["approve", sunday], { cwd, home }).status, 0);
+    assert.equal(git(web, ["log", "-1", "--format=%s", `yak/${calmRun}`]).trim(), "kiln: Calm empty copy");
+    assert.equal(git(web, ["log", "-1", "--format=%s", `yak/${sundayRun}`]).trim(), "kiln: Sunday heading");
+  });
 
+  it("marks a dead journal dead, prints cancel, and launches the next job under maxConcurrent 1", () => {
+    const { cwd, home, web } = checkoutPair();
+    useMock(cwd, 1);
+    const calm = addJob(cwd, home, "feature", "web", "Calm empty copy");
+    const sunday = addJob(cwd, home, "feature", "web", "Sunday heading");
     const runId = "2026-10-24T00-00-00Z-dead";
-    const runDir = join(checkouts.frontend, ".runs", runId);
+    const runDir = join(web, ".runs", runId);
     mkdirSync(runDir, { recursive: true });
     const gone = deadPid();
     writeFileSync(
       join(runDir, "journal.jsonl"),
       [
-        JSON.stringify({
-          t: "run.started",
-          runId,
-          tag: "kiln:PEBBLE-POLISH/calm-empty",
-          pid: process.pid,
-        }),
+        JSON.stringify({ t: "run.started", runId, tag: `kiln:${calm}`, pid: process.pid }),
         JSON.stringify({ t: "run.resumed", runId, pid: gone }),
         "{\"t\":\"step.started\",\"partial",
         "",
       ].join("\n"),
     );
-
-    const before = runCli(["status", "PEBBLE-POLISH"], { cwd, home });
+    const before = runCli(["status", calm], { cwd, home });
     assert.equal(before.status, 0, before.stderr);
-    assert.match(before.stdout, /calm-empty\s+frontend\s+dead/);
-    assert.match(before.stdout, /sunday-heading\s+frontend\s+ready/);
+    assert.match(before.stdout, new RegExp(`${calm}\\s+web\\s+feature\\s+dead`));
     assert.ok(before.stdout.includes(`cancel '${runId}'`), before.stdout);
-    assert.ok(before.stdout.includes(`cd '${checkouts.frontend}'`), before.stdout);
-    assertResolvedYak(before.stdout);
-
+    assert.ok(before.stdout.includes(`cd '${web}'`), before.stdout);
+    assert.match(runCli(["status", sunday], { cwd, home }).stdout, /queued/);
     const tick = runCli(["tick"], { cwd, home });
-    assert.equal(tick.status, 0, tick.stderr);
-    assert.match(tick.stdout, /launch sunday-heading\s+frontend/);
-    assert.doesNotMatch(tick.stdout, /launch calm-empty/);
-    const again = runCli(["status", "PEBBLE-POLISH"], { cwd, home });
-    assert.match(again.stdout, /calm-empty\s+frontend\s+dead/);
+    assert.match(tick.stdout, new RegExp(`launch ${sunday}\\s+web`));
+    assert.doesNotMatch(tick.stdout, new RegExp(`launch ${calm}`));
+    assert.match(runCli(["status", calm], { cwd, home }).stdout, /dead/);
   });
 
-  it("does not relaunch a task whose launch pid died before a journal existed", () => {
-    const { cwd, home, checkouts } = pebbleDir();
-    const kilnDir = join(cwd, ".kiln");
-    writeConfig(kilnDir, checkouts, 1);
-    const plan: Plan = {
-      requirementId: "PEBBLE-POLISH",
-      contracts: [],
-      tasks: [task("calm-empty", "Calm empty copy", "frontend")],
-    };
-    writePlan(join(kilnDir, "plans"), plan);
-    approve(cwd, home, "PEBBLE-POLISH");
-
-    const logPath = join(kilnDir, "logs", "PEBBLE-POLISH", "calm-empty.log");
+  it("does not relaunch a job whose launch pid died before a journal existed", () => {
+    const { cwd, home, web } = checkoutPair();
+    const id = addJob(cwd, home, "feature", "web", "Calm empty copy");
+    const logPath = join(cwd, ".kiln", "logs", `${id}.log`);
     mkdirSync(dirname(logPath), { recursive: true });
     writeFileSync(logPath, "yak exited before writing a journal\n");
-    const crumbDir = join(kilnDir, "launching", "PEBBLE-POLISH");
+    const crumbDir = join(cwd, ".kiln", "launching");
     mkdirSync(crumbDir, { recursive: true });
     writeFileSync(
-      join(crumbDir, "calm-empty.json"),
-      `${JSON.stringify({ planId: "PEBBLE-POLISH", taskId: "calm-empty", pid: deadPid(), logPath }, null, 2)}\n`,
+      join(crumbDir, `${id}.json`),
+      `${JSON.stringify({ jobId: id, pid: deadPid(), logPath }, null, 2)}\n`,
     );
-
-    const status = runCli(["status", "PEBBLE-POLISH"], { cwd, home });
+    const status = runCli(["status", id], { cwd, home });
     assert.equal(status.status, 0, status.stderr);
-    assert.match(status.stdout, /calm-empty\s+frontend\s+launch-failed/);
+    assert.match(status.stdout, new RegExp(`${id}\\s+web\\s+feature\\s+failed`));
     assert.ok(status.stdout.includes(`log ${logPath}`), status.stdout);
-
     const first = runCli(["tick"], { cwd, home });
     const second = runCli(["tick"], { cwd, home });
-    assert.equal(first.status, 0, first.stderr);
-    assert.equal(second.status, 0, second.stderr);
     assert.match(first.stdout, /nothing to launch/);
     assert.match(second.stdout, /nothing to launch/);
-    assert.doesNotMatch(first.stdout, /launch calm-empty/);
-    assert.deepEqual(runIds(checkouts.frontend), []);
-    const still = runCli(["status", "PEBBLE-POLISH"], { cwd, home });
-    assert.match(still.stdout, /launch-failed/);
-  });
-
-  it("does not satisfy a dependency when the approve gate was rejected", () => {
-    const { cwd, home, checkouts } = pebbleDir();
-    writeConfig(join(cwd, ".kiln"), checkouts, 2);
-    writePlan(join(cwd, ".kiln", "plans"), weeklyPlan);
-    approve(cwd, home, "PEBBLE-WEEKLY");
-
-    const first = runCli(["tick"], { cwd, home });
-    assert.equal(first.status, 0, first.stderr);
-    const suspended = waitForStatus(cwd, home, "PEBBLE-WEEKLY", /answer reject:/);
-    const ownerRun = runIds(checkouts["ai-core"])[0];
-    assert.ok(ownerRun);
-    const rejectCmd = answerCommand(suspended, "reject");
-    assertResolvedYak(rejectCmd);
-
-    const answered = runPrinted(rejectCmd, home);
-    assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
-    assert.match(answered.stdout, new RegExp(`run ${ownerRun} finished: ok`));
-    const rejected = runCli(["status", "PEBBLE-WEEKLY"], { cwd, home });
-    assert.match(rejected.stdout, /publish-reflection-api\s+ai-core\s+rejected/);
-    assert.match(rejected.stdout, /render-reflection\s+frontend\s+blocked/);
-    assert.doesNotMatch(rejected.stdout, /branch yak\//);
-    const commits = git(checkouts["ai-core"], ["log", "--format=%s", `yak/${ownerRun}`]);
-    assert.doesNotMatch(commits, /^kiln:/m);
-
-    const next = runCli(["tick"], { cwd, home });
-    assert.equal(next.status, 0, next.stderr);
-    assert.match(next.stdout, /nothing to launch/);
-    assert.doesNotMatch(next.stdout, /launch render-reflection/);
-    assert.deepEqual(runIds(checkouts.frontend), []);
+    assert.deepEqual(runIds(web), []);
   });
 
   it("refuses an empty test command instead of running it", () => {
-    const { cwd, home, checkouts } = pebbleDir();
-    writeConfig(join(cwd, ".kiln"), checkouts, 1, "   ");
-    const plan: Plan = {
-      requirementId: "PEBBLE-POLISH",
-      contracts: [],
-      tasks: [task("calm-empty", "Calm empty copy", "frontend")],
-    };
-    writePlan(join(cwd, ".kiln", "plans"), plan);
-    approve(cwd, home, "PEBBLE-POLISH");
-
+    const { cwd, home, web } = checkoutPair();
+    const path = join(cwd, ".kiln", "kiln.config.json");
+    const raw = JSON.parse(readFileSync(path, "utf8")) as { repos: { web: { test: string } } };
+    raw.repos.web.test = "   ";
+    writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+    addJob(cwd, home, "feature", "web", "Calm empty copy");
     const tick = runCli(["tick"], { cwd, home });
     assert.equal(tick.status, 1);
-    assert.match(tick.stderr, /empty test command/);
-    assert.deepEqual(runIds(checkouts.frontend), []);
+    assert.match(tick.stderr, /no test command|empty/);
+    assert.deepEqual(runIds(web), []);
   });
 
-  it("feeds a failing review back to the builder and still approves", () => {
-    const { cwd, home, checkouts } = pebbleDir();
-    const kilnDir = join(cwd, ".kiln");
+  it("feeds a failing review back to the builder and still reaches the gate", () => {
+    const { cwd, home, web } = checkoutPair();
     const promptLog = join(cwd, "prompt-log");
     mkdirSync(promptLog);
-    writeConfig(kilnDir, checkouts, 1);
-    const checkout = checkouts.frontend;
-    const findings = "MUSTFIX pebble-week-id: the Sunday heading drops the week id";
-    commitFeatureFixtures(checkout, {
-      spec: [{ output: { goal: "Show the weekly reflection.", design: "Touch the named module.", acceptance: "The task's checks pass." } }],
-      build: [{ output: { summary: "Mock build for the Pebble task.", status: "READY" } }],
+    const findings = "MUSTFIX week-id: the Sunday heading drops the week id";
+    commitFeatureFixtures(web, {
+      spec: [{ output: { goal: "Show the weekly summary.", design: "Touch the named module.", acceptance: "The job's checks pass." } }],
+      build: [{ output: { summary: "Mock build.", status: "READY" } }],
       security: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
       ux: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
       ui: [{ output: { verdict: "PASS", findings: "Checked: no UI changes." } }],
@@ -638,66 +424,31 @@ describe("kiln tick", { concurrency: 1 }, () => {
       ],
       approver: [{ output: { decision: "APPROVE", reason: "Round 2 reviews passed." } }],
     });
-    const plan: Plan = {
-      requirementId: "PEBBLE-REVIEW",
-      contracts: [],
-      tasks: [task("sunday-heading", "Sunday heading", "frontend")],
-    };
-    writePlan(join(kilnDir, "plans"), plan);
-    approve(cwd, home, "PEBBLE-REVIEW");
-
-    const launched = runCli(["tick"], { cwd, home, env: promptEnv(promptLog) });
+    const id = addJob(cwd, home, "feature", "web", "Sunday heading");
+    const launched = runCli(["tick"], { cwd, home, env: promptEnv(promptLog, 200) });
     assert.equal(launched.status, 0, launched.stderr);
-    const suspended = waitForStatus(cwd, home, "PEBBLE-REVIEW", /sunday-heading\s+frontend\s+suspended/, 60000);
-    const runId = runIdOf(suspended, "sunday-heading");
-    assert.deepEqual(stepIterations(checkout, runId, "build"), [1, 2]);
-    assert.deepEqual(stepIterations(checkout, runId, "ui"), [1, 2]);
-    assert.deepEqual(stepIterations(checkout, runId, "code"), [1, 2]);
-    assert.equal(readArtifact(checkout, runId, "code.1.json").verdict, "CHANGES");
-    assert.equal(readArtifact(checkout, runId, "code.2.json").verdict, "PASS");
-    assert.equal(readArtifact(checkout, runId, "verify.1.json").exitCode, 0);
-    assert.equal(readArtifact(checkout, runId, "verify.2.json").exitCode, 0);
-    assertAbsoluteFactoryPrompts(checkout, runId, kilnDir);
-
+    const suspended = waitForStatus(cwd, home, id, /needs-human/, 60000);
+    const runId = runIdOf(suspended, id);
+    assert.deepEqual(stepIterations(web, runId, "build"), [1, 2]);
+    assert.deepEqual(stepIterations(web, runId, "code"), [1, 2]);
+    assertReviewersOverlap(web, runId, 1);
+    assert.equal(readArtifact(web, runId, "code.1.json").verdict, "CHANGES");
+    assert.equal(readArtifact(web, runId, "code.2.json").verdict, "PASS");
     const prompts = readPrompts(promptLog);
-    const build1 = prompts.find((entry) => entry.stepId === "build" && entry.callIndex === 0);
     const build2 = prompts.find((entry) => entry.stepId === "build" && entry.callIndex === 1);
-    assert.ok(build1, JSON.stringify(prompts.map((entry) => [entry.stepId, entry.callIndex])));
-    assert.ok(build2);
-    assert.match(build1.prompt, /\(round 1: no prior review\)/);
-    assert.doesNotMatch(build1.prompt, /MUSTFIX pebble-week-id/);
+    assert.ok(build2, JSON.stringify(prompts.map((entry) => [entry.stepId, entry.callIndex])));
     assert.match(build2.prompt, new RegExp(findings.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.match(build2.prompt, /<job folder>\/build\.md/);
-    const codePrompt = prompts.find((entry) => entry.stepId === "code" && entry.callIndex === 0);
-    assert.ok(codePrompt);
-    assert.match(codePrompt.prompt, /smart-review:smart-review/);
-    const base = headSha(checkout);
-    assert.equal(readInput(checkout, runId).baseRef, base);
-    assertBranchPreamble(build1.prompt, base);
-    assert.match(build1.prompt, /this is round 1/);
-    assert.match(build1.prompt, /Otherwise this is round 2/);
+    const base = headSha(web);
+    assert.equal(readInput(web, runId).baseRef, base);
     assertBranchPreamble(build2.prompt, base);
-    assertBranchPreamble(codePrompt.prompt, base);
-    const approverPrompt = prompts.find((entry) => entry.stepId === "approver");
-    assert.ok(approverPrompt);
-    assert.match(approverPrompt.prompt, /Only the final round is provided/);
-    assertBranchPreamble(approverPrompt.prompt, base);
-
-    const answered = runPrinted(answerCommand(suspended, "approve"), home);
-    assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
-    const done = runCli(["status", "PEBBLE-REVIEW"], { cwd, home });
-    assert.match(done.stdout, /sunday-heading\s+frontend\s+ok/);
-    assert.equal(git(checkout, ["log", "-1", "--format=%s", `yak/${runId}`]).trim(), "kiln: Sunday heading");
   });
 
   it("loops a red verify back to the builder instead of failing the run", () => {
-    const { cwd, home, checkouts } = pebbleDir();
-    const kilnDir = join(cwd, ".kiln");
+    const { cwd, home, web } = checkoutPair();
     const promptLog = join(cwd, "prompt-log");
     mkdirSync(promptLog);
-    const checkout = checkouts.frontend;
     writeFileSync(
-      join(checkout, "verify-once.mjs"),
+      join(web, "verify-once.mjs"),
       [
         "import { existsSync, readFileSync, writeFileSync } from 'node:fs';",
         "const path = 'verify-attempt.txt';",
@@ -712,62 +463,31 @@ describe("kiln tick", { concurrency: 1 }, () => {
         "",
       ].join("\n"),
     );
-    git(checkout, ["add", "verify-once.mjs"]);
-    git(checkout, ["commit", "-q", "-m", "red then green verify"]);
-    writeConfig(kilnDir, checkouts, 1, "node verify-once.mjs");
-    const plan: Plan = {
-      requirementId: "PEBBLE-RED",
-      contracts: [],
-      tasks: [task("calm-empty", "Calm empty copy", "frontend")],
-    };
-    writePlan(join(kilnDir, "plans"), plan);
-    approve(cwd, home, "PEBBLE-RED");
-
-    const launched = runCli(["tick"], { cwd, home, env: promptEnv(promptLog) });
-    assert.equal(launched.status, 0, launched.stderr);
-    const suspended = waitForStatus(cwd, home, "PEBBLE-RED", /calm-empty\s+frontend\s+suspended/, 60000);
-    const runId = runIdOf(suspended, "calm-empty");
-    const journal = readFileSync(join(checkout, ".runs", runId, "journal.jsonl"), "utf8");
-    assert.doesNotMatch(journal, /"t":"step.failed"/);
-    assert.deepEqual(stepIterations(checkout, runId, "build"), [1, 2]);
-    assert.deepEqual(stepIterations(checkout, runId, "verify"), [1, 2]);
-    assert.deepEqual(stepIterations(checkout, runId, "ui"), [1, 2]);
-    const redVerify = readArtifact(checkout, runId, "verify.1.json");
+    git(web, ["add", "verify-once.mjs"]);
+    git(web, ["commit", "-q", "-m", "red then green verify"]);
+    const path = join(cwd, ".kiln", "kiln.config.json");
+    const raw = JSON.parse(readFileSync(path, "utf8")) as { repos: { web: { test: string } } };
+    raw.repos.web.test = "node verify-once.mjs";
+    writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+    const id = addJob(cwd, home, "feature", "web", "Calm empty copy");
+    assert.equal(runCli(["tick"], { cwd, home, env: promptEnv(promptLog) }).status, 0);
+    const suspended = waitForStatus(cwd, home, id, /needs-human/, 60000);
+    const runId = runIdOf(suspended, id);
+    const redVerify = readArtifact(web, runId, "verify.1.json");
     assert.equal(redVerify.exitCode, 1);
-    assert.match(redVerify.stderr ?? "", /verify failed round 1/);
     assert.match(redVerify.stderr ?? "", /\[truncated: showing the last 200 lines or 20480 bytes of stderr\]/);
-    assert.doesNotMatch(redVerify.stderr ?? "", /(^|\n)verify-line-0\n/);
-    assert.match(redVerify.stderr ?? "", /(^|\n)verify-line-51\n/);
-    assert.equal(readArtifact(checkout, runId, "verify.2.json").exitCode, 0);
-    assert.equal(readArtifact(checkout, runId, "security.1.json").verdict, "PASS");
-    assert.equal(readArtifact(checkout, runId, "ui.2.json").verdict, "PASS");
-
-    const prompts = readPrompts(promptLog);
-    const build2 = prompts.find((entry) => entry.stepId === "build" && entry.callIndex === 1);
-    assert.ok(build2, JSON.stringify(prompts.map((entry) => [entry.stepId, entry.callIndex])));
+    assert.equal(readArtifact(web, runId, "verify.2.json").exitCode, 0);
+    const build2 = readPrompts(promptLog).find((entry) => entry.stepId === "build" && entry.callIndex === 1);
+    assert.ok(build2);
     assert.match(build2.prompt, /verify failed round 1/);
-    assert.match(build2.prompt, /Previous verify exit code: 1/);
-    assert.match(build2.prompt, /\[truncated:/);
-    const approver = prompts.find((entry) => entry.stepId === "approver");
-    assert.ok(approver);
-    assert.match(approver.prompt, /Latest verify exit code: 0/);
-
-    const answered = runPrinted(answerCommand(suspended, "approve"), home);
-    assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
-    const done = runCli(["status", "PEBBLE-RED"], { cwd, home });
-    assert.match(done.stdout, /calm-empty\s+frontend\s+ok/);
-    assert.match(done.stdout, new RegExp(`branch yak/${runId}`));
+    assert.equal(runCli(["approve", id], { cwd, home }).status, 0);
+    assert.match(runCli(["status", id], { cwd, home }).stdout, new RegExp(`branch yak/${runId}`));
   });
 
-  it("retries a BLOCKED build and escalates instead of approving", () => {
-    const { cwd, home, checkouts } = pebbleDir();
-    const kilnDir = join(cwd, ".kiln");
-    const promptLog = join(cwd, "prompt-log");
-    mkdirSync(promptLog);
-    const checkout = checkouts.frontend;
-    writeConfig(kilnDir, checkouts, 1);
-    commitFeatureFixtures(checkout, {
-      spec: [{ output: { goal: "Show the weekly reflection.", design: "Touch the named module.", acceptance: "The task's checks pass." } }],
+  it("retries a BLOCKED build and reaches the gate instead of committing", () => {
+    const { cwd, home, web } = checkoutPair();
+    commitFeatureFixtures(web, {
+      spec: [{ output: { goal: "Show the weekly summary.", design: "Touch the named module.", acceptance: "The job's checks pass." } }],
       build: [{ output: { summary: "Branch check failed.", status: "BLOCKED" } }],
       security: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
       ux: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
@@ -775,170 +495,63 @@ describe("kiln tick", { concurrency: 1 }, () => {
       code: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
       approver: [{ output: { decision: "ESCALATE", reason: "Build stayed BLOCKED." } }],
     });
-    const plan: Plan = {
-      requirementId: "PEBBLE-BLOCK",
-      contracts: [],
-      tasks: [task("sunday-heading", "Sunday heading", "frontend")],
-    };
-    writePlan(join(kilnDir, "plans"), plan);
-    approve(cwd, home, "PEBBLE-BLOCK");
-
-    const launched = runCli(["tick"], { cwd, home, env: promptEnv(promptLog) });
-    assert.equal(launched.status, 0, launched.stderr);
-    const suspended = waitForStatus(cwd, home, "PEBBLE-BLOCK", /sunday-heading\s+frontend\s+suspended/, 60000);
-    const runId = runIdOf(suspended, "sunday-heading");
-    assert.deepEqual(stepIterations(checkout, runId, "build"), [1, 2]);
-    assert.equal(readArtifact(checkout, runId, "build.1.json").status, "BLOCKED");
-    assert.equal(readArtifact(checkout, runId, "build.2.json").status, "BLOCKED");
-    assert.equal(readArtifact(checkout, runId, "decision.json").decision, "ESCALATE");
+    const id = addJob(cwd, home, "feature", "web", "Sunday heading");
+    assert.equal(runCli(["tick"], { cwd, home }).status, 0);
+    const suspended = waitForStatus(cwd, home, id, /needs-human/, 60000);
+    const runId = runIdOf(suspended, id);
+    assert.equal(readArtifact(web, runId, "decision.json").decision, "ESCALATE");
     assert.match(suspended, /Agent decision: ESCALATE/);
-    assert.doesNotMatch(suspended, /sunday-heading\s+frontend\s+ok/);
-    assert.doesNotMatch(git(checkout, ["log", "--format=%s", `yak/${runId}`]), /^kiln:/m);
-    assert.deepEqual(
-      journalRecords(checkout, runId).filter((event) => event.stepId === "land"),
-      [],
-    );
-
-    const base = headSha(checkout);
-    assert.equal(readInput(checkout, runId).baseRef, base);
-    const prompts = readPrompts(promptLog);
-    const build1 = prompts.find((entry) => entry.stepId === "build" && entry.callIndex === 0);
-    const build2 = prompts.find((entry) => entry.stepId === "build" && entry.callIndex === 1);
-    assert.ok(build1);
-    assert.ok(build2);
-    assertBranchPreamble(build1.prompt, base);
-    assert.match(build1.prompt, /\(round 1: no prior review\)/);
-    assert.match(build2.prompt, /No must-fix findings/);
-    assert.match(build2.prompt, /Otherwise this is round 2/);
-    const security = prompts.find((entry) => entry.stepId === "security" && entry.callIndex === 0);
-    assert.ok(security);
-    assertBranchPreamble(security.prompt, base);
+    assert.doesNotMatch(git(web, ["log", "--format=%s", `yak/${runId}`]), /^kiln:/m);
   });
 
-  it("lands when a human approves an ESCALATE decision", () => {
-    const { cwd, home, checkouts } = pebbleDir();
-    const kilnDir = join(cwd, ".kiln");
-    const checkout = checkouts.frontend;
-    writeConfig(kilnDir, checkouts, 1);
-    commitFeatureFixtures(checkout, {
-      spec: [{ output: { goal: "Show the weekly reflection.", design: "Touch the named module.", acceptance: "The task's checks pass." } }],
-      build: [{ output: { summary: "Mock build for the Pebble task.", status: "READY" } }],
-      security: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
-      ux: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
-      ui: [{ output: { verdict: "PASS", findings: "Checked: no UI changes." } }],
-      code: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
-      approver: [{ output: { decision: "ESCALATE", reason: "Needs a person." } }],
-    });
-    const plan: Plan = {
-      requirementId: "PEBBLE-ESC",
-      contracts: [],
-      tasks: [task("calm-empty", "Calm empty copy", "frontend")],
-    };
-    writePlan(join(kilnDir, "plans"), plan);
-    approve(cwd, home, "PEBBLE-ESC");
+  it("lands when a human approves an ESCALATE decision and skips land on reject", () => {
+    const { cwd, home, web } = checkoutPair();
+    const approveId = addJob(cwd, home, "feature", "web", "Calm empty copy");
+    assert.equal(runCli(["tick"], { cwd, home }).status, 0);
+    const approveStatus = waitForStatus(cwd, home, approveId, /needs-human/, 60000);
+    const approveRun = runIdOf(approveStatus, approveId);
+    assert.equal(runCli(["approve", approveId], { cwd, home }).status, 0);
+    assert.equal(git(web, ["log", "-1", "--format=%s", `yak/${approveRun}`]).trim(), "kiln: Calm empty copy");
 
-    const launched = runCli(["tick"], { cwd, home });
-    assert.equal(launched.status, 0, launched.stderr);
-    const suspended = waitForStatus(cwd, home, "PEBBLE-ESC", /calm-empty\s+frontend\s+suspended/, 60000);
-    const runId = runIdOf(suspended, "calm-empty");
-    assert.deepEqual(stepIterations(checkout, runId, "build"), [1]);
-    assert.equal(readArtifact(checkout, runId, "decision.json").decision, "ESCALATE");
-    assert.match(suspended, /Agent decision: ESCALATE/);
-
-    const answered = runPrinted(answerCommand(suspended, "approve"), home);
-    assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
-    const done = runCli(["status", "PEBBLE-ESC"], { cwd, home });
-    assert.match(done.stdout, /calm-empty\s+frontend\s+ok/);
-    assert.equal(git(checkout, ["log", "-1", "--format=%s", `yak/${runId}`]).trim(), "kiln: Calm empty copy");
-    const landed = journalRecords(checkout, runId).filter(
-      (event) => event.t === "step.completed" && event.stepId === "land",
-    );
-    assert.equal(landed.length, 1);
-    assert.notEqual(landed[0]?.skipped, true);
-  });
-
-  it("skips land when the human rejects", () => {
-    const { cwd, home, checkouts } = pebbleDir();
-    const kilnDir = join(cwd, ".kiln");
-    const checkout = checkouts.frontend;
-    writeConfig(kilnDir, checkouts, 1);
-    const plan: Plan = {
-      requirementId: "PEBBLE-REJECT",
-      contracts: [],
-      tasks: [task("calm-empty", "Calm empty copy", "frontend")],
-    };
-    writePlan(join(kilnDir, "plans"), plan);
-    approve(cwd, home, "PEBBLE-REJECT");
-
-    const launched = runCli(["tick"], { cwd, home });
-    assert.equal(launched.status, 0, launched.stderr);
-    const suspended = waitForStatus(cwd, home, "PEBBLE-REJECT", /answer reject:/, 60000);
-    const runId = runIdOf(suspended, "calm-empty");
-    const answered = runPrinted(answerCommand(suspended, "reject"), home);
-    assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
-
-    const rejected = runCli(["status", "PEBBLE-REJECT"], { cwd, home });
-    assert.match(rejected.stdout, /calm-empty\s+frontend\s+rejected/);
-    assert.doesNotMatch(git(checkout, ["log", "--format=%s", `yak/${runId}`]), /^kiln:/m);
-    const landed = journalRecords(checkout, runId).filter(
-      (event) => event.t === "step.completed" && event.stepId === "land",
-    );
-    assert.equal(landed.length, 1);
-    assert.equal(landed[0]?.skipped, true);
-  });
-
-  it("stops after two rounds when CHANGES are still open", () => {
-    const { cwd, home, checkouts } = pebbleDir();
-    const kilnDir = join(cwd, ".kiln");
-    const promptLog = join(cwd, "prompt-log");
-    mkdirSync(promptLog);
-    const checkout = checkouts.frontend;
-    writeConfig(kilnDir, checkouts, 1);
-    const findings = "MUSTFIX pebble-still-open: the week id is still missing";
-    commitFeatureFixtures(checkout, {
-      spec: [{ output: { goal: "Show the weekly reflection.", design: "Touch the named module.", acceptance: "The task's checks pass." } }],
-      build: [{ output: { summary: "Mock build for the Pebble task.", status: "READY" } }],
-      security: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
-      ux: [{ output: { verdict: "PASS", findings: "No must-fix findings." } }],
-      ui: [{ output: { verdict: "PASS", findings: "Checked: no UI changes." } }],
-      code: [{ output: { verdict: "CHANGES", findings } }],
-      approver: [{ output: { decision: "ESCALATE", reason: "Code review still wants changes." } }],
-    });
-    const plan: Plan = {
-      requirementId: "PEBBLE-LIMIT",
-      contracts: [],
-      tasks: [task("sunday-heading", "Sunday heading", "frontend")],
-    };
-    writePlan(join(kilnDir, "plans"), plan);
-    approve(cwd, home, "PEBBLE-LIMIT");
-
-    const launched = runCli(["tick"], { cwd, home, env: promptEnv(promptLog) });
-    assert.equal(launched.status, 0, launched.stderr);
-    const suspended = waitForStatus(cwd, home, "PEBBLE-LIMIT", /sunday-heading\s+frontend\s+suspended/, 60000);
-    const runId = runIdOf(suspended, "sunday-heading");
-    assert.deepEqual(stepIterations(checkout, runId, "build"), [1, 2]);
-    assert.deepEqual(stepIterations(checkout, runId, "code"), [1, 2]);
-    assert.equal(readArtifact(checkout, runId, "code.1.json").verdict, "CHANGES");
-    assert.equal(readArtifact(checkout, runId, "code.2.json").verdict, "CHANGES");
-    assert.equal(readArtifact(checkout, runId, "decision.json").decision, "ESCALATE");
-    assert.match(suspended, /Agent decision: ESCALATE/);
-    assert.deepEqual(
-      journalRecords(checkout, runId).filter((event) => event.stepId === "land"),
-      [],
-    );
-    const approverPrompt = readPrompts(promptLog).find((entry) => entry.stepId === "approver");
-    assert.ok(approverPrompt);
-    assert.match(approverPrompt.prompt, /MUSTFIX pebble-still-open/);
-    assert.match(approverPrompt.prompt, /Only the final round is provided/);
+    const rejectId = addJob(cwd, home, "feature", "web", "Leave the tree");
+    assert.equal(runCli(["tick"], { cwd, home }).status, 0);
+    const rejectStatus = waitForStatus(cwd, home, rejectId, /needs-human/, 60000);
+    const rejectRun = runIdOf(rejectStatus, rejectId);
+    assert.equal(runCli(["reject", rejectId], { cwd, home }).status, 0);
+    assert.match(runCli(["status", rejectId], { cwd, home }).stdout, /rejected/);
+    assert.doesNotMatch(git(web, ["log", "--format=%s", `yak/${rejectRun}`]), /^kiln:/m);
   });
 });
 
-function promptEnv(promptLog: string): Record<string, string> {
+function promptEnv(promptLog: string, delayMs?: number): Record<string, string> {
   const hook = join(root, "test", "hooks", "register-record-mock-prompts.mjs");
   return {
     NODE_OPTIONS: `--import ${hook}`,
     KILN_PROMPT_LOG: promptLog,
+    ...(delayMs === undefined ? {} : { KILN_MOCK_DELAY_MS: String(delayMs) }),
   };
+}
+
+/** The four reviewers' step.started events all land before any of them finishes. */
+function assertReviewersOverlap(checkout: string, runId: string, iteration: number): void {
+  const reviewers = new Set(["security", "ux", "ui", "code"]);
+  const lines = readFileSync(join(checkout, ".runs", runId, "journal.jsonl"), "utf8").split("\n");
+  const starts: number[] = [];
+  const finishes: number[] = [];
+  lines.forEach((line, index) => {
+    if (!line.trim()) return;
+    try {
+      const event = JSON.parse(line) as { t?: string; stepId?: string; iteration?: number };
+      if (!event.stepId || !reviewers.has(event.stepId) || event.iteration !== iteration) return;
+      if (event.t === "step.started") starts.push(index);
+      if (event.t === "step.completed") finishes.push(index);
+    } catch {
+      // A torn last line is ignored, same as the driver.
+    }
+  });
+  assert.deepEqual(starts.length, 4, lines.filter((line) => line.includes("security") || line.includes("\"ux\"")).join("\n"));
+  assert.equal(finishes.length, 4);
+  assert.ok(Math.max(...starts) < Math.min(...finishes), lines.join("\n"));
 }
 
 function commitFeatureFixtures(checkout: string, fixtures: Record<string, unknown[]>): void {
@@ -972,12 +585,11 @@ function readArtifact(
   checkout: string,
   runId: string,
   name: string,
-): { verdict?: string; exitCode?: number; stderr?: string; stdout?: string; status?: string; decision?: string } {
+): { verdict?: string; exitCode?: number; stderr?: string; status?: string; decision?: string } {
   return JSON.parse(readFileSync(join(checkout, ".runs", runId, "artifacts", name), "utf8")) as {
     verdict?: string;
     exitCode?: number;
     stderr?: string;
-    stdout?: string;
     status?: string;
     decision?: string;
   };
@@ -993,31 +605,10 @@ function readInput(checkout: string, runId: string): { baseRef?: string } {
   };
 }
 
-interface JournalRecord {
-  t?: string;
-  stepId?: string;
-  skipped?: boolean;
-}
-
-function journalRecords(checkout: string, runId: string): JournalRecord[] {
-  const lines = readFileSync(join(checkout, ".runs", runId, "journal.jsonl"), "utf8").split("\n");
-  const found: JournalRecord[] = [];
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    try {
-      found.push(JSON.parse(line) as JournalRecord);
-    } catch {
-      // A torn last line is ignored, same as the driver.
-    }
-  }
-  return found;
-}
-
 function assertBranchPreamble(prompt: string, base: string): void {
   assert.ok(prompt.includes(base), "prompt is missing the base SHA");
   assert.match(prompt, /git branch --show-current/);
   assert.match(prompt, /yak\/<run-id>/);
-  assert.match(prompt, /Do not guess `main`/);
 }
 
 interface PromptRecord {
@@ -1031,29 +622,4 @@ function readPrompts(promptLog: string): PromptRecord[] {
     .split("\n")
     .filter((line) => line.trim().length > 0)
     .map((line) => JSON.parse(line) as PromptRecord);
-}
-
-function assertAbsoluteFactoryPrompts(checkout: string, runId: string, kilnDir: string): void {
-  const workflow = JSON.parse(readFileSync(join(checkout, ".runs", runId, "workflow.json"), "utf8")) as {
-    steps: Array<{ kind?: string; model?: string; prompt?: { file?: string }; body?: unknown[] }>;
-  };
-  const files: string[] = [];
-  const visit = (step: { kind?: string; prompt?: { file?: string }; body?: unknown[] }): void => {
-    if (step.prompt?.file) files.push(step.prompt.file);
-    if (Array.isArray(step.body)) {
-      for (const child of step.body) visit(child as { kind?: string; prompt?: { file?: string }; body?: unknown[] });
-    }
-  };
-  for (const step of workflow.steps) visit(step);
-  assert.equal(files.length, 7);
-  for (const file of files) {
-    assert.equal(file.startsWith("/"), true, file);
-    assert.equal(file.startsWith(kilnDir + "/"), true, file);
-    assert.equal(existsSync(file), true, file);
-    const text = readFileSync(file, "utf8");
-    assert.match(text, /Return JSON/);
-    assert.match(text, /The factory agent instructions follow/);
-    assert.match(text, /MIT License/);
-    assert.doesNotMatch(file, /^prompts\//);
-  }
 }

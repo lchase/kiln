@@ -3,14 +3,15 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import {
   inFlightCount,
-  taskPhase,
+  jobState,
   type Action,
   type Observation,
   type ObservedGate,
+  type ObservedJob,
 } from "./reconcile.js";
 
 export interface LaunchReport {
-  taskId: string;
+  jobId: string;
   repo: string;
   output: string;
 }
@@ -43,69 +44,68 @@ export function gateAnswerCommand(
   runId: string,
   gate: ObservedGate,
   choice: string,
-  taskTitle?: string,
+  title?: string,
 ): string {
   const pendingDir = shellQuote(`.runs/${runId}/pending`);
   const answerFile = shellQuote(`.runs/${runId}/pending/${gate.stepId}.answer.json`);
   const field = gate.answerField ?? "decision";
   const answer = JSON.stringify({ [field]: choice });
-  const title = taskTitle ? `KILN_TASK_TITLE=${shellQuote(taskTitle)} ` : "";
-  return `cd ${shellQuote(checkout)} && mkdir -p ${pendingDir} && printf '%s\\n' ${shellQuote(answer)} > ${answerFile} && ${title}${yakInvocation("resume", runId)}`;
+  const titlePrefix = title ? `KILN_TASK_TITLE=${shellQuote(title)} ` : "";
+  return `cd ${shellQuote(checkout)} && mkdir -p ${pendingDir} && printf '%s\\n' ${shellQuote(answer)} > ${answerFile} && ${titlePrefix}${yakInvocation("resume", runId)}`;
 }
 
-export function renderStatus(observation: Observation, planId?: string): string {
-  const plans = planId ? observation.plans.filter((plan) => plan.planId === planId) : observation.plans;
-  if (planId && plans.length === 0) {
-    throw new Error(`No plan ${planId}.`);
+export function renderStatus(observation: Observation, jobId?: string): string {
+  const jobs = jobId ? observation.jobs.filter((job) => job.jobId === jobId) : observation.jobs;
+  if (jobId && jobs.length === 0) {
+    throw new Error(`No job ${jobId}.`);
   }
-  if (plans.length === 0) return "no plans\n";
+  if (jobs.length === 0) return "no jobs\n";
 
   const lines: string[] = [];
-  for (const plan of plans) {
-    lines.push(`plan ${plan.planId}`);
-    if (plan.error) {
-      lines.push(`  invalid: ${plan.error}`);
+  for (const job of jobs) {
+    if (job.error) {
+      lines.push(`${job.jobId}  invalid: ${job.error}`);
       continue;
     }
-    lines.push(`  ${plan.approved ? "approved" : "unapproved"}`);
-    for (const task of observation.tasks.filter((candidate) => candidate.planId === plan.planId)) {
-      const phase = taskPhase(task, observation);
-      const run = task.run ? `  run ${task.run.runId}` : "";
-      const branch = phase === "ok" && task.run ? `  branch yak/${task.run.runId}` : "";
-      lines.push(`  ${task.taskId}  ${task.repo}  ${phase}${run}${branch}`);
-      if (phase === "launch-failed" && task.logPath) {
-        lines.push(`    log ${task.logPath}`);
-      }
-      if (phase === "dead" && task.run) {
-        lines.push(`    fix: cd ${shellQuote(task.run.checkout)} && ${yakInvocation("cancel", task.run.runId)}`);
-      }
-      if (task.run?.status === "suspended") {
-        for (const gate of task.run.gates) {
-          lines.push(`    gate ${gate.stepId}: ${gate.prompt}`);
-          const choices = gate.choices?.length ? gate.choices : [];
-          for (const choice of choices) {
-            lines.push(
-              `    answer ${choice}: ${gateAnswerCommand(task.run.checkout, task.run.runId, gate, choice, task.run.taskTitle)}`,
-            );
-          }
-        }
+    const state = jobState(job, observation);
+    const run = job.run ? `  run ${job.run.runId}` : "";
+    const branch = state === "done" && job.run ? `  branch yak/${job.run.runId}` : "";
+    lines.push(`${job.jobId}  ${job.repo}  ${job.workflow}  ${state}${run}${branch}`);
+    if (state === "failed" && job.launchFailed && job.logPath) {
+      lines.push(`  log ${job.logPath}`);
+    }
+    if (state === "failed" && job.run?.status === "ok" && !job.run.gateDecision) {
+      lines.push("  no readable approval decision");
+    }
+    if (state === "dead" && job.run) {
+      lines.push(`  fix: cd ${shellQuote(job.run.checkout)} && ${yakInvocation("cancel", job.run.runId)}`);
+    }
+    if (state === "needs-human" && job.run) {
+      for (const gate of job.run.gates) {
+        lines.push(`  gate ${gate.stepId}: ${gate.prompt}`);
+        appendGateCommands(lines, job, gate);
       }
     }
   }
   return `${lines.join("\n")}\n`;
 }
 
+function appendGateCommands(lines: string[], job: ObservedJob, gate: ObservedGate): void {
+  const choices = gate.choices?.length ? gate.choices : ["approve", "reject"];
+  if (choices.includes("approve")) lines.push(`  approve: kiln approve ${job.jobId}`);
+  if (choices.includes("reject")) lines.push(`  reject: kiln reject ${job.jobId}`);
+}
+
 export function renderTick(observation: Observation, actions: Action[], launches: LaunchReport[]): string {
   const lines = [`tick  inFlight=${inFlightCount(observation)}  maxConcurrent=${observation.maxConcurrent}`];
-  for (const plan of observation.plans) {
-    if (plan.error) lines.push(`skip ${plan.planId} (invalid: ${plan.error})`);
-    else if (!plan.approved) lines.push(`skip ${plan.planId} (not approved)`);
+  for (const job of observation.jobs) {
+    if (job.error) lines.push(`skip ${job.jobId} (invalid: ${job.error})`);
   }
   for (const action of actions) {
     if (action.type === "clear-breadcrumb") lines.push(`clear breadcrumb ${action.path}`);
   }
   for (const launch of launches) {
-    lines.push(`launch ${launch.taskId}  ${launch.repo}`);
+    lines.push(`launch ${launch.jobId}  ${launch.repo}`);
     for (const line of launch.output.split("\n")) {
       if (line.trim()) lines.push(`  ${line}`);
     }

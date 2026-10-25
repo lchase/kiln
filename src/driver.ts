@@ -13,23 +13,20 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import type { LoadedKilnConfig } from "./config.js";
-import { packageRoot } from "./paths.js";
-import { planBasename } from "./plans.js";
-import { renderStatus, renderTick, yakCliPath, type LaunchReport } from "./report.js";
+import { readJobSpec } from "./jobs.js";
+import { jobBasename, packageRoot } from "./paths.js";
 import {
-  contractPublishers,
-  plan,
-  publisherKey,
+  decide,
+  jobState,
   type Observation,
   type ObservedGate,
-  type ObservedPlan,
+  type ObservedJob,
   type ObservedRun,
-  type ObservedTask,
   type RunStatus,
 } from "./reconcile.js";
-import { PlanSchema, type Plan, type Task } from "./schemas.js";
-import { validatePlan } from "./validate.js";
-import { materializeFeatureWorkflow } from "./workflow.js";
+import { gateAnswerCommand, renderStatus, renderTick, yakCliPath, type LaunchReport } from "./report.js";
+import { JobSchema, type Job } from "./schemas.js";
+import { materializeWorkflow, workflowInputs } from "./workflow.js";
 
 interface JournalEvent {
   t: string;
@@ -41,151 +38,163 @@ interface JournalEvent {
 
 interface Breadcrumb {
   path: string;
-  planId: string;
-  taskId: string;
+  jobId: string;
   pid: number;
   logPath: string;
 }
 
 interface World {
   observation: Observation;
-  plans: Map<string, Plan>;
+  jobs: Map<string, Job>;
 }
 
 const TAG_PREFIX = "kiln:";
 
-export function taskTag(planId: string, taskId: string): string {
-  return `${TAG_PREFIX}${planId}/${taskId}`;
+export function jobTag(jobId: string): string {
+  return `${TAG_PREFIX}${jobId}`;
 }
 
-export function parseTaskTag(tag: string): { planId: string; taskId: string } | undefined {
+export function parseJobTag(tag: string): string | undefined {
   if (!tag.startsWith(TAG_PREFIX)) return undefined;
-  const rest = tag.slice(TAG_PREFIX.length);
-  const slash = rest.indexOf("/");
-  if (slash <= 0 || slash === rest.length - 1) return undefined;
-  return { planId: rest.slice(0, slash), taskId: rest.slice(slash + 1) };
+  const id = tag.slice(TAG_PREFIX.length);
+  if (!id || id.includes("/")) return undefined;
+  return id;
 }
 
-export function approvePlan(config: LoadedKilnConfig, planId: string): string {
-  const file = join(config.plansDir, `${planBasename(planId)}.json`);
-  if (!existsSync(file)) {
-    throw new Error(`No plan ${planId} at ${file}. Run kiln refine first.`);
-  }
-  const plan = parseStoredPlan(JSON.parse(readFileSync(file, "utf8")));
-  if (plan.requirementId !== planId) {
-    throw new Error(`Plan file ${file} is for ${plan.requirementId}, not ${planId}.`);
-  }
-  mkdirSync(config.plansDir, { recursive: true });
-  const approvedPath = join(config.plansDir, `${planBasename(planId)}.approved.json`);
-  const body = { planId, approvedAt: new Date().toISOString() };
-  writeFileSync(approvedPath, `${JSON.stringify(body, null, 2)}\n`);
-  return `Approved ${planId}\nWrote ${approvedPath}\n`;
-}
-
-export function runStatus(config: LoadedKilnConfig, planId?: string): string {
-  return renderStatus(observe(config).observation, planId);
+export function runStatus(config: LoadedKilnConfig, jobId?: string): string {
+  return renderStatus(observe(config).observation, jobId);
 }
 
 export function runTick(config: LoadedKilnConfig): string {
   return withTickLock(config.kilnDir, () => {
     const world = observe(config);
-    const actions = plan(world.observation);
+    const actions = decide(world.observation);
     return apply(config, world, actions);
   });
 }
 
+export function answerJob(config: LoadedKilnConfig, jobId: string, choice: "approve" | "reject"): string {
+  const world = observe(config);
+  const job = world.observation.jobs.find((candidate) => candidate.jobId === jobId);
+  if (!job) {
+    throw new Error(`No job ${jobId}.`);
+  }
+  if (job.error) {
+    throw new Error(`Job ${jobId} is invalid: ${job.error}`);
+  }
+  const state = jobState(job, world.observation);
+  if (state !== "needs-human" || !job.run) {
+    throw new Error(`Job ${jobId} is ${state}, not needs-human.`);
+  }
+  const gate = gateForChoice(job.run.gates, choice);
+  if (!gate) {
+    throw new Error(`Job ${jobId} has no open gate that accepts ${choice}.`);
+  }
+  const command = gateAnswerCommand(job.run.checkout, job.run.runId, gate, choice, job.run.title ?? job.title);
+  const result = spawnSync("sh", ["-c", command], { encoding: "utf8" });
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  if (result.status !== 0) {
+    throw new Error(output.trim() || `Could not ${choice} job ${jobId}.`);
+  }
+  return output.endsWith("\n") || output.length === 0 ? output : `${output}\n`;
+}
+
+function gateForChoice(gates: ObservedGate[], choice: "approve" | "reject"): ObservedGate | undefined {
+  return (
+    gates.find((gate) => gate.choices?.includes(choice)) ??
+    gates.find((gate) => !gate.choices?.length)
+  );
+}
+
 function observe(config: LoadedKilnConfig): World {
-  const loaded = loadPlans(config);
+  const loaded = loadJobs(config);
   const runs = scanRuns(config);
   const breadcrumbs = readBreadcrumbs(config.kilnDir);
-  const tasks: ObservedTask[] = [];
-  const publishers: Observation["publishers"] = {};
+  const jobs: ObservedJob[] = [];
+  const records = new Map<string, Job>();
   const breadcrumbsToClear: Observation["breadcrumbsToClear"] = [];
-  const plansById = new Map<string, Plan>();
 
-  for (const loadedPlan of loaded) {
-    if (!loadedPlan.plan) continue;
-    plansById.set(loadedPlan.meta.planId, loadedPlan.plan);
-    Object.assign(publishers, contractPublishers(loadedPlan.meta.planId, loadedPlan.plan));
-    for (const task of loadedPlan.plan.tasks) {
-      const tag = taskTag(loadedPlan.meta.planId, task.id);
-      const run = runs.get(tag);
-      const crumb = breadcrumbs.find(
-        (candidate) => candidate.planId === loadedPlan.meta.planId && candidate.taskId === task.id,
-      );
-      if (crumb && run) breadcrumbsToClear.push({ path: crumb.path });
-      const childAlive = crumb ? pidAlive(crumb.pid) : false;
-      tasks.push({
-        planId: loadedPlan.meta.planId,
-        taskId: task.id,
-        repo: task.repo,
-        dependsOn: task.dependsOn,
-        approved: loadedPlan.meta.approved,
-        launching: Boolean(crumb) && !run && childAlive,
-        launchFailed: Boolean(crumb) && !run && !childAlive,
-        ...(crumb?.logPath ? { logPath: crumb.logPath } : {}),
-        ...(run ? { run } : {}),
-      });
-    }
+  const ordered = [...loaded].sort((left, right) => {
+    const byTime = (left.job?.createdAt ?? "").localeCompare(right.job?.createdAt ?? "");
+    if (byTime !== 0) return byTime;
+    return left.meta.jobId.localeCompare(right.meta.jobId);
+  });
+
+  for (const entry of ordered) {
+    if (entry.job) records.set(entry.job.id, entry.job);
+    const tag = jobTag(entry.meta.jobId);
+    const run = runs.get(tag);
+    const crumb = breadcrumbs.find((candidate) => candidate.jobId === entry.meta.jobId);
+    if (crumb && run) breadcrumbsToClear.push({ path: crumb.path });
+    const childAlive = crumb ? pidAlive(crumb.pid) : false;
+    const repoKnown = entry.job ? Boolean(config.repos[entry.job.repo]) : false;
+    const repoError =
+      entry.job && !repoKnown ? `Repo ${entry.job.repo} is not registered.` : undefined;
+    jobs.push({
+      jobId: entry.meta.jobId,
+      repo: entry.job?.repo ?? "",
+      workflow: entry.job?.workflow ?? "",
+      title: entry.job?.title ?? "",
+      dependsOn: entry.job?.dependsOn ?? [],
+      launching: Boolean(crumb) && !run && childAlive,
+      launchFailed: Boolean(crumb) && !run && !childAlive,
+      ...(crumb?.logPath ? { logPath: crumb.logPath } : {}),
+      ...(run ? { run } : {}),
+      ...(entry.meta.error || repoError ? { error: entry.meta.error ?? repoError } : {}),
+    });
   }
 
   return {
     observation: {
       maxConcurrent: config.maxConcurrent,
-      plans: loaded.map((entry) => entry.meta),
-      tasks,
-      publishers,
+      jobs,
       breadcrumbsToClear,
     },
-    plans: plansById,
+    jobs: records,
   };
 }
 
-function apply(
-  config: LoadedKilnConfig,
-  world: World,
-  actions: ReturnType<typeof plan>,
-): string {
+function apply(config: LoadedKilnConfig, world: World, actions: ReturnType<typeof decide>): string {
   const launches: LaunchReport[] = [];
   for (const action of actions) {
     if (action.type === "clear-breadcrumb") {
       rmSync(action.path, { force: true });
       continue;
     }
-    const planFile = world.plans.get(action.planId);
-    const task = planFile?.tasks.find((candidate) => candidate.id === action.taskId);
-    if (!planFile || !task) {
-      throw new Error(`Tick planned a launch for ${action.planId}/${action.taskId}, which is not in the observed plans.`);
+    const job = world.jobs.get(action.jobId);
+    if (!job) {
+      throw new Error(`Tick planned a launch for ${action.jobId}, which is not in the observed jobs.`);
     }
-    launches.push(launchTask(config, planFile, task));
+    launches.push(launchJob(config, job));
   }
   return renderTick(world.observation, actions, launches);
 }
 
-function launchTask(config: LoadedKilnConfig, planFile: Plan, task: Task): LaunchReport {
-  const checkout = config.checkouts[task.repo];
-  const testCommand = config.testCommands[task.repo];
+function launchJob(config: LoadedKilnConfig, job: Job): LaunchReport {
+  const repo = config.repos[job.repo];
+  if (!repo) {
+    throw new Error(`Repo ${job.repo} is not registered. Run kiln repo add ${job.repo} <path>.`);
+  }
+  const testCommand = repo.test;
   if (!testCommand?.trim()) {
     throw new Error(
-      `Repo ${task.repo} has an empty test command. Set repos.${task.repo}.test in the kiln config. The feature workflow refuses to run an empty KILN_TEST.`,
+      `Repo ${job.repo} has no test command. Set repos.${job.repo}.test. The feature workflow refuses to run an empty KILN_TEST.`,
     );
   }
-  const workflow = materializeFeatureWorkflow(config.kilnDir, planFile.requirementId, task.id);
-  const logPath = join(
-    config.kilnDir,
-    "logs",
-    planBasename(planFile.requirementId),
-    `${planBasename(task.id)}.log`,
-  );
+  const workflow = materializeWorkflow(config.kilnDir, job.id, job.workflow);
+  const logPath = join(config.kilnDir, "logs", `${jobBasename(job.id)}.log`);
   mkdirSync(dirname(logPath), { recursive: true });
-  const crumbPath = breadcrumbPath(config.kilnDir, planFile.requirementId, task.id);
-  ensureCheckoutExcludes(checkout);
+  const crumbPath = breadcrumbPath(config.kilnDir, job.id);
+  ensureCheckoutExcludes(repo.path);
 
-  const input = {
-    ...taskInput(planFile, task),
+  const specText = readJobSpec(config.kilnDir, job);
+  const sourceWorkflow = readFileSync(join(packageRoot(), "workflows", `${job.workflow}.yaml`), "utf8");
+  const input = workflowInputs(sourceWorkflow, {
+    title: job.title,
+    specText,
     runNonce: randomUUID(),
-    baseRef: checkoutHead(checkout),
-  };
+    baseRef: checkoutHead(repo.path),
+  });
   const args = [
     yakCliPath(),
     "run",
@@ -195,155 +204,96 @@ function launchTask(config: LoadedKilnConfig, planFile: Plan, task: Task): Launc
     "--isolation",
     "worktree",
     "--tag",
-    taskTag(planFile.requirementId, task.id),
+    jobTag(job.id),
   ];
   for (const [key, value] of Object.entries(input)) {
     args.push("--input", `${key}=${value}`);
   }
 
-  writeBreadcrumb(crumbPath, {
-    planId: planFile.requirementId,
-    taskId: task.id,
-    pid: 0,
-    logPath,
-  });
+  writeBreadcrumb(crumbPath, { jobId: job.id, pid: 0, logPath });
   const logFd = openSync(logPath, "a");
   try {
     const child = spawn(process.execPath, args, {
-      cwd: checkout,
+      cwd: repo.path,
       detached: true,
       stdio: ["ignore", logFd, logFd],
       env: {
         ...process.env,
         KILN_TEST: testCommand,
-        KILN_TASK_TITLE: task.title,
+        KILN_TASK_TITLE: job.title,
         KILN_VERIFY_WRAPPER: join(packageRoot(), "dist", "truncate-output.js"),
       },
     });
     child.unref();
     const pid = child.pid ?? 0;
-    writeBreadcrumb(crumbPath, {
-      planId: planFile.requirementId,
-      taskId: task.id,
-      pid,
-      logPath,
-    });
-    return { taskId: task.id, repo: task.repo, output: `pid ${pid}\nlog ${logPath}` };
+    writeBreadcrumb(crumbPath, { jobId: job.id, pid, logPath });
+    return { jobId: job.id, repo: job.repo, output: `pid ${pid}\nlog ${logPath}` };
   } catch (error) {
     writeFileSync(logPath, `${errorMessage(error)}\n`);
-    return { taskId: task.id, repo: task.repo, output: `pid 0\nlog ${logPath}` };
+    return { jobId: job.id, repo: job.repo, output: `pid 0\nlog ${logPath}` };
   } finally {
     closeSync(logFd);
   }
 }
 
-function taskInput(planFile: Plan, task: Task): Record<string, string> {
-  const publishers = contractPublishers(planFile.requirementId, planFile);
-  const contracts = planFile.contracts.filter((contract) => {
-    const publisherId = publishers[publisherKey(planFile.requirementId, contract.id)];
-    return task.dependsOn.includes(contract.id) || publisherId === task.id;
-  });
-  const text = contracts.map(
-    (contract) => `${contract.id} (${contract.kind}, owner ${contract.owner}): ${contract.spec}`,
-  );
-  return {
-    title: task.title,
-    description: task.description,
-    acceptance: task.acceptance.join("\n"),
-    contracts: text.length > 0 ? text.join("\n") : "none",
-  };
+interface LoadedJob {
+  meta: { jobId: string; error?: string };
+  job?: Job;
 }
 
-interface LoadedPlan {
-  meta: ObservedPlan;
-  plan?: Plan;
+function loadJobs(config: LoadedKilnConfig): LoadedJob[] {
+  if (!existsSync(config.jobsDir)) return [];
+  return readdirSync(config.jobsDir)
+    .filter((name) => name.endsWith(".json"))
+    .sort()
+    .map((name) => loadJobFile(join(config.jobsDir, name)));
 }
 
-function loadPlans(config: LoadedKilnConfig): LoadedPlan[] {
-  if (!existsSync(config.plansDir)) return [];
-  const files = readdirSync(config.plansDir)
-    .filter((name) => name.endsWith(".json") && !name.endsWith(".approved.json"))
-    .sort();
-  return files.map((name) => loadPlanFile(config, join(config.plansDir, name)));
-}
-
-function loadPlanFile(config: LoadedKilnConfig, file: string): LoadedPlan {
+function loadJobFile(file: string): LoadedJob {
+  const fileId = basename(file, ".json");
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(file, "utf8"));
   } catch (error) {
-    return { meta: { planId: planIdFromFile(file), approved: false, error: errorMessage(error) } };
+    return { meta: { jobId: fileId, error: errorMessage(error) } };
   }
-  let plan: Plan;
-  try {
-    plan = parseStoredPlan(raw);
-  } catch (error) {
-    return { meta: { planId: planIdFromFile(file), approved: false, error: errorMessage(error) } };
+  const parsed = JobSchema.safeParse(raw);
+  if (!parsed.success) {
+    return { meta: { jobId: fileId, error: parsed.error.message } };
   }
-  const approved = existsSync(approvalPath(config, plan.requirementId));
-  if (`${planBasename(plan.requirementId)}.json` !== basename(file)) {
+  const job = parsed.data;
+  if (`${jobBasename(job.id)}.json` !== basename(file)) {
     return {
       meta: {
-        planId: plan.requirementId,
-        approved,
-        error: `Plan file ${basename(file)} does not match requirement ${plan.requirementId}.`,
+        jobId: job.id,
+        error: `Job file ${basename(file)} does not match id ${job.id}.`,
       },
     };
   }
-  const issues = validatePlan(plan);
-  if (issues.length > 0) {
-    return {
-      meta: {
-        planId: plan.requirementId,
-        approved,
-        error: issues.map((issue) => issue.message).join(" "),
-      },
-    };
+  if ("state" in (raw as Record<string, unknown>)) {
+    return { meta: { jobId: job.id, error: "Job state is derived and must not be stored." } };
   }
-  return { meta: { planId: plan.requirementId, approved }, plan };
-}
-
-function parseStoredPlan(raw: unknown): Plan {
-  if (isRefinePlan(raw)) return PlanSchema.parse(raw.plan);
-  return PlanSchema.parse(raw);
-}
-
-function isRefinePlan(raw: unknown): raw is { kind: "plan"; plan: unknown } {
-  return (
-    typeof raw === "object" &&
-    raw !== null &&
-    "kind" in raw &&
-    raw.kind === "plan" &&
-    "plan" in raw
-  );
-}
-
-function planIdFromFile(file: string): string {
-  return basename(file, ".json");
-}
-
-function approvalPath(config: LoadedKilnConfig, planId: string): string {
-  return join(config.plansDir, `${planBasename(planId)}.approved.json`);
+  return { meta: { jobId: job.id }, job };
 }
 
 function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun> {
   const byTag = new Map<string, ObservedRun>();
-  for (const checkout of Object.values(config.checkouts)) {
-    for (const runDir of listRunDirs(checkout)) {
+  for (const repo of Object.values(config.repos)) {
+    for (const runDir of listRunDirs(repo.path)) {
       const events = readJournal(runDir);
       const started = events.find((event) => event.t === "run.started");
-      if (!started?.tag || !parseTaskTag(started.tag)) continue;
+      if (!started?.tag || !parseJobTag(started.tag)) continue;
       const runId = basename(runDir);
       const status = classify(events);
-      const gateDecision = status === "ok" ? readApproveDecision(runDir) : undefined;
-      const taskTitle = readRunTitle(runDir);
+      const gateDecision = readApproveDecision(runDir);
+      const title = readRunTitle(runDir);
       const run: ObservedRun = {
         runId,
-        checkout,
+        checkout: repo.path,
         status,
         gates: status === "suspended" ? openGates(runDir, events) : [],
         ...(gateDecision ? { gateDecision } : {}),
-        ...(taskTitle ? { taskTitle } : {}),
+        ...(title ? { title } : {}),
       };
       const previous = byTag.get(started.tag);
       if (!previous || run.runId > previous.runId) byTag.set(started.tag, run);
@@ -477,8 +427,8 @@ function answerShape(schema: unknown): { field: string; choices: string[] } | un
   return undefined;
 }
 
-function breadcrumbPath(kilnDir: string, planId: string, taskId: string): string {
-  return join(kilnDir, "launching", planBasename(planId), `${planBasename(taskId)}.json`);
+function breadcrumbPath(kilnDir: string, jobId: string): string {
+  return join(kilnDir, "launching", `${jobBasename(jobId)}.json`);
 }
 
 function writeBreadcrumb(path: string, body: Omit<Breadcrumb, "path">): void {
@@ -490,25 +440,20 @@ function readBreadcrumbs(kilnDir: string): Breadcrumb[] {
   const root = join(kilnDir, "launching");
   if (!existsSync(root)) return [];
   const found: Breadcrumb[] = [];
-  for (const planDir of readdirSync(root, { withFileTypes: true })) {
-    if (!planDir.isDirectory()) continue;
-    const dir = join(root, planDir.name);
-    for (const name of readdirSync(dir)) {
-      if (!name.endsWith(".json")) continue;
-      const path = join(dir, name);
-      try {
-        const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<Omit<Breadcrumb, "path">>;
-        if (!parsed.planId || !parsed.taskId) continue;
-        found.push({
-          path,
-          planId: parsed.planId,
-          taskId: parsed.taskId,
-          pid: typeof parsed.pid === "number" ? parsed.pid : 0,
-          logPath: typeof parsed.logPath === "string" ? parsed.logPath : "",
-        });
-      } catch {
-        // An unreadable crumb is left for a person. It does not count as a task.
-      }
+  for (const name of readdirSync(root)) {
+    if (!name.endsWith(".json")) continue;
+    const path = join(root, name);
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<Omit<Breadcrumb, "path">>;
+      if (!parsed.jobId) continue;
+      found.push({
+        path,
+        jobId: parsed.jobId,
+        pid: typeof parsed.pid === "number" ? parsed.pid : 0,
+        logPath: typeof parsed.logPath === "string" ? parsed.logPath : "",
+      });
+    } catch {
+      // An unreadable crumb is left for a person. It does not count as a job.
     }
   }
   return found;

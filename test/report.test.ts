@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
-import { yakCliPath } from "../src/report.js";
+import { gateAnswerCommand, yakCliPath } from "../src/report.js";
 
 describe("yakCliPath", () => {
   it("points at the installed @lchase/yak bin", () => {
@@ -21,5 +21,21 @@ describe("yakCliPath", () => {
       dir = parent;
     }
     assert.equal(pkg?.name, "@lchase/yak");
+  });
+});
+
+describe("gateAnswerCommand", () => {
+  it("answers the gate with the resolved node and yak binaries", () => {
+    const command = gateAnswerCommand(
+      "/tmp/checkout",
+      "run-1",
+      { stepId: "approve", prompt: "Approve?", answerField: "decision", choices: ["approve", "reject"] },
+      "approve",
+      "Show the summary",
+    );
+    assert.match(command, new RegExp(yakCliPath().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(command, /\{"decision":"approve"\}/);
+    assert.match(command, /KILN_TASK_TITLE=/);
+    assert.doesNotMatch(command, /node_modules\/\.bin/);
   });
 });

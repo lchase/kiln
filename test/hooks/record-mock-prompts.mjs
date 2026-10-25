@@ -23,6 +23,9 @@ export async function load(url, context, nextLoad) {
           join(process.env.KILN_PROMPT_LOG, "prompts.jsonl"),
           JSON.stringify({ stepId: this.stepId, callIndex: this.callIndex, prompt: _req.prompt }) + "\\n",
         );
+      }
+      if (process.env.KILN_MOCK_DELAY_MS && ["security", "ux", "ui", "code"].includes(this.stepId)) {
+        await new Promise((resolve) => setTimeout(resolve, Number(process.env.KILN_MOCK_DELAY_MS)));
       }`,
   );
   return { ...loaded, format: "module", source: patched, shortCircuit: true };

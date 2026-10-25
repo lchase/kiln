@@ -1,26 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  contractPublishers,
-  plan,
-  taskPhase,
-  type Observation,
-  type ObservedRun,
-  type ObservedTask,
-} from "../src/reconcile.js";
-import type { Plan, Repo } from "../src/schemas.js";
-
-const PLAN_ID = "PEBBLE-WEEKLY";
+import { decide, jobState, type Observation, type ObservedJob, type ObservedRun } from "../src/reconcile.js";
 
 function run(status: ObservedRun["status"], runId = "2026-10-24T00-00-00Z-aaaa"): ObservedRun {
   return { runId, checkout: "/tmp/checkout", status, gates: [] };
 }
 
-function task(overrides: Partial<ObservedTask> & Pick<ObservedTask, "taskId" | "repo">): ObservedTask {
+function job(overrides: Partial<ObservedJob> & Pick<ObservedJob, "jobId" | "repo">): ObservedJob {
   return {
-    planId: PLAN_ID,
+    workflow: "feature",
+    title: overrides.jobId,
     dependsOn: [],
-    approved: true,
     launching: false,
     launchFailed: false,
     ...overrides,
@@ -30,205 +20,117 @@ function task(overrides: Partial<ObservedTask> & Pick<ObservedTask, "taskId" | "
 function observation(overrides: Partial<Observation> = {}): Observation {
   return {
     maxConcurrent: 2,
-    plans: [{ planId: PLAN_ID, approved: true }],
-    tasks: [],
-    publishers: {},
+    jobs: [],
     breadcrumbsToClear: [],
     ...overrides,
   };
 }
 
-describe("plan", () => {
-  it("does not launch an unapproved task", () => {
-    const obs = observation({
-      plans: [{ planId: PLAN_ID, approved: false }],
-      tasks: [task({ taskId: "publish", repo: "ai-core", approved: false })],
-    });
-    assert.deepEqual(plan(obs), []);
-    assert.equal(taskPhase(obs.tasks[0]!, obs), "unapproved");
-  });
+describe("decide", () => {
+  it("keeps a dependent blocked until the upstream job is done", () => {
+    const first = job({ jobId: "job-a", repo: "api" });
+    const second = job({ jobId: "job-b", repo: "web", dependsOn: ["job-a"] });
+    const obs = observation({ jobs: [first, second] });
 
-  it("launches the contract publisher first and the dependent only after that run is ok", () => {
-    const publisher = task({ taskId: "publish-reflection-api", repo: "ai-core" });
-    const dependent = task({
-      taskId: "render-reflection",
-      repo: "frontend",
-      dependsOn: ["weekly-reflection-api"],
-    });
-    const obs = observation({
-      tasks: [publisher, dependent],
-      publishers: { [`${PLAN_ID}/weekly-reflection-api`]: "publish-reflection-api" },
-    });
+    assert.equal(jobState(first, obs), "queued");
+    assert.equal(jobState(second, obs), "blocked");
+    assert.deepEqual(decide(obs), [{ type: "launch", jobId: "job-a", repo: "api" }]);
 
-    assert.deepEqual(plan(obs), [
-      { type: "launch", planId: PLAN_ID, taskId: "publish-reflection-api", repo: "ai-core" },
-    ]);
+    first.run = run("suspended");
+    first.run.gates = [{ stepId: "approve", prompt: "Approve?", choices: ["approve", "reject"] }];
+    assert.equal(jobState(first, obs), "needs-human");
+    assert.equal(jobState(second, obs), "blocked");
+    assert.deepEqual(decide(obs), []);
 
-    publisher.run = run("suspended");
-    assert.deepEqual(plan(obs), []);
-    assert.equal(taskPhase(dependent, obs), "blocked");
-
-    publisher.run = run("failed");
-    assert.deepEqual(plan(obs), []);
-
-    publisher.run = run("ok");
-    publisher.run.gateDecision = "reject";
-    assert.equal(taskPhase(publisher, obs), "rejected");
-    assert.deepEqual(plan(obs), []);
-    assert.equal(taskPhase(dependent, obs), "blocked");
-
-    publisher.run = run("ok");
-    assert.equal(taskPhase(publisher, obs), "ok-undecided");
-    assert.equal(taskPhase(dependent, obs), "blocked");
-    assert.deepEqual(plan(obs), []);
-
-    publisher.run.gateDecision = "approve";
-    assert.equal(taskPhase(publisher, obs), "ok");
-    assert.deepEqual(plan(obs), [
-      { type: "launch", planId: PLAN_ID, taskId: "render-reflection", repo: "frontend" },
-    ]);
-
-    dependent.run = run("alive", "2026-10-24T00-00-01Z-bbbb");
-    assert.deepEqual(plan(obs), []);
-  });
-
-  it("treats a task id dependency as met only when that task finished ok", () => {
-    const first = task({ taskId: "publish", repo: "frontend" });
-    const second = task({ taskId: "follow", repo: "frontend", dependsOn: ["publish"] });
-    const obs = observation({ tasks: [first, second] });
-    const firstAction = plan(obs)[0];
-    assert.equal(firstAction?.type, "launch");
-    if (firstAction?.type === "launch") assert.equal(firstAction.taskId, "publish");
     first.run = run("ok");
-    assert.equal(taskPhase(second, obs), "blocked");
+    first.run.gateDecision = "reject";
+    assert.equal(jobState(first, obs), "rejected");
+    assert.equal(jobState(second, obs), "blocked");
+    assert.deepEqual(decide(obs), []);
+
+    first.run = run("ok");
+    assert.equal(jobState(first, obs), "failed");
+    assert.equal(jobState(second, obs), "blocked");
+    assert.deepEqual(decide(obs), []);
+
     first.run.gateDecision = "approve";
-    const follow = plan(obs)[0];
-    assert.equal(follow?.type, "launch");
-    if (follow?.type === "launch") assert.equal(follow.taskId, "follow");
+    assert.equal(jobState(first, obs), "done");
+    assert.deepEqual(decide(obs), [{ type: "launch", jobId: "job-b", repo: "web" }]);
   });
 
-  it("launches nothing when the ready task already has a run", () => {
-    const obs = observation({
-      tasks: [task({ taskId: "publish", repo: "ai-core", run: run("ok") })],
-    });
-    assert.deepEqual(plan(obs), []);
+  it("calls an in-flight approve 'approved' and does not unblock on it", () => {
+    const first = job({ jobId: "job-a", repo: "api", run: run("alive") });
+    first.run!.gateDecision = "approve";
+    const second = job({ jobId: "job-b", repo: "web", dependsOn: ["job-a"] });
+    const obs = observation({ jobs: [first, second] });
+    assert.equal(jobState(first, obs), "approved");
+    assert.equal(jobState(second, obs), "blocked");
+    assert.deepEqual(decide(obs), []);
   });
 
-  it("respects maxConcurrent and still launches at most one task per tick", () => {
-    const tasks = ["calm-empty", "sunday-heading", "week-label"].map((taskId) =>
-      task({ taskId, repo: "frontend" as Repo }),
-    );
-    const blocked = observation({ maxConcurrent: 1, tasks });
+  it("respects maxConcurrent and still launches at most one job per tick", () => {
+    const jobs = ["calm-empty", "sunday-heading", "week-label"].map((jobId) => job({ jobId, repo: "web" }));
+    const blocked = observation({ maxConcurrent: 1, jobs });
     assert.deepEqual(
-      plan(blocked).filter((action) => action.type === "launch"),
-      [{ type: "launch", planId: PLAN_ID, taskId: "calm-empty", repo: "frontend" }],
+      decide(blocked).filter((action) => action.type === "launch"),
+      [{ type: "launch", jobId: "calm-empty", repo: "web" }],
     );
 
-    tasks[0]!.run = run("suspended");
-    assert.deepEqual(plan(blocked), []);
+    jobs[0]!.run = run("suspended");
+    assert.deepEqual(decide(blocked), []);
 
-    const open = observation({ maxConcurrent: 2, tasks });
-    const secondLaunch = plan(open).find((action) => action.type === "launch");
+    const open = observation({ maxConcurrent: 2, jobs });
+    const secondLaunch = decide(open).find((action) => action.type === "launch");
     assert.equal(secondLaunch?.type, "launch");
-    if (secondLaunch?.type === "launch") assert.equal(secondLaunch.taskId, "sunday-heading");
+    if (secondLaunch?.type === "launch") assert.equal(secondLaunch.jobId, "sunday-heading");
 
     const wide = observation({
       maxConcurrent: 5,
-      tasks: tasks.map((item) => ({ ...item, run: undefined })),
+      jobs: jobs.map((item) => ({ ...item, run: undefined })),
     });
-    const launches = plan(wide).filter((action) => action.type === "launch");
+    const launches = decide(wide).filter((action) => action.type === "launch");
     assert.equal(launches.length, 1);
-    assert.equal(launches[0]?.type, "launch");
-    if (launches[0]?.type === "launch") assert.equal(launches[0].taskId, "calm-empty");
   });
 
-  it("counts a launching breadcrumb as in flight and clears one once a run exists", () => {
+  it("counts a launching job as running and clears the breadcrumb once a run exists", () => {
     const obs = observation({
       maxConcurrent: 1,
-      tasks: [
-        task({ taskId: "publish", repo: "ai-core", launching: true }),
-        task({ taskId: "other", repo: "frontend" }),
+      jobs: [
+        job({ jobId: "publish", repo: "api", launching: true }),
+        job({ jobId: "other", repo: "web" }),
       ],
     });
-    assert.deepEqual(plan(obs), []);
+    assert.equal(jobState(obs.jobs[0]!, obs), "running");
+    assert.deepEqual(decide(obs), []);
 
-    obs.tasks[0]!.launching = false;
-    obs.tasks[0]!.run = run("alive");
+    obs.jobs[0]!.launching = false;
+    obs.jobs[0]!.run = run("alive");
     obs.breadcrumbsToClear = [{ path: "/kiln/launching/publish.json" }];
-    assert.deepEqual(plan(obs), [{ type: "clear-breadcrumb", path: "/kiln/launching/publish.json" }]);
+    assert.deepEqual(decide(obs), [{ type: "clear-breadcrumb", path: "/kiln/launching/publish.json" }]);
   });
 
-  it("does not relaunch a launch-failed task and does not let it take a slot", () => {
-    const failed = task({ taskId: "calm-empty", repo: "frontend", launchFailed: true, logPath: "/kiln/logs/calm-empty.log" });
-    const next = task({ taskId: "sunday-heading", repo: "frontend" });
-    const obs = observation({ maxConcurrent: 1, tasks: [failed, next] });
-    assert.equal(taskPhase(failed, obs), "launch-failed");
-    assert.deepEqual(plan(obs), [
-      { type: "launch", planId: PLAN_ID, taskId: "sunday-heading", repo: "frontend" },
-    ]);
-  });
-
-  it("does not let an ok run with no gate decision unblock its dependent", () => {
-    const publisher = task({ taskId: "publish", repo: "frontend", run: run("ok") });
-    const dependent = task({ taskId: "follow", repo: "frontend", dependsOn: ["publish"] });
-    const obs = observation({ tasks: [publisher, dependent] });
-    assert.equal(publisher.run?.gateDecision, undefined);
-    assert.equal(taskPhase(publisher, obs), "ok-undecided");
-    assert.equal(taskPhase(dependent, obs), "blocked");
-    assert.deepEqual(plan(obs), []);
+  it("does not relaunch a launch that died before a journal and does not let it take a slot", () => {
+    const failed = job({
+      jobId: "calm-empty",
+      repo: "web",
+      launchFailed: true,
+      logPath: "/kiln/logs/calm-empty.log",
+    });
+    const next = job({ jobId: "sunday-heading", repo: "web" });
+    const obs = observation({ maxConcurrent: 1, jobs: [failed, next] });
+    assert.equal(jobState(failed, obs), "failed");
+    assert.deepEqual(decide(obs), [{ type: "launch", jobId: "sunday-heading", repo: "web" }]);
   });
 
   it("does not let a dead run take a slot or satisfy a dependency", () => {
-    const dead = task({ taskId: "publish", repo: "frontend", run: run("dead") });
-    const next = task({ taskId: "follow", repo: "frontend", dependsOn: ["publish"] });
-    const obs = observation({ maxConcurrent: 1, tasks: [dead, next] });
-    assert.equal(taskPhase(dead, obs), "dead");
-    assert.equal(taskPhase(next, obs), "blocked");
+    const dead = job({ jobId: "publish", repo: "web", run: run("dead") });
+    const next = job({ jobId: "follow", repo: "web", dependsOn: ["publish"] });
+    const obs = observation({ maxConcurrent: 1, jobs: [dead, next] });
+    assert.equal(jobState(dead, obs), "dead");
+    assert.equal(jobState(next, obs), "blocked");
 
-    const independent = task({ taskId: "sunday-heading", repo: "frontend" });
-    const open = observation({ maxConcurrent: 1, tasks: [dead, independent] });
-    assert.deepEqual(plan(open), [
-      { type: "launch", planId: PLAN_ID, taskId: "sunday-heading", repo: "frontend" },
-    ]);
-  });
-});
-
-describe("contractPublishers", () => {
-  it("maps a contract to the owner task that does not depend on it", () => {
-    const planFile: Plan = {
-      requirementId: PLAN_ID,
-      contracts: [
-        {
-          id: "weekly-reflection-api",
-          between: ["frontend", "ai-core"],
-          owner: "ai-core",
-          kind: "api",
-          spec: "GET /v1/reflection",
-        },
-      ],
-      tasks: [
-        {
-          id: "publish-reflection-api",
-          repo: "ai-core",
-          title: "Publish",
-          description: "Publish the endpoint.",
-          workflow: "feature",
-          dependsOn: [],
-          acceptance: ["The endpoint returns a paragraph."],
-        },
-        {
-          id: "render-reflection",
-          repo: "frontend",
-          title: "Render",
-          description: "Render the paragraph.",
-          workflow: "feature",
-          dependsOn: ["weekly-reflection-api"],
-          acceptance: ["Sunday shows the paragraph."],
-        },
-      ],
-    };
-    assert.deepEqual(contractPublishers(PLAN_ID, planFile), {
-      [`${PLAN_ID}/weekly-reflection-api`]: "publish-reflection-api",
-    });
+    const independent = job({ jobId: "sunday-heading", repo: "web" });
+    const open = observation({ maxConcurrent: 1, jobs: [dead, independent] });
+    assert.deepEqual(decide(open), [{ type: "launch", jobId: "sunday-heading", repo: "web" }]);
   });
 });

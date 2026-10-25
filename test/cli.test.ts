@@ -7,148 +7,116 @@ import { after, describe, it } from "node:test";
 import { packageRoot } from "../src/paths.js";
 
 const root = packageRoot();
-const isolatedHome = mkdtempSync(join(tmpdir(), "kiln-home-"));
+const keep: string[] = [];
 
 function runCli(
   args: string[],
-  options: { cwd?: string; home?: string } = {},
+  options: { cwd: string; home: string },
 ): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync(process.execPath, [join(root, "dist", "cli.js"), ...args], {
-    cwd: options.cwd ?? root,
+    cwd: options.cwd,
     encoding: "utf8",
-    env: { ...process.env, HOME: options.home ?? isolatedHome },
+    env: { ...process.env, HOME: options.home },
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
-function splitOutput(stdout: string): { json: Record<string, unknown>; markdown: string } {
-  const at = stdout.indexOf("\n\n#");
-  assert.ok(at > 0, `expected JSON followed by markdown, got:\n${stdout}`);
-  return {
-    json: JSON.parse(stdout.slice(0, at)) as Record<string, unknown>,
-    markdown: stdout.slice(at + 2),
-  };
+function tempWork(): { cwd: string; home: string } {
+  const cwd = mkdtempSync(join(tmpdir(), "kiln-cli-"));
+  keep.push(cwd);
+  const home = join(cwd, "home");
+  mkdirSync(home);
+  return { cwd, home };
 }
 
 after(() => {
-  rmSync(join(root, ".kiln"), { recursive: true, force: true });
-  rmSync(isolatedHome, { recursive: true, force: true });
+  for (const dir of keep) rmSync(dir, { recursive: true, force: true });
 });
 
-describe("kiln refine", () => {
-  it("prints usage and exits 2 without a requirement file", () => {
-    const result = runCli([]);
+describe("kiln cli", () => {
+  it("prints usage and exits 2 without a command", () => {
+    const { cwd, home } = tempWork();
+    const result = runCli([], { cwd, home });
     assert.equal(result.status, 2);
-    assert.match(result.stderr, /Usage: kiln refine/);
+    assert.match(result.stderr, /Usage: kiln repo add/);
+    assert.match(result.stderr, /kiln add <workflow>/);
+    assert.doesNotMatch(result.stderr, /refine/);
   });
 
-  it("prints questions for the thin example and does not write a plan", () => {
-    const result = runCli(["refine", "examples/requirements/thin-jira.md"]);
-    assert.equal(result.status, 0, result.stderr);
-    const { json, markdown } = splitOutput(result.stdout);
-    assert.equal(json.kind, "questions");
-    assert.match(markdown, /^# Not ready: Search is weird/);
-    assert.match(markdown, /acceptance criteria/);
-    assert.match(markdown, /## Questions/);
-    assert.match(result.stderr, /fictional example data/);
-    assert.equal(existsSync(join(root, ".kiln", "plans", "EX-201.json")), false);
+  it("rejects an unknown repo and an unknown workflow at add", () => {
+    const { cwd, home } = tempWork();
+    const web = join(cwd, "web");
+    mkdirSync(web);
+    const spec = join(cwd, "spec.md");
+    writeFileSync(spec, "# Show the summary\n\nA person can read it.\n");
+
+    const added = runCli(["repo", "add", "web", web, "--test", "npm test"], { cwd, home });
+    assert.equal(added.status, 0, added.stderr);
+
+    const unknownRepo = runCli(["add", "feature", "--repo", "missing", "--spec", spec], { cwd, home });
+    assert.equal(unknownRepo.status, 1);
+    assert.match(unknownRepo.stderr, /Unknown repo missing/);
+    assert.equal(existsJobs(cwd), false);
+
+    const unknownWorkflow = runCli(["add", "no-such-flow", "--repo", "web", "--spec", spec], { cwd, home });
+    assert.equal(unknownWorkflow.status, 1);
+    assert.match(unknownWorkflow.stderr, /Unknown workflow no-such-flow/);
+    assert.equal(existsJobs(cwd), false);
   });
 
-  it("prints a cross-repo plan and writes it under .kiln/plans", () => {
-    const result = runCli(["refine", "examples/requirements/weekly-reflection.md"]);
-    assert.equal(result.status, 0, result.stderr);
-    const { json, markdown } = splitOutput(result.stdout);
-    assert.equal(json.kind, "plan");
-    const plan = json.plan as {
-      contracts: { id: string; owner: string; between: string[] }[];
-      tasks: { repo: string; dependsOn: string[]; title: string }[];
+  it("registers two repos, lists both, and stores a job with no state field", () => {
+    const { cwd, home } = tempWork();
+    const web = join(cwd, "web");
+    const api = join(cwd, "api");
+    mkdirSync(web);
+    mkdirSync(api);
+    const spec = join(cwd, "sunday.md");
+    writeFileSync(spec, "# Show the summary\n\nA person can read it.\n");
+
+    assert.equal(runCli(["repo", "add", "web", web, "--test", "npm test"], { cwd, home }).status, 0);
+    assert.equal(runCli(["repo", "add", "api", api, "--test", "npm test"], { cwd, home }).status, 0);
+    const list = runCli(["repo", "list"], { cwd, home });
+    assert.equal(list.status, 0, list.stderr);
+    assert.ok(list.stdout.includes(`web  ${web}  test npm test`), list.stdout);
+    assert.ok(list.stdout.includes(`api  ${api}  test npm test`), list.stdout);
+
+    const created = runCli(["add", "feature", "--repo", "web", "--spec", spec, "--title", "Sunday summary"], {
+      cwd,
+      home,
+    });
+    assert.equal(created.status, 0, created.stderr);
+    const id = created.stdout.match(/^added (\S+)/m)?.[1];
+    assert.ok(id);
+    const jobPath = join(cwd, ".kiln", "jobs", `${id}.json`);
+    const job = JSON.parse(readFileSync(jobPath, "utf8")) as {
+      id: string;
+      repo: string;
+      workflow: string;
+      spec: string;
+      title: string;
+      createdAt: string;
+      state?: string;
+      dependsOn?: string[];
     };
-    assert.equal(plan.contracts.length, 1);
-    const contract = plan.contracts[0];
-    assert.ok(contract);
-    assert.equal(contract.between.includes(contract.owner), true);
-    const ownerTask = plan.tasks.find((task) => task.repo === contract.owner);
-    const other = plan.tasks.find((task) => task.repo !== contract.owner);
-    assert.ok(ownerTask);
-    assert.ok(other);
-    assert.equal(ownerTask.dependsOn.includes(contract.id), false);
-    assert.equal(other.dependsOn.includes(contract.id), true);
-    assert.notEqual(ownerTask.title, other.title);
-    assert.ok(markdown.indexOf("## Contracts") < markdown.indexOf("## Tasks"));
-    assert.match(markdown, /frontend/);
-    assert.match(markdown, /ai-core/);
+    assert.equal(job.id, id);
+    assert.equal(job.repo, "web");
+    assert.equal(job.workflow, "feature");
+    assert.equal(job.title, "Sunday summary");
+    assert.equal(job.spec, `specs/${id}.md`);
+    assert.equal(job.dependsOn, undefined);
+    assert.equal(job.state, undefined);
+    assert.equal(typeof job.createdAt, "string");
+    assert.equal(readFileSync(join(cwd, ".kiln", job.spec), "utf8"), readFileSync(spec, "utf8"));
 
-    const jsonPath = join(root, ".kiln", "plans", "EX-202.json");
-    const markdownPath = join(root, ".kiln", "plans", "EX-202.md");
-    assert.equal(existsSync(join(root, "examples", "plans")), false);
-    assert.match(readFileSync(jsonPath, "utf8"), /"requirementId": "EX-202"/);
-    assert.match(readFileSync(markdownPath, "utf8"), /^# Plan: Weekly reflection summary/);
-    assert.match(result.stderr, new RegExp(jsonPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  });
-
-  it("prints a single-repo bug plan with no contracts", () => {
-    const result = runCli(["refine", "examples/requirements/duplicate-habit.md"]);
-    assert.equal(result.status, 0, result.stderr);
-    const { json, markdown } = splitOutput(result.stdout);
-    assert.equal(json.kind, "plan");
-    const plan = json.plan as { contracts: unknown[]; tasks: { repo: string; workflow: string }[] };
-    assert.deepEqual(plan.contracts, []);
-    assert.equal(plan.tasks[0]?.repo, "frontend");
-    assert.equal(plan.tasks[0]?.workflow, "bug");
-    assert.match(markdown, /None\. This plan stays inside one repo/);
-    assert.match(readFileSync(join(root, ".kiln", "plans", "EX-203.json"), "utf8"), /"contracts": \[\]/);
-  });
-
-  it("refuses a requirement outside the examples when no local config exists", () => {
-    const dir = mkdtempSync(join(tmpdir(), "kiln-no-config-"));
-    const requirement = join(dir, "real-requirement.md");
-    writeFileSync(requirement, "---\nid: EX-SECRET\nsource: jira\ntitle: Internal ticket\n---\n\nDo not commit this.\n");
-    try {
-      const result = runCli(["refine", requirement], { cwd: dir, home: dir });
-      assert.equal(result.status, 1);
-      assert.match(result.stderr, /No local kiln config found/);
-      assert.match(result.stderr, /\.kiln/);
-      assert.equal(existsSync(join(dir, ".kiln")), false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("writes a plan next to a local config and does not use the example plans directory", () => {
-    const dir = mkdtempSync(join(tmpdir(), "kiln-local-"));
-    const kilnDir = join(dir, ".kiln");
-    mkdirSync(kilnDir);
-    writeFileSync(
-      join(kilnDir, "kiln.config.json"),
-      JSON.stringify({
-        note: "Local test config. Not a real company.",
-        repos: {
-          frontend: {
-            checkout: join(root, "examples", "checkouts", "frontend"),
-            ownership: join(root, "examples", "ownership", "frontend.json"),
-          },
-          "ai-core": {
-            checkout: join(root, "examples", "checkouts", "ai-core"),
-            ownership: join(root, "examples", "ownership", "ai-core.json"),
-          },
-          "evals-obs": {
-            checkout: join(root, "examples", "checkouts", "evals-obs"),
-            ownership: join(root, "examples", "ownership", "evals-obs.json"),
-          },
-        },
-      }),
-    );
-    const requirement = join(kilnDir, "requirements.md");
-    writeFileSync(requirement, readFileSync(join(root, "examples", "requirements", "duplicate-habit.md")));
-    try {
-      const result = runCli(["refine", requirement], { cwd: dir, home: isolatedHome });
-      assert.equal(result.status, 0, result.stderr);
-      assert.doesNotMatch(result.stderr, /fictional example data/);
-      const written = join(kilnDir, "plans", "EX-203.json");
-      assert.match(readFileSync(written, "utf8"), /"repo": "frontend"/);
-      assert.equal(existsSync(join(root, "examples", "plans")), false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const missingAfter = runCli(["add", "feature", "--repo", "api", "--spec", spec, "--after", "missing-job"], {
+      cwd,
+      home,
+    });
+    assert.equal(missingAfter.status, 1);
+    assert.match(missingAfter.stderr, /missing-job/);
   });
 });
+
+function existsJobs(cwd: string): boolean {
+  return existsSync(join(cwd, ".kiln", "jobs"));
+}
