@@ -136,7 +136,7 @@ function observe(config: LoadedKilnConfig): World {
       workflow: entry.job?.workflow ?? "",
       title: entry.job?.title ?? "",
       dependsOn: entry.job?.dependsOn ?? [],
-      ...(entry.job ? { source: entry.job.source } : {}),
+      ...(entry.job?.source ? { source: entry.job.source } : {}),
       launching: Boolean(crumb) && !run && childAlive,
       launchFailed: Boolean(crumb) && !run && !childAlive,
       ...(crumb?.logPath ? { logPath: crumb.logPath } : {}),

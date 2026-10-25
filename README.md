@@ -62,11 +62,11 @@ npm run kiln -- add feature --repo api --spec api-spec.md --after <job-id>
 }
 ```
 
-`dependsOn` is omitted when the job has no `--after`. `source` records which intake created the job. State is not stored.
+`dependsOn` is omitted when the job has no `--after`. `source` records which intake created the job. Jobs written before intake omit `source` and still run. State is not stored.
 
 ## Intake
 
-Every intake writes the same job: `id`, `repo`, `workflow`, `spec`, `title`, optional `dependsOn`, and `source`. `source` is `{ "kind": "file" | "prompt" | "tickets", "ref": "..." }`. Status prints `source <kind> <ref>`. Tick, reconcile, and status do not special-case an intake. The adapters are `src/intake/file.ts`, `src/intake/prompt.ts`, and `src/intake/tickets.ts`.
+Every intake writes the same job: `id`, `repo`, `workflow`, `spec`, `title`, optional `dependsOn`, and `source`. `source` is `{ "kind": "file" | "prompt" | "tickets", "ref": "..." }`. Status prints `source <kind> <ref>` when the job has one. Tick, reconcile, and status do not special-case an intake. The adapters are `src/intake/file.ts`, `src/intake/prompt.ts`, and `src/intake/tickets.ts`.
 
 Jira is the next adapter. It is not implemented here.
 
@@ -98,7 +98,7 @@ npm run kiln -- import ./tickets --repo web --workflow feature --context spec.md
 
 One file becomes one job. Blocked-by becomes `dependsOn` on the imported job ids. An unknown number is an error that names the ticket file, and no new job is written.
 
-`--workflow` defaults to `feature`. A ticket that says it is a spike, or that it has no product code (including front matter `type: spike`), uses the `investigation` workflow when `workflows/investigation.yaml` exists. That workflow is not in this repo, so Kiln keeps the requested workflow (default `feature`) and prints a warning.
+`--workflow` defaults to `feature`. Kiln switches a ticket to `investigation` only when `workflows/investigation.yaml` exists and the ticket is a spike: front matter `type` is `spike`, `investigation`, or `research` (the word after a colon counts, as in `wayfinder:research`), the title contains spike or probe, or the text says "no product code". A body that only mentions an upstream spike stays on the requested workflow. `investigation` is not in this repo, so a spike ticket stays on the requested workflow and Kiln prints a warning.
 
 `--context` defaults to `spec.md` in the parent of the ticket directory when that file is present. The text is appended to every job spec as a `## Background` section. A context file larger than 40KB is not copied in. The spec names its path instead.
 
@@ -123,7 +123,7 @@ while true; do npm run kiln -- tick; sleep 30; done
 
 A job is ready when every job in `dependsOn` is `done` and the number of jobs in flight is under `maxConcurrent`. A rejected gate does not unblock the next job. An ok run with no readable approval does not either.
 
-`npm run kiln -- status` lists jobs across repos. Under each valid job it prints `source <kind> <ref>`. For `needs-human` it prints `approve: kiln approve <id>` and `reject: kiln reject <id>`. Run those as `npm run kiln -- approve <id>` and `npm run kiln -- reject <id>`. For `done` it prints `branch yak/<run-id>` in that repo's checkout. For `blocked` on a dependency id that has no job file, it prints `blocked on missing job <id>`.
+`npm run kiln -- status` lists jobs across repos. When a job has `source`, status prints `source <kind> <ref>`. For `needs-human` it prints `approve: kiln approve <id>` and `reject: kiln reject <id>`. Run those as `npm run kiln -- approve <id>` and `npm run kiln -- reject <id>`. For `done` it prints `branch yak/<run-id>` in that repo's checkout. For `blocked` on a dependency id that has no job file, it prints `blocked on missing job <id>`.
 
 State is derived from the yak journal and gate files:
 

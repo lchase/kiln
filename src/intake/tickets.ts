@@ -78,7 +78,7 @@ export function importTickets(config: LoadedKilnConfig, input: ImportTicketsInpu
 
   const existing = new Map<string, Job>();
   for (const job of listValidJobs(config)) {
-    if (job.source.kind !== "tickets") continue;
+    if (job.source?.kind !== "tickets") continue;
     if (!existing.has(job.source.ref)) existing.set(job.source.ref, job);
   }
 
@@ -308,7 +308,7 @@ function parseTicket(dirAbs: string, file: string): ParsedTicket {
     title,
     text,
     blockedBy: dedupeRefs([...meta.blockedBy, ...bodyDeps]),
-    spike: looksLikeSpike(text, meta.type),
+    spike: looksLikeSpike(title, text, meta.type),
   };
 }
 
@@ -415,9 +415,21 @@ function headingTitle(body: string): { title: string; number?: number; rawNumber
   return undefined;
 }
 
-function looksLikeSpike(text: string, type: string | undefined): boolean {
-  if (type && /^(spike|investigation)$/i.test(type)) return true;
-  return /\bspike\b/i.test(text) || /no product code/i.test(text);
+/**
+ * A spike is a typed research ticket, a title that says spike or probe, or text
+ * that says there is no product code. Mentioning an upstream spike in the body
+ * does not count.
+ */
+function looksLikeSpike(title: string, text: string, type: string | undefined): boolean {
+  if (typeLooksLikeSpike(type)) return true;
+  if (/\b(spike|probe)\b/i.test(title)) return true;
+  return /no product code/i.test(text);
+}
+
+/** `spike`, `investigation`, `research`, or that word after a colon (`wayfinder:research`). */
+function typeLooksLikeSpike(type: string | undefined): boolean {
+  if (!type) return false;
+  return type.split(":").some((part) => /^(spike|investigation|research)$/i.test(part.trim()));
 }
 
 function dedupeRefs(refs: TicketRef[]): TicketRef[] {

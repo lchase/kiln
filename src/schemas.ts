@@ -34,7 +34,8 @@ export type JobSource = z.infer<typeof JobSourceSchema>;
  * One unit of factory work. Stored as `<kilnDir>/jobs/<id>.json`.
  * `spec` is a markdown file under the kiln directory.
  * `dependsOn` names other job ids. There is no plan and no stored state.
- * Every intake writes this same shape.
+ * Every intake writes this same shape. `source` is omitted on jobs written
+ * before intake; those files still parse.
  */
 export const JobSchema = z.object({
   id: z.string().min(1),
@@ -43,7 +44,7 @@ export const JobSchema = z.object({
   spec: z.string().min(1),
   title: z.string().min(1),
   dependsOn: z.array(z.string().min(1)).optional(),
-  source: JobSourceSchema,
+  source: JobSourceSchema.optional(),
   createdAt: z.string().min(1),
 });
 export type Job = z.infer<typeof JobSchema>;

@@ -110,15 +110,10 @@ export function writeJob(config: LoadedKilnConfig, input: WriteJobInput): { job:
 }
 
 export function renderAddedJob(job: Job, jsonPath: string): string {
-  return [
-    `added ${job.id}`,
-    `repo ${job.repo}`,
-    `workflow ${job.workflow}`,
-    `spec ${job.spec}`,
-    `source ${job.source.kind} ${job.source.ref}`,
-    `wrote ${jsonPath}`,
-    "",
-  ].join("\n");
+  const lines = [`added ${job.id}`, `repo ${job.repo}`, `workflow ${job.workflow}`, `spec ${job.spec}`];
+  if (job.source) lines.push(`source ${job.source.kind} ${job.source.ref}`);
+  lines.push(`wrote ${jsonPath}`, "");
+  return lines.join("\n");
 }
 
 /** Valid job files. Unreadable files are skipped; the driver reports those. */

@@ -268,11 +268,15 @@ describe("intake", () => {
 
     const imported = runCli(["import", dir, "--repo", "web"], { cwd, home });
     assert.equal(imported.status, 0, imported.stderr);
-    assert.equal(imported.stderr, "");
+    assert.match(imported.stderr, /01-probe-platform\.md/);
+    assert.match(imported.stderr, /using feature/);
+    assert.doesNotMatch(imported.stderr, /02-draft-empty-copy\.md/);
+    assert.doesNotMatch(imported.stderr, /03-render-empty-state\.md/);
+    assert.doesNotMatch(imported.stderr, /04-link-summary\.md/);
     assert.match(imported.stdout, /imported 4 new, 0 unchanged/);
     const jobs = readJobs(cwd);
     assert.equal(jobs.length, 4);
-    const byFile = new Map(jobs.map((job) => [job.source.ref.slice(job.source.ref.lastIndexOf("/") + 1), job]));
+    const byFile = new Map(jobs.map((job) => [job.source?.ref.slice(job.source.ref.lastIndexOf("/") + 1), job]));
     const first = byFile.get("01-probe-platform.md");
     const second = byFile.get("02-draft-empty-copy.md");
     const third = byFile.get("03-render-empty-state.md");
@@ -377,8 +381,8 @@ describe("intake", () => {
     assert.equal(imported.status, 0, imported.stderr);
     const jobs = readJobs(cwd);
     assert.equal(jobs.length, 2);
-    const list = jobs.find((job) => job.source.ref.endsWith("01-list-facts.md"));
-    const record = jobs.find((job) => job.source.ref.endsWith("02-record-answers.md"));
+    const list = jobs.find((job) => job.source?.ref.endsWith("01-list-facts.md"));
+    const record = jobs.find((job) => job.source?.ref.endsWith("02-record-answers.md"));
     assert.ok(list && record);
     assert.equal(record.title, "Record the platform answers");
     assert.equal(record.workflow, "feature");
@@ -411,6 +415,71 @@ describe("intake", () => {
     const job = readJobs(cwd)[0];
     assert.ok(job);
     assert.equal(job.workflow, "feature");
+  });
+
+  it("keeps a ticket on the requested workflow when the body only mentions an upstream spike", () => {
+    const { cwd, home } = tempWork();
+    const web = join(cwd, "web");
+    mkdirSync(web);
+    register(cwd, home, web);
+    const dir = join(cwd, "tickets");
+    writeTickets(dir, {
+      "01-list-facts.md": [
+        "# 01: List the platform facts",
+        "",
+        "**What to build:** Name the two libraries the sample app uses.",
+        "",
+        "**Blocked by:**",
+        "None — can start immediately",
+        "",
+      ].join("\n"),
+      "02-render-empty-state.md": [
+        "# 02: Render the empty state",
+        "",
+        "**What to build:** Use the findings from the 01 spike. Blocked by: 01 spike.",
+        "",
+        "**Blocked by:**",
+        "- 01: List the platform facts",
+        "",
+      ].join("\n"),
+    });
+    const imported = runCli(["import", dir, "--repo", "web", "--workflow", "feature"], { cwd, home });
+    assert.equal(imported.status, 0, imported.stderr);
+    assert.equal(imported.stderr, "");
+    const jobs = readJobs(cwd);
+    assert.equal(jobs.length, 2);
+    for (const job of jobs) assert.equal(job.workflow, "feature");
+    const follow = jobs.find((job) => job.source?.ref.endsWith("02-render-empty-state.md"));
+    assert.ok(follow);
+    assert.equal(follow.workflow, "feature");
+    assert.doesNotMatch(imported.stdout, /investigation/);
+  });
+
+  it("treats front matter type wayfinder:research as a spike", () => {
+    const { cwd, home } = tempWork();
+    const web = join(cwd, "web");
+    mkdirSync(web);
+    register(cwd, home, web);
+    const dir = join(cwd, "tickets");
+    writeTickets(dir, {
+      "01-measure-the-query.md": [
+        "---",
+        "title: Measure the list query",
+        "type: wayfinder:research",
+        "---",
+        "",
+        "Time the query and write the number down.",
+        "",
+      ].join("\n"),
+    });
+    const imported = runCli(["import", dir, "--repo", "web"], { cwd, home });
+    assert.equal(imported.status, 0, imported.stderr);
+    assert.match(imported.stderr, /01-measure-the-query\.md/);
+    assert.match(imported.stderr, /using feature/);
+    const job = readJobs(cwd)[0];
+    assert.ok(job);
+    assert.equal(job.workflow, "feature");
+    assert.equal(job.title, "Measure the list query");
   });
 
   it("attaches parent spec.md as Background, and references a large context by path", () => {
@@ -502,6 +571,75 @@ describe("intake tick", { concurrency: 1 }, () => {
     assert.equal(runIds(web).length, 1);
   });
 
+  it("ticks a job file that has no source and lets it satisfy a dependency", { timeout: 60_000 }, () => {
+    const { cwd, home } = tempWork();
+    const web = join(cwd, "repos", "web");
+    initCheckout(web);
+    register(cwd, home, web);
+    useMock(cwd);
+
+    const id = "j-old-job";
+    const jobsDir = join(cwd, ".kiln", "jobs");
+    const specsDir = join(cwd, ".kiln", "specs");
+    mkdirSync(jobsDir, { recursive: true });
+    mkdirSync(specsDir, { recursive: true });
+    writeFileSync(join(specsDir, `${id}.md`), "# Show the weekly summary\n\nA person can read it.\n");
+    const jobFile = join(jobsDir, `${id}.json`);
+    writeFileSync(
+      jobFile,
+      `${JSON.stringify(
+        {
+          id,
+          repo: "web",
+          workflow: "feature",
+          spec: `specs/${id}.md`,
+          title: "Show the weekly summary",
+          createdAt: "2026-10-24T00:00:00.000Z",
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const spec = join(cwd, "follow.md");
+    writeFileSync(spec, "# Link the summary\n\nPoint at the weekly summary.\n");
+    const created = runCli(
+      ["add", "feature", "--repo", "web", "--spec", spec, "--title", "Link the summary", "--after", id],
+      { cwd, home },
+    );
+    assert.equal(created.status, 0, created.stderr);
+    const follow = created.stdout.match(/^added (\S+)/m)?.[1];
+    assert.ok(follow);
+
+    const listed = runCli(["status"], { cwd, home });
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.match(listed.stdout, new RegExp(`${id}\\s+web\\s+feature\\s+queued`));
+    assert.match(listed.stdout, new RegExp(`${follow}\\s+web\\s+feature\\s+blocked`));
+    assert.doesNotMatch(listed.stdout, /invalid/);
+    assert.doesNotMatch(listed.stdout, new RegExp(`blocked on missing job ${id}`));
+    const oldStatus = runCli(["status", id], { cwd, home });
+    assert.equal(oldStatus.status, 0, oldStatus.stderr);
+    assert.doesNotMatch(oldStatus.stdout, /source /);
+
+    const launched = runCli(["tick"], { cwd, home });
+    assert.equal(launched.status, 0, launched.stderr);
+    assert.match(launched.stdout, new RegExp(`launch ${id}\\s+web`));
+    assert.doesNotMatch(launched.stdout, new RegExp(`launch ${follow}`));
+    waitForStatus(cwd, home, id, new RegExp(`${id}\\s+web\\s+feature\\s+needs-human`));
+
+    const answered = runCli(["approve", id], { cwd, home });
+    assert.equal(answered.status, 0, `${answered.stdout}\n${answered.stderr}`);
+    const ready = runCli(["status", follow], { cwd, home });
+    assert.equal(ready.status, 0, ready.stderr);
+    assert.match(ready.stdout, new RegExp(`${follow}\\s+web\\s+feature\\s+queued`));
+
+    const next = runCli(["tick"], { cwd, home });
+    assert.equal(next.status, 0, next.stderr);
+    assert.match(next.stdout, new RegExp(`launch ${follow}\\s+web`));
+    const stored = JSON.parse(readFileSync(jobFile, "utf8")) as { source?: unknown };
+    assert.equal(stored.source, undefined);
+  });
+
   it("tick launches only the tickets that are not blocked", { timeout: 60_000 }, () => {
     const { cwd, home } = tempWork();
     const web = join(cwd, "repos", "web");
@@ -514,7 +652,7 @@ describe("intake tick", { concurrency: 1 }, () => {
     assert.equal(imported.status, 0, imported.stderr);
 
     const jobs = readJobs(cwd);
-    const byFile = new Map(jobs.map((job) => [job.source.ref.slice(job.source.ref.lastIndexOf("/") + 1), job]));
+    const byFile = new Map(jobs.map((job) => [job.source?.ref.slice(job.source.ref.lastIndexOf("/") + 1), job]));
     const first = byFile.get("01-probe-platform.md");
     const second = byFile.get("02-draft-empty-copy.md");
     const third = byFile.get("03-render-empty-state.md");
