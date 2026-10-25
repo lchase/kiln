@@ -1,0 +1,67 @@
+# One Kiln investigation, run by yak (@lchase/yak).
+#
+# A spike, probe, or research ticket. The agent explores the worktree and
+# returns a findings document. A person approves or rejects it. There is no
+# build, review, verify, or land step, and Kiln does not open a pull request
+# for this workflow, whatever the repo's deliver mode is.
+#
+# The agent artifact is `findings`: `{ "markdown": "<document>" }`.
+# The document uses these headings, in order:
+#   # Findings: <title>
+#   ## Questions
+#   ## Answers          (each answer includes evidence: file paths and command output)
+#   ## Unconfirmed
+#   ## Implications for dependent tickets
+# On approve, Kiln copies that markdown to `<kilnDir>/findings/<jobId>.md`.
+# A later job that depends on this one receives the file as a
+# `## Findings from <title>` section in the spec yak sees.
+#
+# `adapter: "mock"` reads `test/fixtures/kiln-investigation/explore.json`
+# from the checkout. The gate has no fixture.
+# Prompt paths are rewritten to absolute files under the kiln directory
+# before launch, same as workflows/feature.yaml. This prompt has no factory
+# directive; it is stored as itself.
+name: kiln-investigation
+version: "1"
+inputSchema:
+  inline:
+    type: object
+    additionalProperties: false
+    properties:
+      title: { type: string }
+      spec: { type: string }
+      runNonce: { type: string }
+      baseRef: { type: string }
+    required: [title, spec, runNonce, baseRef]
+steps:
+  - id: explore
+    needs: [input]
+    agent:
+      model: opus
+      prompt:
+        file: prompts/kiln/investigation.md
+      schema:
+        inline:
+          type: object
+          additionalProperties: false
+          properties:
+            markdown: { type: string, minLength: 1 }
+          required: [markdown]
+      # Bash can run read-only commands. File-editing tools are omitted.
+      # The prompt forbids any command that writes.
+      tools: [Read, Grep, Glob, Bash]
+    produces: findings
+
+  - id: approve
+    needs: [input, findings]
+    gate:
+      schema:
+        inline:
+          type: object
+          additionalProperties: false
+          properties:
+            decision: { type: string, enum: [approve, reject] }
+          required: [decision]
+      render:
+        inline: "Approve findings for \"{{input.title}}\"?\n\n{{findings.markdown}}"
+    produces: approval

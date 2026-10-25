@@ -1,10 +1,10 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import type { LoadedKilnConfig } from "../config.js";
+import { INVESTIGATION_WORKFLOW } from "../findings.js";
 import { listValidJobs, newJobId, writeJob } from "../jobs.js";
 import type { Job } from "../schemas.js";
 import { assertWorkflowName } from "../workflow.js";
-import { packageRoot } from "../paths.js";
 
 /** Context files larger than this are named in the spec instead of copied in. */
 export const CONTEXT_INLINE_LIMIT = 40 * 1024;
@@ -69,6 +69,13 @@ export function importTickets(config: LoadedKilnConfig, input: ImportTicketsInpu
   assertWorkflowName(requested);
   const context = resolveContext(dirAbs, input.contextPath, input.cwd);
   const tickets = readTickets(dirAbs);
+  const warnings: string[] = [];
+  const workflows = new Map<string, string>();
+  for (const ticket of tickets) {
+    const workflow = workflowFor(ticket, requested);
+    if (workflow !== requested) assertWorkflowName(workflow);
+    workflows.set(ticket.path, workflow);
+  }
   if (input.stack) {
     const offender =
       tickets.find((ticket) => ticket.blockedBy.length > 1) ??
@@ -78,13 +85,15 @@ export function importTickets(config: LoadedKilnConfig, input: ImportTicketsInpu
         `Ticket ${offender.file} has ${offender.blockedBy.length} dependencies. stack needs exactly one.`,
       );
     }
-  }
-  const warnings: string[] = [];
-  const workflows = new Map<string, string>();
-  for (const ticket of tickets) {
-    const workflow = workflowFor(ticket, requested, warnings);
-    if (workflow !== requested) assertWorkflowName(workflow);
-    workflows.set(ticket.path, workflow);
+    for (const ticket of tickets) {
+      const dep = ticket.blockedBy[0];
+      if (!dep) continue;
+      const upstream = tickets.find((candidate) => candidate.number === dep.number);
+      if (!upstream || workflows.get(upstream.path) !== INVESTIGATION_WORKFLOW) continue;
+      throw new Error(
+        `Ticket ${ticket.file} stacks on ${upstream.file}, which is an investigation. An investigation does not land a branch.`,
+      );
+    }
   }
 
   const existing = new Map<string, Job>();
@@ -227,22 +236,17 @@ function composeSpec(ticketText: string, context: ContextFile | undefined): stri
   return `${base}\n## Background\n\n${body}`;
 }
 
-function workflowFor(ticket: ParsedTicket, requested: string, warnings: string[]): string {
-  return workflowForSpike(ticket.file, ticket.spike, requested, warnings);
+function workflowFor(ticket: ParsedTicket, requested: string): string {
+  return workflowForSpike(ticket.spike, requested);
 }
 
 /**
- * Spike and research work uses `investigation` when that workflow file exists.
- * Otherwise the requested workflow is kept and the same warning is recorded.
+ * Spike and research work uses the investigation workflow.
  * Jira intake calls this for issue types Spike and Research.
  */
-export function workflowForSpike(label: string, spike: boolean, requested: string, warnings: string[]): string {
+export function workflowForSpike(spike: boolean, requested: string): string {
   if (!spike) return requested;
-  if (existsSync(join(packageRoot(), "workflows", "investigation.yaml"))) return "investigation";
-  warnings.push(
-    `warning: ${label} looks like a spike or says no product code; workflows/investigation.yaml is missing, using ${requested}.`,
-  );
-  return requested;
+  return INVESTIGATION_WORKFLOW;
 }
 
 function readTickets(dirAbs: string): ParsedTicket[] {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -85,33 +85,29 @@ describe("truncate verify output", () => {
     );
     const expectedOut = truncateCaptured(stdoutText, "stdout");
     const expectedErr = truncateCaptured(stderrText, "stderr");
-    const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
+    const outPath = join(dir, "stdout.txt");
+    const errPath = join(dir, "stderr.txt");
+    const outFd = openSync(outPath, "w");
+    const errFd = openSync(errPath, "w");
+    const status = await new Promise<number | null>((resolve) => {
       const child = spawn(process.execPath, [join(packageRoot(), "dist", "truncate-output.js")], {
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["ignore", outFd, errFd],
         env: { ...process.env, KILN_TEST: `node ${JSON.stringify(script)}` },
       });
-      let stdout = "";
-      let stderr = "";
-      child.stdout?.pause();
-      child.stderr?.pause();
-      setTimeout(() => {
-        child.stdout?.setEncoding("utf8");
-        child.stderr?.setEncoding("utf8");
-        child.stdout?.on("data", (chunk: string) => {
-          stdout += chunk;
-        });
-        child.stderr?.on("data", (chunk: string) => {
-          stderr += chunk;
-        });
-        child.stdout?.resume();
-        child.stderr?.resume();
-      }, 50);
       const killer = setTimeout(() => child.kill("SIGKILL"), 5000);
-      child.on("close", (status) => {
+      child.on("close", (code) => {
         clearTimeout(killer);
-        resolve({ status, stdout, stderr });
+        resolve(code);
       });
     });
+    closeSync(outFd);
+    closeSync(errFd);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const result = {
+      status,
+      stdout: readFileSync(outPath, "utf8"),
+      stderr: readFileSync(errPath, "utf8"),
+    };
     assert.equal(result.status, 4);
     assert.equal(result.stdout, expectedOut);
     assert.equal(result.stderr, expectedErr);

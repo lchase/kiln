@@ -203,6 +203,42 @@ describe("decide", () => {
     ]);
   });
 
+  it("treats an approved investigation as done and does not open a pull request", () => {
+    const upstream = job({
+      jobId: "probe",
+      repo: "web",
+      workflow: "investigation",
+      deliver: "pr",
+      run: run("ok"),
+    });
+    upstream.run!.gateDecision = "approve";
+    const follow = job({
+      jobId: "follow",
+      repo: "web",
+      deliver: "pr",
+      dependsOn: ["probe"],
+    });
+    const pending = observation({ jobs: [upstream, follow] });
+    assert.equal(jobState(upstream, pending), "done");
+    assert.equal(jobState(follow, pending), "queued");
+    assert.deepEqual(decide(pending), [
+      { type: "record-findings", jobId: "probe" },
+      { type: "launch", jobId: "follow", repo: "web" },
+    ]);
+
+    upstream.findingsPath = "/tmp/kiln/findings/probe.md";
+    const stored = observation({ jobs: [upstream, follow] });
+    assert.deepEqual(decide(stored), [{ type: "launch", jobId: "follow", repo: "web" }]);
+
+    upstream.findingsPath = undefined;
+    upstream.run = run("ok");
+    upstream.run.gateDecision = "reject";
+    const rejected = observation({ jobs: [upstream, follow] });
+    assert.equal(jobState(upstream, rejected), "rejected");
+    assert.equal(jobState(follow, rejected), "blocked");
+    assert.deepEqual(decide(rejected), []);
+  });
+
   it("does not let a dead run take a slot or satisfy a dependency", () => {
     const dead = job({ jobId: "publish", repo: "web", run: run("dead") });
     const next = job({ jobId: "follow", repo: "web", dependsOn: ["publish"] });

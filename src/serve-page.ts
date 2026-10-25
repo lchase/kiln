@@ -1,5 +1,6 @@
-import { JOB_STATES } from "./schemas.js";
+import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import { statusDetails, type StatusJobView, type StatusState, type StatusView } from "./report.js";
+import { JOB_STATES } from "./schemas.js";
 
 const REFRESH_SECONDS = 3;
 
@@ -160,8 +161,10 @@ function renderPr(url: string): string {
 
 function resourceLinks(job: StatusJobView): string {
   const links: string[] = [];
-  if (job.specPath) links.push(`<a href="/jobs/${encodeURIComponent(job.jobId)}/spec">Spec</a>`);
-  if (job.logPath) links.push(`<a href="/jobs/${encodeURIComponent(job.jobId)}/log">Log</a>`);
+  const id = encodeURIComponent(job.jobId);
+  if (job.specPath) links.push(`<a href="/jobs/${id}/spec">Spec</a>`);
+  if (job.logPath) links.push(`<a href="/jobs/${id}/log">Log</a>`);
+  if (job.workflow === INVESTIGATION_WORKFLOW) links.push(`<a href="/jobs/${id}/findings">Findings</a>`);
   if (links.length === 0) return "";
   return `<p class="links">${links.join(" ")}</p>`;
 }

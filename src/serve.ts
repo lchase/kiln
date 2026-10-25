@@ -3,6 +3,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import type { LoadedKilnConfig } from "./config.js";
 import { answerJob, readStatus, runTick } from "./driver.js";
+import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import { packageRoot } from "./paths.js";
 import type { StatusJobView } from "./report.js";
 import { renderBoard, renderInbox, renderMessagePage, renderTextPage } from "./serve-page.js";
@@ -158,12 +159,16 @@ async function handle(
     return;
   }
 
-  const page = /^\/jobs\/([^/]+)\/(spec|log)$/.exec(path);
-  if (page?.[1] && (page[2] === "spec" || page[2] === "log")) {
+  const page = /^\/jobs\/([^/]+)\/(spec|log|findings)$/.exec(path);
+  if (page?.[1] && (page[2] === "spec" || page[2] === "log" || page[2] === "findings")) {
     const jobId = parseJobId(page[1]);
     const job = jobId ? findJob(config, jobId) : undefined;
     if (!job) {
       sendHtml(res, 404, renderMessagePage(css, "Not found", jobId ? `No job ${jobId}.` : "Not found."), secrets);
+      return;
+    }
+    if (page[2] === "findings") {
+      sendFindings(res, config, css, secrets, job);
       return;
     }
     const target = page[2] === "spec" ? job.specPath : job.logPath;
@@ -209,6 +214,29 @@ async function answer(
     return;
   }
   redirect(res, redirectTarget(req));
+}
+
+function sendFindings(
+  res: ServerResponse,
+  config: LoadedKilnConfig,
+  css: string,
+  secrets: string[],
+  job: StatusJobView,
+): void {
+  if (job.workflow !== INVESTIGATION_WORKFLOW) {
+    sendHtml(res, 404, renderMessagePage(css, "Not found", "Not found."), secrets);
+    return;
+  }
+  if (!job.findingsPath) {
+    sendHtml(res, 404, renderMessagePage(css, "Not found", "No findings yet."), secrets);
+    return;
+  }
+  const text = readInside(config.kilnDir, job.findingsPath);
+  if (text === undefined) {
+    sendHtml(res, 404, renderMessagePage(css, "Not found", "That file is not in the kiln directory."), secrets);
+    return;
+  }
+  sendHtml(res, 200, renderTextPage(css, `${job.title} findings`, text), secrets);
 }
 
 function findJob(config: LoadedKilnConfig, jobId: string): StatusJobView | undefined {

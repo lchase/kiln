@@ -6,6 +6,13 @@ import { jobBasename, packageRoot } from "./paths.js";
 const FACTORY_DIRECTIVE = /^<!--\s*factory:\s*(prompts\/factory\/[a-z0-9-]+\.md)\s*-->/;
 const WORKFLOW_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const FEATURE_PROMPTS = 7;
+const INVESTIGATION_PROMPTS = 1;
+
+/** Prompt files Kiln rewrites before launch. A mismatch refuses the launch. */
+const PROMPT_COUNTS: Record<string, number> = {
+  feature: FEATURE_PROMPTS,
+  investigation: INVESTIGATION_PROMPTS,
+};
 
 export interface LaunchInput {
   title: string;
@@ -47,6 +54,10 @@ export function assertWorkflowName(name: string): string {
  * to an absolute file under the kiln directory: the Kiln preamble plus the
  * verbatim factory prompt. The content hash is part of the filename, so a
  * prompt edit changes the path yak caches on.
+ *
+ * A preamble that starts with `<!-- factory: prompts/factory/<file>.md -->`
+ * is combined with that factory body. A prompt without that directive is
+ * stored as itself. `prompts/kiln/investigation.md` uses the second form.
  */
 export function materializeWorkflow(kilnDir: string, jobId: string, workflowName: string): string {
   const sourcePath = assertWorkflowName(workflowName);
@@ -61,9 +72,10 @@ export function materializeWorkflow(kilnDir: string, jobId: string, workflowName
     const absolute = writeCombinedPrompt(rel, destDir);
     return `file: ${yamlDoubleQuote(absolute)}`;
   });
-  if (workflowName === "feature" && count !== FEATURE_PROMPTS) {
+  const expected = PROMPT_COUNTS[workflowName];
+  if (expected !== undefined && count !== expected) {
     throw new Error(
-      `Feature workflow has ${count} prompts/kiln refs; expected ${FEATURE_PROMPTS}. Refusing to launch a partial prompt set.`,
+      `${workflowName} workflow has ${count} prompts/kiln refs; expected ${expected}. Refusing to launch a partial prompt set.`,
     );
   }
   if (rendered.includes("file: prompts/")) {
@@ -91,6 +103,11 @@ export function workflowInputs(workflowYaml: string, input: LaunchInput): Record
   return out;
 }
 
+/** True when the workflow runs the repo test command. Investigation does not. */
+export function workflowNeedsTestCommand(workflowYaml: string): boolean {
+  return /\bKILN_TEST\b/.test(workflowYaml) || workflowYaml.includes("KILN_VERIFY_WRAPPER");
+}
+
 function declaredInputProperties(yaml: string): string[] {
   const at = yaml.indexOf("\ninputSchema:");
   const start = at >= 0 ? at : yaml.startsWith("inputSchema:") ? 0 : -1;
@@ -116,17 +133,19 @@ function writeCombinedPrompt(preambleRel: string, destDir: string): string {
   const preamblePath = join(root, preambleRel);
   const preamble = readFileSync(preamblePath, "utf8");
   const directive = preamble.match(FACTORY_DIRECTIVE);
+  let combined: string;
   if (!directive?.[1]) {
-    throw new Error(`${preambleRel} must start with <!-- factory: prompts/factory/<file>.md -->`);
+    combined = `${preamble.trimEnd()}\n`;
+  } else {
+    const factoryRel = directive[1];
+    const factoryPath = join(root, factoryRel);
+    const factoryRoot = join(root, "prompts", "factory") + sep;
+    if (!factoryPath.startsWith(factoryRoot)) {
+      throw new Error(`${preambleRel} factory path ${factoryRel} escapes prompts/factory.`);
+    }
+    const factory = readFileSync(factoryPath, "utf8");
+    combined = `${preamble.trimEnd()}\n\n${factory.trimStart()}`;
   }
-  const factoryRel = directive[1];
-  const factoryPath = join(root, factoryRel);
-  const factoryRoot = join(root, "prompts", "factory") + sep;
-  if (!factoryPath.startsWith(factoryRoot)) {
-    throw new Error(`${preambleRel} factory path ${factoryRel} escapes prompts/factory.`);
-  }
-  const factory = readFileSync(factoryPath, "utf8");
-  const combined = `${preamble.trimEnd()}\n\n${factory.trimStart()}`;
   const digest = createHash("sha256").update(combined).digest("hex").slice(0, 16);
   const outPath = join(destDir, `${basename(preambleRel, ".md")}-${digest}.md`);
   writeFileSync(outPath, combined);

@@ -246,6 +246,35 @@ describe("serve pages", () => {
     assert.match(board, /javascript:alert\(1\)/);
     assert.doesNotMatch(board, /href="javascript:/);
   });
+
+  it("links findings for an investigation job on the inbox and the board", () => {
+    const css = "/* kiln-serve */";
+    const probe = viewJob({
+      jobId: "probe-1",
+      workflow: "investigation",
+      state: "needs-human",
+      title: "Probe the unconfirmed platform facts",
+      findingsPath: "/tmp/kiln/findings/probe-1.md",
+    });
+    const feature = viewJob({
+      jobId: "feat-1",
+      state: "needs-human",
+      title: "Render the empty state",
+    });
+    const inbox = renderInbox(css, { jobs: [probe, feature] });
+    assert.match(inbox, /href="\/jobs\/probe-1\/findings"/);
+    assert.match(inbox, />Findings</);
+    assert.doesNotMatch(inbox, /href="\/jobs\/feat-1\/findings"/);
+
+    const board = renderBoard(css, {
+      jobs: [
+        { ...probe, state: "done" },
+        { ...feature, state: "queued" },
+      ],
+    });
+    assert.match(board, /href="\/jobs\/probe-1\/findings"/);
+    assert.doesNotMatch(board, /href="\/jobs\/feat-1\/findings"/);
+  });
 });
 
 describe("kiln serve", () => {
@@ -409,6 +438,60 @@ describe("kiln serve", () => {
     }
   },
   );
+
+  it("serves escaped findings for an investigation job and links them on the board", async () => {
+    const { cwd, home } = workDir("kiln-serve-findings-");
+    const repo = join(cwd, "web");
+    mkdirSync(repo);
+    assert.equal(runCli(["repo", "add", "web", repo, "--test", "true"], { cwd, home }).status, 0);
+    useMock(home);
+
+    const spec = join(cwd, "probe.md");
+    writeFileSync(spec, "# Probe the unconfirmed platform facts\n\nNo product code.\n");
+    const created = runCli(
+      ["add", "investigation", "--repo", "web", "--spec", spec, "--title", "Probe the unconfirmed platform facts"],
+      { cwd, home },
+    );
+    assert.equal(created.status, 0, created.stderr);
+    const id = created.stdout.match(/^added (\S+)/m)?.[1];
+    assert.ok(id, created.stdout);
+
+    const featureSpec = join(cwd, "follow.md");
+    writeFileSync(featureSpec, "# Render the empty state\n\nShow a sentence.\n");
+    const feature = runCli(
+      ["add", "feature", "--repo", "web", "--spec", featureSpec, "--title", "Render the empty state"],
+      { cwd, home },
+    );
+    assert.equal(feature.status, 0, feature.stderr);
+    const featureId = feature.stdout.match(/^added (\S+)/m)?.[1];
+    assert.ok(featureId, feature.stdout);
+
+    const findingsDir = join(home, ".kiln", "findings");
+    mkdirSync(findingsDir);
+    writeFileSync(join(findingsDir, `${id}.md`), `# Findings\n\n<script>alert(1)</script>\n${TOKEN}\n`);
+
+    const server = await startServe(["--port", "0", "--no-tick"], { cwd, home });
+    try {
+      const board = await text(`${server.url}/board`);
+      assert.equal(board.status, 200);
+      assert.match(board.body, new RegExp(`href="/jobs/${id}/findings"`));
+      assert.doesNotMatch(board.body, new RegExp(`href="/jobs/${featureId}/findings"`));
+      assert.doesNotMatch(board.body, new RegExp(TOKEN));
+
+      const page = await text(`${server.url}/jobs/${id}/findings`);
+      assert.equal(page.status, 200);
+      assert.match(page.body, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+      assert.doesNotMatch(page.body, /<script>alert/);
+      assert.match(page.body, /\[redacted\]/);
+      assert.doesNotMatch(page.body, new RegExp(TOKEN));
+
+      const missing = await text(`${server.url}/jobs/${featureId}/findings`);
+      assert.equal(missing.status, 404);
+      assert.doesNotMatch(missing.body, new RegExp(TOKEN));
+    } finally {
+      await stop(server.child);
+    }
+  });
 
   it(
     "runs kiln tick on an interval while serve is open",

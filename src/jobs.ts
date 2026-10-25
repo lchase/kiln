@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { LoadedKilnConfig } from "./config.js";
+import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import { jobBasename } from "./paths.js";
 import { JobSchema, type Job, type JobSource } from "./schemas.js";
 import { assertWorkflowName } from "./workflow.js";
@@ -142,7 +143,8 @@ export function listValidJobs(config: LoadedKilnConfig): Job[] {
 /**
  * `stack` needs one upstream in the same repo: the pull request has one base
  * branch, and the worktree is cut from that branch. Zero dependencies and
- * two or more are both rejected. An upstream that is not on disk yet is
+ * two or more are both rejected. An investigation upstream is rejected: that
+ * workflow does not land a branch. An upstream that is not on disk yet is
  * allowed here so an import batch can validate the count before every job
  * exists; the same-repo check runs when the upstream file is already there.
  */
@@ -160,6 +162,11 @@ export function assertCanStack(
   }
   const upstreamId = dependsOn[0];
   const upstream = known.find((job) => job.id === upstreamId);
+  if (upstream?.workflow === INVESTIGATION_WORKFLOW) {
+    throw new Error(
+      `stack cannot target investigation job ${upstreamId}. An investigation does not land a branch.`,
+    );
+  }
   if (upstream && upstream.repo !== repo) {
     throw new Error(
       `stack needs upstream ${upstreamId} to be in repo ${repo}. That job is in repo ${upstream.repo}.`,

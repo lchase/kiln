@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import {
   inFlightCount,
   isDone,
@@ -24,6 +25,12 @@ export interface DeliverReport {
   repo: string;
   ok: boolean;
   detail: string;
+}
+
+export interface FindingsReport {
+  jobId: string;
+  status: "wrote" | "missing";
+  path?: string;
 }
 
 export function shellQuote(value: string): string {
@@ -109,6 +116,8 @@ export interface StatusJobView {
   prNumber?: number;
   logPath?: string;
   specPath?: string;
+  /** Absolute path of the approved findings file. Set for an investigation once that file exists. */
+  findingsPath?: string;
   launchFailed: boolean;
   launchError?: string;
   deliveryError?: string;
@@ -155,6 +164,8 @@ export function renderStatus(view: StatusView): string {
 export function statusDetails(job: StatusJobView): string[] {
   const lines: string[] = [];
   if (job.source) lines.push(`source ${job.source.kind} ${job.source.ref}`);
+  if (job.findingsPath) lines.push(`findings ${job.findingsPath}`);
+  else if (job.workflow === INVESTIGATION_WORKFLOW && job.state === "done") lines.push("findings missing");
   if (job.prPending) lines.push("pull request not opened yet");
   if (job.state === "failed" && job.deliveryError) lines.push(job.deliveryError);
   if (job.state === "failed" && job.prClosedUnmerged && job.prNumber) {
@@ -206,6 +217,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
       ...(job.source ? { source: { kind: job.source.kind, ref: job.source.ref } } : {}),
       ...(job.specPath ? { specPath: job.specPath } : {}),
       ...(job.logPath ? { logPath: job.logPath } : {}),
+      ...(job.findingsPath ? { findingsPath: job.findingsPath } : {}),
       launchFailed: job.launchFailed,
       invalidReason: job.error,
       prPending: false,
@@ -237,6 +249,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     ...(prNumber ? { prNumber } : {}),
     ...(job.logPath ? { logPath: job.logPath } : {}),
     ...(job.specPath ? { specPath: job.specPath } : {}),
+    ...(job.findingsPath ? { findingsPath: job.findingsPath } : {}),
     launchFailed: job.launchFailed,
     ...(job.launchError ? { launchError: job.launchError } : {}),
     ...(job.delivery?.error ? { deliveryError: job.delivery.error } : {}),
@@ -309,6 +322,7 @@ export function renderTick(
   actions: Action[],
   launches: LaunchReport[],
   delivers: DeliverReport[] = [],
+  findings: FindingsReport[] = [],
 ): string {
   const lines = [`tick  inFlight=${inFlightCount(observation)}  maxConcurrent=${observation.maxConcurrent}`];
   for (const job of observation.jobs) {
@@ -324,6 +338,13 @@ export function renderTick(
         : `deliver ${deliver.jobId}  ${deliver.repo}  failed: ${deliver.detail}`,
     );
   }
+  for (const recorded of findings) {
+    lines.push(
+      recorded.status === "wrote"
+        ? `findings ${recorded.jobId}  ${recorded.path}`
+        : `findings ${recorded.jobId}  missing`,
+    );
+  }
   for (const launch of launches) {
     lines.push(`launch ${launch.jobId}  ${launch.repo}`);
     for (const line of launch.output.split("\n")) {
@@ -333,7 +354,8 @@ export function renderTick(
   if (
     !actions.some((action) => action.type === "launch") &&
     launches.length === 0 &&
-    delivers.length === 0
+    delivers.length === 0 &&
+    findings.length === 0
   ) {
     lines.push("nothing to launch");
   }

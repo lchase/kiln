@@ -91,6 +91,41 @@ function initCheckout(dir: string): void {
     join(fixtures, "approver.json"),
     `${JSON.stringify([{ output: { decision: "APPROVE", reason: "Reviews passed." } }])}\n`,
   );
+  const investigation = join(dir, "test", "fixtures", "kiln-investigation");
+  mkdirSync(investigation, { recursive: true });
+  writeFileSync(
+    join(investigation, "explore.json"),
+    `${JSON.stringify([
+      {
+        output: {
+          markdown: [
+            "# Findings: Probe the unconfirmed platform facts",
+            "",
+            "## Questions",
+            "",
+            "- Which test runner does the sample app use?",
+            "",
+            "## Answers",
+            "",
+            "The sample app uses node:test.",
+            "",
+            "Evidence:",
+            "",
+            "File: test.mjs",
+            "",
+            "## Unconfirmed",
+            "",
+            "None.",
+            "",
+            "## Implications for dependent tickets",
+            "",
+            "Later tickets can keep node:test.",
+            "",
+          ].join("\n"),
+        },
+      },
+    ])}\n`,
+  );
   git(dir, ["add", "-A"]);
   git(dir, ["commit", "-q", "-m", "initial"]);
 }
@@ -274,11 +309,8 @@ describe("intake", () => {
 
     const imported = runCli(["import", dir, "--repo", "web"], { cwd, home });
     assert.equal(imported.status, 0, imported.stderr);
-    assert.match(imported.stderr, /01-probe-platform\.md/);
-    assert.match(imported.stderr, /using feature/);
-    assert.doesNotMatch(imported.stderr, /02-draft-empty-copy\.md/);
-    assert.doesNotMatch(imported.stderr, /03-render-empty-state\.md/);
-    assert.doesNotMatch(imported.stderr, /04-link-summary\.md/);
+    assert.equal(imported.stderr, "");
+    assert.match(imported.stdout, /01\s+01: Probe the unconfirmed platform facts\s+investigation\s+deps none/);
     assert.match(imported.stdout, /imported 4 new, 0 unchanged/);
     const jobs = readJobs(home);
     assert.equal(jobs.length, 4);
@@ -288,8 +320,9 @@ describe("intake", () => {
     const third = byFile.get("03-render-empty-state.md");
     const fourth = byFile.get("04-link-summary.md");
     assert.ok(first && second && third && fourth);
+    assert.equal(first.workflow, "investigation");
+    for (const job of [second, third, fourth]) assert.equal(job.workflow, "feature");
     for (const job of [first, second, third, fourth]) {
-      assert.equal(job.workflow, "feature");
       assert.equal(job.repo, "web");
       assert.equal(job.source.kind, "tickets");
       assert.equal(job.state, undefined);
@@ -347,7 +380,8 @@ describe("intake", () => {
     writeTickets(dir, fourTickets);
     const dry = runCli(["import", dir, "--repo", "web", "--dry-run"], { cwd, home });
     assert.equal(dry.status, 0, dry.stderr);
-    assert.match(dry.stdout, /01\s+01: Probe the unconfirmed platform facts\s+feature\s+deps none\s+new/);
+    assert.match(dry.stdout, /01\s+01: Probe the unconfirmed platform facts\s+investigation\s+deps none\s+new/);
+    assert.equal(dry.stderr, "");
     assert.match(dry.stdout, /03\s+03: Render the empty state\s+feature\s+deps 01\s+new/);
     assert.match(dry.stdout, /04\s+04: Link the summary to the empty state\s+feature\s+deps 01, 02\s+new/);
     assert.match(dry.stdout, /dry-run: 4 new, 0 unchanged, created nothing/);
@@ -396,7 +430,7 @@ describe("intake", () => {
     assert.match(imported.stdout, /02\s+Record the platform answers\s+feature\s+deps 01/);
   });
 
-  it("uses feature and warns when a spike ticket has no investigation workflow", () => {
+  it("imports a spike ticket as investigation", () => {
     const { cwd, home } = tempWork();
     const web = join(cwd, "web");
     mkdirSync(web);
@@ -415,12 +449,11 @@ describe("intake", () => {
     });
     const imported = runCli(["import", dir, "--repo", "web"], { cwd, home });
     assert.equal(imported.status, 0, imported.stderr);
-    assert.match(imported.stderr, /01-time-the-query\.md/);
-    assert.match(imported.stderr, /investigation\.yaml is missing, using feature/);
-    assert.doesNotMatch(imported.stdout, /warning:/);
+    assert.equal(imported.stderr, "");
+    assert.match(imported.stdout, /01\s+01: Time the list query\s+investigation\s+deps none/);
     const job = readJobs(home)[0];
     assert.ok(job);
-    assert.equal(job.workflow, "feature");
+    assert.equal(job.workflow, "investigation");
   });
 
   it("keeps a ticket on the requested workflow when the body only mentions an upstream spike", () => {
@@ -480,11 +513,11 @@ describe("intake", () => {
     });
     const imported = runCli(["import", dir, "--repo", "web"], { cwd, home });
     assert.equal(imported.status, 0, imported.stderr);
-    assert.match(imported.stderr, /01-measure-the-query\.md/);
-    assert.match(imported.stderr, /using feature/);
+    assert.equal(imported.stderr, "");
+    assert.match(imported.stdout, /investigation/);
     const job = readJobs(home)[0];
     assert.ok(job);
-    assert.equal(job.workflow, "feature");
+    assert.equal(job.workflow, "investigation");
     assert.equal(job.title, "Measure the list query");
   });
 
@@ -686,7 +719,7 @@ describe("intake tick", { concurrency: 1 }, () => {
     assert.doesNotMatch(tick3.stdout, new RegExp(`launch ${third.id}`));
     assert.doesNotMatch(tick3.stdout, new RegExp(`launch ${fourth.id}`));
 
-    waitForStatus(cwd, home, first.id, new RegExp(`${first.id}\\s+web\\s+feature\\s+needs-human`));
+    waitForStatus(cwd, home, first.id, new RegExp(`${first.id}\\s+web\\s+investigation\\s+needs-human`));
     waitForStatus(cwd, home, second.id, new RegExp(`${second.id}\\s+web\\s+feature\\s+needs-human`));
     const blocked = runCli(["status"], { cwd, home });
     assert.match(blocked.stdout, new RegExp(`${third.id}\\s+web\\s+feature\\s+blocked`));
