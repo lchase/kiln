@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/lchase/kiln/compare/kiln-v0.2.0...kiln-v0.3.0) (2026-10-25)
+
+
+### Features
+
+* add kiln serve local job UI ([#16](https://github.com/lchase/kiln/issues/16)) ([be282d2](https://github.com/lchase/kiln/commit/be282d25c86baaca5e63385753f165c8ea319f64))
+* add the investigation workflow ([#17](https://github.com/lchase/kiln/issues/17)) ([50bf933](https://github.com/lchase/kiln/commit/50bf933950928a46deac7c093dc9199346a930cb))
+
 ## [0.2.0](https://github.com/lchase/kiln/compare/kiln-v0.1.1...kiln-v0.2.0) (2026-10-25)
 
 
