@@ -2,8 +2,8 @@ node_modules/
 dist/
 dist-test/
 
-# Local machine state. Checkout paths and job files live here (or in ~/.kiln/)
-# and must not be committed.
+# Leftover per-directory state. Kiln now keeps checkout paths and jobs in
+# ~/.kiln/ (or $KILN_HOME). Do not commit either.
 .kiln/
 
 # yak journals and cache, if a checkout inside this repo is ever ticked.

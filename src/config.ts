@@ -1,12 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { KilnConfigError } from "./errors.js";
 import { KilnConfigFileSchema, type JiraConfig, type RepoEntry } from "./schemas.js";
 
 export interface LoadedKilnConfig {
   configPath: string;
-  /** Directory that holds the config file. Relative repo paths resolve from here. */
+  /** Directory that holds the config file. Relative repo paths in the file resolve from here. */
   configDir: string;
   note?: string;
   /**
@@ -15,8 +15,9 @@ export interface LoadedKilnConfig {
    */
   repos: Record<string, { path: string; test?: string; deliver: "local" | "pr"; base?: string }>;
   /**
-   * Local kiln directory. The config's own directory when it is named `.kiln`
-   * (for example `./.kiln` or `~/.kiln`). Otherwise `<cwd>/.kiln`.
+   * Kiln home. Jobs, logs, deliveries, launching, launch-errors, and specs
+   * live here: the directory of the config file (`--config`'s directory,
+   * `$KILN_HOME`, or `~/.kiln`).
    */
   kilnDir: string;
   jobsDir: string;
@@ -32,7 +33,11 @@ export interface LoadedKilnConfig {
 }
 
 export interface LoadKilnConfigOptions {
-  /** Working directory used when the config file is not inside `.kiln`. */
+  /**
+   * Working directory. `resolveKilnConfig` uses it for relative `--config`
+   * and `KILN_HOME`. `loadKilnConfig` ignores it: the kiln home is the
+   * config file's directory.
+   */
   cwd?: string;
   /** Home directory used to expand `~`. */
   home?: string;
@@ -47,7 +52,6 @@ const CONFIG_NAME = "kiln.config.json";
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export function loadKilnConfig(configPath: string, options: LoadKilnConfigOptions = {}): LoadedKilnConfig {
-  const cwd = options.cwd ?? process.cwd();
   const home = options.home ?? homedir();
   const resolvedPath = resolve(configPath);
   let raw: unknown;
@@ -80,7 +84,7 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
     };
   }
 
-  const kilnDir = basename(configDir) === ".kiln" ? configDir : join(cwd, ".kiln");
+  const kilnDir = configDir;
   const jira = jiraFromFile(parsed.data.jira);
   return {
     configPath: resolvedPath,
@@ -96,7 +100,8 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
 }
 
 /**
- * Local config wins: `./.kiln/kiln.config.json`, then `~/.kiln/kiln.config.json`.
+ * One kiln home: `--config <file>` if given, else `$KILN_HOME/kiln.config.json`
+ * when `KILN_HOME` is set, else `~/.kiln/kiln.config.json`.
  */
 export function resolveKilnConfig(options: ResolveKilnConfigOptions = {}): LoadedKilnConfig {
   const cwd = options.cwd ?? process.cwd();
@@ -105,25 +110,24 @@ export function resolveKilnConfig(options: ResolveKilnConfigOptions = {}): Loade
     return loadKilnConfig(resolve(cwd, options.configPath), { cwd, home });
   }
 
-  const cwdConfig = join(cwd, ".kiln", CONFIG_NAME);
-  if (existsSync(cwdConfig)) return loadKilnConfig(cwdConfig, { cwd, home });
-
-  const homeConfig = join(home, ".kiln", CONFIG_NAME);
-  if (existsSync(homeConfig)) return loadKilnConfig(homeConfig, { cwd, home });
-
-  throw new KilnConfigError(
-    [
-      "No kiln config found.",
-      `Run kiln repo add <name> <path> to create ${join(cwd, ".kiln", CONFIG_NAME)},`,
-      `or create ${join(home, ".kiln", CONFIG_NAME)}.`,
-      "Those directories are gitignored. Do not commit checkout paths.",
-    ].join("\n"),
-  );
+  const configPath = defaultConfigPath(options);
+  assertNoStaleCwdConfig(cwd, configPath);
+  if (!existsSync(configPath)) {
+    throw new KilnConfigError(
+      [
+        "No kiln config found.",
+        `Run kiln repo add <name> <path> from any directory to create ${configPath}.`,
+        "Set KILN_HOME or pass --config <file> to use a different kiln home.",
+        "Do not commit checkout paths.",
+      ].join("\n"),
+    );
+  }
+  return loadKilnConfig(configPath, { cwd, home });
 }
 
 export interface AddRepoOptions extends ResolveKilnConfigOptions {
   name: string;
-  /** Path as the user typed it. Relative paths are stored relative to the config directory. */
+  /** Path as the user typed it. A relative path is stored absolute, resolved from `cwd`. */
   repoPath: string;
   test?: string;
   /** `local` (default) or `pr`. Omitted on update keeps the stored value. */
@@ -146,7 +150,7 @@ export function addRepo(options: AddRepoOptions): string {
 
   const configPath = configPathForWrite(options);
   const configDir = dirname(configPath);
-  const storedPath = pathToStore(options.repoPath, configDir, cwd, home);
+  const storedPath = pathToStore(options.repoPath, cwd, home);
   const checkout = resolveConfiguredPath(configDir, storedPath, home);
   if (!existsSync(checkout) || !statSync(checkout).isDirectory()) {
     throw new KilnConfigError(`Checkout for ${options.name} does not exist or is not a directory: ${checkout}.`);
@@ -212,15 +216,39 @@ export function assertRepoName(name: string): void {
   }
 }
 
+function defaultConfigPath(options: ResolveKilnConfigOptions): string {
+  return join(kilnHomeDirectory(options), CONFIG_NAME);
+}
+
+/** `$KILN_HOME` when set, otherwise `~/.kiln`. A relative `KILN_HOME` resolves from `cwd`. */
+function kilnHomeDirectory(options: ResolveKilnConfigOptions): string {
+  const cwd = options.cwd ?? process.cwd();
+  const fromEnv = process.env.KILN_HOME;
+  if (typeof fromEnv === "string" && fromEnv.trim().length > 0) return resolve(cwd, fromEnv);
+  const home = options.home ?? homedir();
+  return join(home, ".kiln");
+}
+
 function configPathForWrite(options: ResolveKilnConfigOptions): string {
   const cwd = options.cwd ?? process.cwd();
-  const home = options.home ?? homedir();
   if (options.configPath) return resolve(cwd, options.configPath);
+  const configPath = defaultConfigPath(options);
+  assertNoStaleCwdConfig(cwd, configPath);
+  return configPath;
+}
+
+/**
+ * A leftover `./.kiln/kiln.config.json` used to be a second kiln home.
+ * Fail instead of ignoring it when the machine home has no config yet.
+ */
+function assertNoStaleCwdConfig(cwd: string, homeConfig: string): void {
   const cwdConfig = join(cwd, ".kiln", CONFIG_NAME);
-  if (existsSync(cwdConfig)) return cwdConfig;
-  const homeConfig = join(home, ".kiln", CONFIG_NAME);
-  if (existsSync(homeConfig)) return homeConfig;
-  return cwdConfig;
+  if (!existsSync(cwdConfig)) return;
+  if (resolve(cwdConfig) === resolve(homeConfig)) return;
+  if (existsSync(homeConfig)) return;
+  throw new KilnConfigError(
+    `Found ${cwdConfig} but no home config at ${homeConfig}. mv ./.kiln ~/.kiln or pass --config / set KILN_HOME.`,
+  );
 }
 
 function readConfigObject(configPath: string): Record<string, unknown> {
@@ -264,12 +292,10 @@ export function resolveConfiguredPath(configDir: string, value: string, home: st
   return isAbsolute(expanded) ? expanded : resolve(configDir, expanded);
 }
 
-function pathToStore(userPath: string, configDir: string, cwd: string, home: string): string {
+function pathToStore(userPath: string, cwd: string, home: string): string {
   if (userPath === "~" || userPath.startsWith("~/")) return userPath;
   if (isAbsolute(userPath)) return userPath;
-  const absolute = resolve(cwd, userPath);
-  const stored = relative(configDir, absolute);
-  return stored === "" ? "." : stored;
+  return resolve(cwd, userPath);
 }
 
 function jiraFromFile(jira: JiraConfig | undefined): JiraConfig | undefined {

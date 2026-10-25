@@ -2,7 +2,8 @@ import { z } from "zod";
 
 /**
  * Kiln config file. `repos` is an open map: any name, not a fixed set.
- * `path` is absolute, relative to the config file's directory, or `~`.
+ * `path` is absolute, `~`, or (in older files) relative to the config directory.
+ * `repo add` stores a relative path as absolute, resolved from the working directory.
  * `test` is the shell command a workflow runs as its verify step (`KILN_TEST`).
  */
 /**

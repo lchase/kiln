@@ -25,7 +25,7 @@ function runCliAsync(
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [join(root, "dist", "cli.js"), ...args], {
       cwd: options.cwd,
-      env: { ...process.env, HOME: options.home },
+      env: kilnEnv(options.home),
     });
     let stdout = "";
     let stderr = "";
@@ -49,7 +49,7 @@ function runCli(
   const result = spawnSync(process.execPath, [join(root, "dist", "cli.js"), ...args], {
     cwd: options.cwd,
     encoding: "utf8",
-    env: { ...process.env, HOME: options.home, ...options.env },
+    env: kilnEnv(options.home, options.env),
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
@@ -111,8 +111,14 @@ function register(cwd: string, home: string, name: string, checkout: string, tes
   assert.equal(added.status, 0, added.stderr);
 }
 
-function useMock(cwd: string, maxConcurrent = 2): void {
-  const path = join(cwd, ".kiln", "kiln.config.json");
+function kilnEnv(home: string, extra?: Record<string, string>): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, ...extra };
+  if (extra?.KILN_HOME === undefined) delete env.KILN_HOME;
+  return env;
+}
+
+function useMock(home: string, maxConcurrent = 2): void {
+  const path = join(home, ".kiln", "kiln.config.json");
   const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
   raw.adapter = "mock";
   raw.maxConcurrent = maxConcurrent;
@@ -212,7 +218,7 @@ function checkoutPair(): { cwd: string; home: string; web: string; api: string }
   initCheckout(api);
   register(cwd, home, "web", web);
   register(cwd, home, "api", api);
-  useMock(cwd, 2);
+  useMock(home, 2);
   return { cwd, home, web, api };
 }
 
@@ -226,7 +232,7 @@ describe("kiln tick", { concurrency: 1 }, () => {
     const upstream = addJob(cwd, home, "feature", "api", "Publish the summary");
     const downstream = addJob(cwd, home, "feature", "web", "Show the summary", [upstream]);
 
-    const stored = JSON.parse(readFileSync(join(cwd, ".kiln", "jobs", `${downstream}.json`), "utf8")) as {
+    const stored = JSON.parse(readFileSync(join(home, ".kiln", "jobs", `${downstream}.json`), "utf8")) as {
       dependsOn?: string[];
       state?: unknown;
     };
@@ -264,7 +270,7 @@ describe("kiln tick", { concurrency: 1 }, () => {
     const started = waitForStatus(cwd, home, downstream, new RegExp(`${downstream}\\s+web\\s+feature\\s+needs-human`));
     const downstreamRun = runIdOf(started, downstream);
     assert.equal(journalTag(web, downstreamRun), `kiln:${downstream}`);
-    assert.equal("state" in JSON.parse(readFileSync(join(cwd, ".kiln", "jobs", `${upstream}.json`), "utf8")), false);
+    assert.equal("state" in JSON.parse(readFileSync(join(home, ".kiln", "jobs", `${upstream}.json`), "utf8")), false);
   });
 
   it("keeps the downstream job blocked when the upstream gate is rejected", () => {
@@ -325,7 +331,7 @@ describe("kiln tick", { concurrency: 1 }, () => {
 
   it("does not launch a second ready job when maxConcurrent is 1 and the first run is in flight", () => {
     const { cwd, home, web } = checkoutPair();
-    useMock(cwd, 1);
+    useMock(home, 1);
     const firstId = addJob(cwd, home, "feature", "web", "Calm empty copy");
     const secondId = addJob(cwd, home, "feature", "web", "Sunday heading");
     const first = runCli(["tick"], { cwd, home });
@@ -367,7 +373,7 @@ describe("kiln tick", { concurrency: 1 }, () => {
 
   it("marks a dead journal dead, prints cancel, and launches the next job under maxConcurrent 1", () => {
     const { cwd, home, web } = checkoutPair();
-    useMock(cwd, 1);
+    useMock(home, 1);
     const calm = addJob(cwd, home, "feature", "web", "Calm empty copy");
     const sunday = addJob(cwd, home, "feature", "web", "Sunday heading");
     const runId = "2026-10-24T00-00-00Z-dead";
@@ -398,10 +404,10 @@ describe("kiln tick", { concurrency: 1 }, () => {
   it("does not relaunch a job whose launch pid died before a journal existed", () => {
     const { cwd, home, web } = checkoutPair();
     const id = addJob(cwd, home, "feature", "web", "Calm empty copy");
-    const logPath = join(cwd, ".kiln", "logs", `${id}.log`);
+    const logPath = join(home, ".kiln", "logs", `${id}.log`);
     mkdirSync(dirname(logPath), { recursive: true });
     writeFileSync(logPath, "yak exited before writing a journal\n");
-    const crumbDir = join(cwd, ".kiln", "launching");
+    const crumbDir = join(home, ".kiln", "launching");
     mkdirSync(crumbDir, { recursive: true });
     writeFileSync(
       join(crumbDir, `${id}.json`),
@@ -420,7 +426,7 @@ describe("kiln tick", { concurrency: 1 }, () => {
 
   it("refuses an empty test command instead of running it", () => {
     const { cwd, home, web } = checkoutPair();
-    const path = join(cwd, ".kiln", "kiln.config.json");
+    const path = join(home, ".kiln", "kiln.config.json");
     const raw = JSON.parse(readFileSync(path, "utf8")) as { repos: { web: { test: string } } };
     raw.repos.web.test = "   ";
     writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
@@ -553,7 +559,7 @@ describe("kiln tick", { concurrency: 1 }, () => {
     );
     git(web, ["add", "verify-once.mjs"]);
     git(web, ["commit", "-q", "-m", "red then green verify"]);
-    const path = join(cwd, ".kiln", "kiln.config.json");
+    const path = join(home, ".kiln", "kiln.config.json");
     const raw = JSON.parse(readFileSync(path, "utf8")) as { repos: { web: { test: string } } };
     raw.repos.web.test = "node verify-once.mjs";
     writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);

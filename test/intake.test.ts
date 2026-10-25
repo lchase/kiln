@@ -38,7 +38,7 @@ function runCli(
     cwd: options.cwd,
     encoding: "utf8",
     input: options.input,
-    env: { ...process.env, HOME: options.home },
+    env: kilnEnv(options.home),
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
@@ -95,8 +95,14 @@ function initCheckout(dir: string): void {
   git(dir, ["commit", "-q", "-m", "initial"]);
 }
 
-function useMock(cwd: string): void {
-  const path = join(cwd, ".kiln", "kiln.config.json");
+function kilnEnv(home: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
+  delete env.KILN_HOME;
+  return env;
+}
+
+function useMock(home: string): void {
+  const path = join(home, ".kiln", "kiln.config.json");
   const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
   raw.adapter = "mock";
   raw.maxConcurrent = 2;
@@ -108,8 +114,8 @@ function register(cwd: string, home: string, checkout: string): void {
   assert.equal(added.status, 0, added.stderr);
 }
 
-function readJobs(cwd: string): StoredJob[] {
-  const dir = join(cwd, ".kiln", "jobs");
+function readJobs(home: string): StoredJob[] {
+  const dir = join(home, ".kiln", "jobs");
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((name) => name.endsWith(".json"))
@@ -207,12 +213,12 @@ describe("intake", () => {
     writeFileSync(spec, "# Show the summary\n\nA person can read it.\n");
     const created = runCli(["add", "feature", "--repo", "web", "--spec", spec], { cwd, home });
     assert.equal(created.status, 0, created.stderr);
-    const job = readJobs(cwd)[0];
+    const job = readJobs(home)[0];
     assert.ok(job);
     assert.equal(job.source.kind, "file");
     assert.equal(job.source.ref, spec);
     assert.equal(job.title, "Show the summary");
-    assert.equal(readFileSync(join(cwd, ".kiln", job.spec), "utf8"), readFileSync(spec, "utf8"));
+    assert.equal(readFileSync(join(home, ".kiln", job.spec), "utf8"), readFileSync(spec, "utf8"));
     const status = runCli(["status", job.id], { cwd, home });
     assert.match(status.stdout, new RegExp(`source file ${spec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   });
@@ -233,12 +239,12 @@ describe("intake", () => {
     const text = "First line of the prompt\n\nMore detail for the sample page.\n";
     const created = runCli(["add", "feature", "--repo", "web", "--prompt", "-"], { cwd, home, input: text });
     assert.equal(created.status, 0, created.stderr);
-    const job = readJobs(cwd)[0];
+    const job = readJobs(home)[0];
     assert.ok(job);
     assert.equal(job.title, "First line of the prompt");
     assert.equal(job.source.kind, "prompt");
     assert.equal(job.source.ref, "stdin");
-    assert.equal(readFileSync(join(cwd, ".kiln", job.spec), "utf8"), text);
+    assert.equal(readFileSync(join(home, ".kiln", job.spec), "utf8"), text);
     const status = runCli(["status"], { cwd, home });
     assert.match(status.stdout, /source prompt stdin/);
   });
@@ -251,7 +257,7 @@ describe("intake", () => {
     const line = "A".repeat(90);
     const created = runCli(["add", "feature", "--repo", "web", "--prompt", `${line}\nsecond line`], { cwd, home });
     assert.equal(created.status, 0, created.stderr);
-    const job = readJobs(cwd)[0];
+    const job = readJobs(home)[0];
     assert.ok(job);
     assert.equal(job.title, `${"A".repeat(77)}...`);
     assert.equal(job.title.length, 80);
@@ -274,7 +280,7 @@ describe("intake", () => {
     assert.doesNotMatch(imported.stderr, /03-render-empty-state\.md/);
     assert.doesNotMatch(imported.stderr, /04-link-summary\.md/);
     assert.match(imported.stdout, /imported 4 new, 0 unchanged/);
-    const jobs = readJobs(cwd);
+    const jobs = readJobs(home);
     assert.equal(jobs.length, 4);
     const byFile = new Map(jobs.map((job) => [job.source?.ref.slice(job.source.ref.lastIndexOf("/") + 1), job]));
     const first = byFile.get("01-probe-platform.md");
@@ -298,13 +304,13 @@ describe("intake", () => {
     assert.match(imported.stdout, /03\s+03: Render the empty state\s+feature\s+deps 01/);
     assert.match(imported.stdout, /04\s+04: Link the summary to the empty state\s+feature\s+deps 01, 02/);
 
-    const before = snapshotKiln(cwd);
+    const before = snapshotKiln(home);
     const again = runCli(["import", "tickets", "--repo", "web"], { cwd, home });
     assert.equal(again.status, 0, again.stderr);
     assert.match(again.stdout, /imported 0 new, 4 unchanged/);
     assert.match(again.stdout, /unchanged/);
-    assert.equal(readJobs(cwd).length, 4);
-    assert.deepEqual(snapshotKiln(cwd), before);
+    assert.equal(readJobs(home).length, 4);
+    assert.deepEqual(snapshotKiln(home), before);
   });
 
   it("errors on an unknown blocked-by number and writes no jobs", () => {
@@ -328,8 +334,8 @@ describe("intake", () => {
     assert.equal(imported.status, 1);
     assert.match(imported.stderr, /03-render-empty-state\.md/);
     assert.match(imported.stderr, /unknown ticket 09/);
-    assert.equal(existsSync(join(cwd, ".kiln", "jobs")), false);
-    assert.equal(existsSync(join(cwd, ".kiln", "specs")), false);
+    assert.equal(existsSync(join(home, ".kiln", "jobs")), false);
+    assert.equal(existsSync(join(home, ".kiln", "specs")), false);
   });
 
   it("dry-run prints dependencies and creates nothing", () => {
@@ -345,8 +351,8 @@ describe("intake", () => {
     assert.match(dry.stdout, /03\s+03: Render the empty state\s+feature\s+deps 01\s+new/);
     assert.match(dry.stdout, /04\s+04: Link the summary to the empty state\s+feature\s+deps 01, 02\s+new/);
     assert.match(dry.stdout, /dry-run: 4 new, 0 unchanged, created nothing/);
-    assert.equal(existsSync(join(cwd, ".kiln", "jobs")), false);
-    assert.equal(existsSync(join(cwd, ".kiln", "specs")), false);
+    assert.equal(existsSync(join(home, ".kiln", "jobs")), false);
+    assert.equal(existsSync(join(home, ".kiln", "specs")), false);
   });
 
   it("parses a front-matter ticket", () => {
@@ -379,7 +385,7 @@ describe("intake", () => {
     });
     const imported = runCli(["import", dir, "--repo", "web"], { cwd, home });
     assert.equal(imported.status, 0, imported.stderr);
-    const jobs = readJobs(cwd);
+    const jobs = readJobs(home);
     assert.equal(jobs.length, 2);
     const list = jobs.find((job) => job.source?.ref.endsWith("01-list-facts.md"));
     const record = jobs.find((job) => job.source?.ref.endsWith("02-record-answers.md"));
@@ -412,7 +418,7 @@ describe("intake", () => {
     assert.match(imported.stderr, /01-time-the-query\.md/);
     assert.match(imported.stderr, /investigation\.yaml is missing, using feature/);
     assert.doesNotMatch(imported.stdout, /warning:/);
-    const job = readJobs(cwd)[0];
+    const job = readJobs(home)[0];
     assert.ok(job);
     assert.equal(job.workflow, "feature");
   });
@@ -446,7 +452,7 @@ describe("intake", () => {
     const imported = runCli(["import", dir, "--repo", "web", "--workflow", "feature"], { cwd, home });
     assert.equal(imported.status, 0, imported.stderr);
     assert.equal(imported.stderr, "");
-    const jobs = readJobs(cwd);
+    const jobs = readJobs(home);
     assert.equal(jobs.length, 2);
     for (const job of jobs) assert.equal(job.workflow, "feature");
     const follow = jobs.find((job) => job.source?.ref.endsWith("02-render-empty-state.md"));
@@ -476,7 +482,7 @@ describe("intake", () => {
     assert.equal(imported.status, 0, imported.stderr);
     assert.match(imported.stderr, /01-measure-the-query\.md/);
     assert.match(imported.stderr, /using feature/);
-    const job = readJobs(cwd)[0];
+    const job = readJobs(home)[0];
     assert.ok(job);
     assert.equal(job.workflow, "feature");
     assert.equal(job.title, "Measure the list query");
@@ -502,9 +508,9 @@ describe("intake", () => {
     });
     const imported = runCli(["import", dir, "--repo", "web"], { cwd, home });
     assert.equal(imported.status, 0, imported.stderr);
-    const job = readJobs(cwd)[0];
+    const job = readJobs(home)[0];
     assert.ok(job);
-    const spec = readFileSync(join(cwd, ".kiln", job.spec), "utf8");
+    const spec = readFileSync(join(home, ".kiln", job.spec), "utf8");
     assert.match(spec, /# 01: List the platform facts/);
     assert.match(spec, /## Background\n\nThe sample list has a weekly paragraph\./);
 
@@ -528,9 +534,9 @@ describe("intake", () => {
     });
     const large = runCli(["import", otherDir, "--repo", "web", "--context", huge], other);
     assert.equal(large.status, 0, large.stderr);
-    const largeJob = readJobs(other.cwd)[0];
+    const largeJob = readJobs(other.home)[0];
     assert.ok(largeJob);
-    const largeSpec = readFileSync(join(other.cwd, ".kiln", largeJob.spec), "utf8");
+    const largeSpec = readFileSync(join(other.home, ".kiln", largeJob.spec), "utf8");
     assert.match(largeSpec, /## Background/);
     assert.match(largeSpec, /referenced by path/);
     assert.ok(largeSpec.includes(huge));
@@ -552,16 +558,16 @@ describe("intake tick", { concurrency: 1 }, () => {
     const web = join(cwd, "repos", "web");
     initCheckout(web);
     register(cwd, home, web);
-    useMock(cwd);
+    useMock(home);
     const prompt = "Show a quiet empty state\n\nThe page explains there is nothing to list yet.\n";
     const created = runCli(["add", "feature", "--repo", "web", "--prompt", prompt], { cwd, home });
     assert.equal(created.status, 0, created.stderr);
-    const job = readJobs(cwd)[0];
+    const job = readJobs(home)[0];
     assert.ok(job);
     assert.equal(job.title, "Show a quiet empty state");
     assert.equal(job.source.kind, "prompt");
     assert.equal(job.source.ref, "inline");
-    assert.equal(readFileSync(join(cwd, ".kiln", job.spec), "utf8"), prompt);
+    assert.equal(readFileSync(join(home, ".kiln", job.spec), "utf8"), prompt);
 
     const launched = runCli(["tick"], { cwd, home });
     assert.equal(launched.status, 0, launched.stderr);
@@ -576,11 +582,11 @@ describe("intake tick", { concurrency: 1 }, () => {
     const web = join(cwd, "repos", "web");
     initCheckout(web);
     register(cwd, home, web);
-    useMock(cwd);
+    useMock(home);
 
     const id = "j-old-job";
-    const jobsDir = join(cwd, ".kiln", "jobs");
-    const specsDir = join(cwd, ".kiln", "specs");
+    const jobsDir = join(home, ".kiln", "jobs");
+    const specsDir = join(home, ".kiln", "specs");
     mkdirSync(jobsDir, { recursive: true });
     mkdirSync(specsDir, { recursive: true });
     writeFileSync(join(specsDir, `${id}.md`), "# Show the weekly summary\n\nA person can read it.\n");
@@ -645,13 +651,13 @@ describe("intake tick", { concurrency: 1 }, () => {
     const web = join(cwd, "repos", "web");
     initCheckout(web);
     register(cwd, home, web);
-    useMock(cwd);
+    useMock(home);
     const dir = join(cwd, "tickets");
     writeTickets(dir, fourTickets);
     const imported = runCli(["import", dir, "--repo", "web"], { cwd, home });
     assert.equal(imported.status, 0, imported.stderr);
 
-    const jobs = readJobs(cwd);
+    const jobs = readJobs(home);
     const byFile = new Map(jobs.map((job) => [job.source?.ref.slice(job.source.ref.lastIndexOf("/") + 1), job]));
     const first = byFile.get("01-probe-platform.md");
     const second = byFile.get("02-draft-empty-copy.md");
@@ -687,18 +693,18 @@ describe("intake tick", { concurrency: 1 }, () => {
     assert.match(blocked.stdout, new RegExp(`${fourth.id}\\s+web\\s+feature\\s+blocked`));
     assert.equal(runIds(web).length, 2);
 
-    const before = snapshotKiln(cwd);
+    const before = snapshotKiln(home);
     const again = runCli(["import", dir, "--repo", "web"], { cwd, home });
     assert.equal(again.status, 0, again.stderr);
     assert.match(again.stdout, /imported 0 new, 4 unchanged/);
-    assert.deepEqual(snapshotKiln(cwd), before);
+    assert.deepEqual(snapshotKiln(home), before);
   });
 });
 
-function snapshotKiln(cwd: string): Record<string, string> {
+function snapshotKiln(home: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const folder of ["jobs", "specs"]) {
-    const dir = join(cwd, ".kiln", folder);
+    const dir = join(home, ".kiln", folder);
     if (!existsSync(dir)) continue;
     for (const name of readdirSync(dir).sort()) {
       const path = join(dir, name);
