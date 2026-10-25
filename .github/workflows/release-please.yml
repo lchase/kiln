@@ -1,0 +1,30 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write # dispatch publish.yml when a release is cut
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # release-please tags/releases with GITHUB_TOKEN, which by design does
+      # not trigger other workflows — so the publish job never fired on its
+      # own (and the tag is `kiln-v*`, not the `v*` publish.yml used to watch).
+      # Dispatch it explicitly instead, only when a release was actually cut.
+      - name: Publish the new release to npm
+        if: ${{ steps.release.outputs.releases_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run publish.yml --repo ${{ github.repository }} --ref main

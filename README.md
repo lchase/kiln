@@ -6,6 +6,29 @@ A ready spec is the input. Kiln does not build or iterate requirements.
 
 This repository is public. Checkout paths and jobs stay in gitignored `.kiln/` or `~/.kiln/`. Do not commit them.
 
+## Install
+
+```bash
+npm i -g @lchase/kiln
+kiln repo add web /absolute/path/to/web --test "npm test"
+kiln repo list
+```
+
+`kiln` is the command. The subcommands in the rest of this file are the same ones. Examples that say `npm run kiln --` are the in-checkout form.
+
+## Develop from a checkout
+
+```bash
+npm install
+npm run build
+npm link
+kiln repo list
+```
+
+`npm link` puts this checkout's `kiln` on your PATH. The bin is `dist/cli.js`, so build before linking, and rebuild after source changes. `npm run kiln --` builds and runs without a global link.
+
+Workflows (`workflows/*.yaml`) and prompts (`prompts/`) are read from the package that contains the running file, next to its `package.json`. A global install and `npm link` both resolve them from that package, not from the directory you ran `kiln` in.
+
 ## Prerequisites
 
 - Node.js >= 22 (the `engines` field in `package.json`)
