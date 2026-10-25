@@ -1,16 +1,9 @@
 import { randomBytes } from "node:crypto";
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { LoadedKilnConfig } from "./config.js";
 import { jobBasename } from "./paths.js";
-import { JobSchema, type Job } from "./schemas.js";
+import { JobSchema, type Job, type JobSource } from "./schemas.js";
 import { assertWorkflowName } from "./workflow.js";
 
 export function newJobId(now = new Date()): string {
@@ -48,50 +41,57 @@ export function titleFromSpec(text: string, filePath: string): string {
   return base;
 }
 
-export interface CreateJobInput {
+export interface WriteJobInput {
+  /** When set, the batch allocator already chose the id. */
+  id?: string;
   workflow: string;
   repo: string;
-  specPath: string;
-  title?: string;
+  specText: string;
+  title: string;
   dependsOn: string[];
-  cwd: string;
+  source: JobSource;
   now?: Date;
+  /**
+   * Ids that count as existing because this batch is about to write them.
+   * `--after` on a single add leaves this empty, so those deps must already be on disk.
+   */
+  pendingIds?: ReadonlySet<string>;
 }
 
-export function createJob(config: LoadedKilnConfig, input: CreateJobInput): { job: Job; jsonPath: string } {
+/** Persist one job. Intake adapters call this; they do not write job files themselves. */
+export function writeJob(config: LoadedKilnConfig, input: WriteJobInput): { job: Job; jsonPath: string } {
   assertWorkflowName(input.workflow);
   if (!config.repos[input.repo]) {
     const known = Object.keys(config.repos).sort();
     const suffix = known.length > 0 ? ` Known repos: ${known.join(", ")}.` : " No repos are registered.";
     throw new Error(`Unknown repo ${input.repo}.${suffix} Run kiln repo add ${input.repo} <path>.`);
   }
-
-  const source = resolve(input.cwd, input.specPath);
-  let text: string;
-  try {
-    text = readFileSync(source, "utf8");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Could not read spec ${source}: ${message}`);
+  if (!input.specText.trim()) {
+    throw new Error("Job spec is empty.");
   }
-  if (!text.trim()) {
-    throw new Error(`Spec ${source} is empty.`);
+  const title = input.title.trim();
+  if (!title) {
+    throw new Error("Job title is empty. Pass --title.");
   }
 
+  const now = input.now ?? new Date();
+  const id = input.id ?? newJobId(now);
   const dependsOn = normalizedDepends(input.dependsOn);
-  const knownIds = new Set(readableJobIds(config));
+  if (dependsOn.includes(id)) {
+    throw new Error(`Job ${id} cannot depend on itself.`);
+  }
+  const knownIds = new Set(listValidJobs(config).map((job) => job.id));
+  for (const pending of input.pendingIds ?? []) knownIds.add(pending);
   for (const dep of dependsOn) {
     if (!knownIds.has(dep)) {
       throw new Error(`Job ${dep} does not exist. --after must name a job already under ${config.jobsDir}.`);
     }
   }
 
-  const title = input.title?.trim() || titleFromSpec(text, source);
-  const id = newJobId(input.now);
   const specRel = `specs/${id}.md`;
   const specDest = join(config.kilnDir, specRel);
   mkdirSync(join(config.kilnDir, "specs"), { recursive: true });
-  copyFileSync(source, specDest);
+  writeFileSync(specDest, input.specText);
 
   const job = JobSchema.parse({
     id,
@@ -100,7 +100,8 @@ export function createJob(config: LoadedKilnConfig, input: CreateJobInput): { jo
     spec: specRel,
     title,
     ...(dependsOn.length > 0 ? { dependsOn } : {}),
-    createdAt: (input.now ?? new Date()).toISOString(),
+    source: input.source,
+    createdAt: now.toISOString(),
   });
   mkdirSync(config.jobsDir, { recursive: true });
   const jsonPath = jobFilePath(config.jobsDir, job.id);
@@ -109,14 +110,27 @@ export function createJob(config: LoadedKilnConfig, input: CreateJobInput): { jo
 }
 
 export function renderAddedJob(job: Job, jsonPath: string): string {
-  return [
-    `added ${job.id}`,
-    `repo ${job.repo}`,
-    `workflow ${job.workflow}`,
-    `spec ${job.spec}`,
-    `wrote ${jsonPath}`,
-    "",
-  ].join("\n");
+  const lines = [`added ${job.id}`, `repo ${job.repo}`, `workflow ${job.workflow}`, `spec ${job.spec}`];
+  if (job.source) lines.push(`source ${job.source.kind} ${job.source.ref}`);
+  lines.push(`wrote ${jsonPath}`, "");
+  return lines.join("\n");
+}
+
+/** Valid job files. Unreadable files are skipped; the driver reports those. */
+export function listValidJobs(config: LoadedKilnConfig): Job[] {
+  if (!existsSync(config.jobsDir)) return [];
+  const jobs: Job[] = [];
+  for (const name of readdirSync(config.jobsDir)) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const raw: unknown = JSON.parse(readFileSync(join(config.jobsDir, name), "utf8"));
+      const job = JobSchema.parse(raw);
+      if (`${jobBasename(job.id)}.json` === name) jobs.push(job);
+    } catch {
+      // An unreadable job is not a dependency target. The driver reports it.
+    }
+  }
+  return jobs;
 }
 
 function normalizedDepends(dependsOn: string[]): string[] {
@@ -132,18 +146,3 @@ function normalizedDepends(dependsOn: string[]): string[] {
   return out;
 }
 
-function readableJobIds(config: LoadedKilnConfig): string[] {
-  if (!existsSync(config.jobsDir)) return [];
-  const ids: string[] = [];
-  for (const name of readdirSync(config.jobsDir)) {
-    if (!name.endsWith(".json")) continue;
-    try {
-      const raw: unknown = JSON.parse(readFileSync(join(config.jobsDir, name), "utf8"));
-      const job = JobSchema.parse(raw);
-      if (`${jobBasename(job.id)}.json` === name) ids.push(job.id);
-    } catch {
-      // An unreadable job is not a dependency target. The driver reports it.
-    }
-  }
-  return ids;
-}
