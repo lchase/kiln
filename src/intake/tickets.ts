@@ -65,13 +65,12 @@ export function importTickets(config: LoadedKilnConfig, input: ImportTicketsInpu
 
   const requested = input.workflow ?? "feature";
   assertWorkflowName(requested);
-  const investigation = existsSync(join(packageRoot(), "workflows", "investigation.yaml"));
   const context = resolveContext(dirAbs, input.contextPath, input.cwd);
   const tickets = readTickets(dirAbs);
   const warnings: string[] = [];
   const workflows = new Map<string, string>();
   for (const ticket of tickets) {
-    const workflow = workflowFor(ticket, requested, investigation, warnings);
+    const workflow = workflowFor(ticket, requested, warnings);
     if (workflow !== requested) assertWorkflowName(workflow);
     workflows.set(ticket.path, workflow);
   }
@@ -215,16 +214,20 @@ function composeSpec(ticketText: string, context: ContextFile | undefined): stri
   return `${base}\n## Background\n\n${body}`;
 }
 
-function workflowFor(
-  ticket: ParsedTicket,
-  requested: string,
-  investigation: boolean,
-  warnings: string[],
-): string {
-  if (!ticket.spike) return requested;
-  if (investigation) return "investigation";
+function workflowFor(ticket: ParsedTicket, requested: string, warnings: string[]): string {
+  return workflowForSpike(ticket.file, ticket.spike, requested, warnings);
+}
+
+/**
+ * Spike and research work uses `investigation` when that workflow file exists.
+ * Otherwise the requested workflow is kept and the same warning is recorded.
+ * Jira intake calls this for issue types Spike and Research.
+ */
+export function workflowForSpike(label: string, spike: boolean, requested: string, warnings: string[]): string {
+  if (!spike) return requested;
+  if (existsSync(join(packageRoot(), "workflows", "investigation.yaml"))) return "investigation";
   warnings.push(
-    `warning: ${ticket.file} looks like a spike or says no product code; workflows/investigation.yaml is missing, using ${requested}.`,
+    `warning: ${label} looks like a spike or says no product code; workflows/investigation.yaml is missing, using ${requested}.`,
   );
   return requested;
 }
@@ -427,7 +430,7 @@ function looksLikeSpike(title: string, text: string, type: string | undefined): 
 }
 
 /** `spike`, `investigation`, `research`, or that word after a colon (`wayfinder:research`). */
-function typeLooksLikeSpike(type: string | undefined): boolean {
+export function typeLooksLikeSpike(type: string | undefined): boolean {
   if (!type) return false;
   return type.split(":").some((part) => /^(spike|investigation|research)$/i.test(part.trim()));
 }

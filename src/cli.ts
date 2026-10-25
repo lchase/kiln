@@ -2,6 +2,7 @@
 import { addRepo, renderRepoList, resolveKilnConfig } from "./config.js";
 import { answerJob, runStatus, runTick } from "./driver.js";
 import { addFromFile } from "./intake/file.js";
+import { addFromJira } from "./intake/jira.js";
 import { addFromPrompt } from "./intake/prompt.js";
 import { importTickets } from "./intake/tickets.js";
 import { renderAddedJob } from "./jobs.js";
@@ -11,7 +12,7 @@ function usage(): never {
     [
       "Usage: kiln repo add <name> <path> [--test <cmd>] [--config <file>]",
       "       kiln repo list [--config <file>]",
-      "       kiln add <workflow> --repo <name> (--spec <file.md> | --prompt <text>) [--title <text>] [--after <jobId>]... [--config <file>]",
+      "       kiln add <workflow> --repo <name> (--spec <file.md> | --prompt <text> | --jira <KEY>) [--title <text>] [--after <jobId>]... [--dry-run] [--config <file>]",
       "       kiln import <dir> --repo <name> [--workflow <name>] [--context <file.md>] [--dry-run] [--config <file>]",
       "       kiln tick [--config <file>]",
       "       kiln status [jobId] [--config <file>]",
@@ -21,13 +22,18 @@ function usage(): never {
       "repo add registers a checkout. Relative paths are stored relative to the",
       "config directory. ~ is expanded from the home directory.",
       "",
-      "add writes one job from a spec file or from --prompt text (--prompt - reads stdin).",
+      "add writes one job from a spec file, from --prompt text (--prompt - reads stdin),",
+      "or from a Jira Cloud issue (--jira PROJ-123). Pass one of those, not more.",
       "The repo and the workflow (workflows/<name>.yaml) must already exist.",
-      "--after names jobs that must be done before this one launches.",
+      "--after names jobs that must be done before this one launches. A Jira Blocks",
+      "link where this issue is blocked by another key is included when a kiln job",
+      "for that key already exists.",
+      "--dry-run with --jira prints the job and writes nothing. Running add again",
+      "for the same Jira key prints the existing job id and creates nothing.",
       "",
       "import reads a directory of NN-slug.md tickets and writes one job per file.",
       "Blocked-by becomes dependsOn. Re-running the same directory does not duplicate jobs.",
-      "--dry-run prints the jobs and writes nothing. Jira is not an intake.",
+      "--dry-run prints the jobs and writes nothing.",
       "",
       "tick launches at most one ready job: dependencies done, under maxConcurrent.",
       "status prints the derived state. approve and reject answer the human gate.",
@@ -43,6 +49,7 @@ interface FlagBag {
   repo?: string;
   spec?: string;
   prompt?: string;
+  jira?: string;
   title?: string;
   workflow?: string;
   context?: string;
@@ -82,6 +89,12 @@ function parseFlags(argv: string[]): FlagBag {
     if (flag === "--prompt") {
       if (!next || next.startsWith("--")) usage();
       bag.prompt = next;
+      i += 1;
+      continue;
+    }
+    if (flag === "--jira") {
+      if (!next || next.startsWith("--")) usage();
+      bag.jira = next;
       i += 1;
       continue;
     }
@@ -145,24 +158,36 @@ function repoCommand(argv: string[]): void {
   usage();
 }
 
-function addCommand(argv: string[]): void {
+async function addCommand(argv: string[]): Promise<void> {
   const flags = parseFlags(argv);
   const workflow = flags.positionals[0];
-  const spec = flags.spec !== undefined;
-  const prompt = flags.prompt !== undefined;
+  const selected = [flags.spec !== undefined, flags.prompt !== undefined, flags.jira !== undefined].filter(Boolean).length;
   if (
     !workflow ||
     flags.positionals.length !== 1 ||
     !flags.repo ||
-    spec === prompt ||
+    selected !== 1 ||
     flags.test ||
     flags.workflow ||
     flags.context ||
-    flags.dryRun
+    (flags.dryRun && flags.jira === undefined)
   ) {
     usage();
   }
   const config = resolveKilnConfig({ configPath: flags.configPath });
+  if (flags.jira !== undefined) {
+    const result = await addFromJira(config, {
+      workflow,
+      repo: flags.repo,
+      key: flags.jira,
+      ...(flags.title !== undefined ? { title: flags.title } : {}),
+      dependsOn: flags.after,
+      dryRun: flags.dryRun,
+    });
+    process.stdout.write(result.report);
+    if (result.warnings.length > 0) process.stderr.write(`${result.warnings.join("\n")}\n`);
+    return;
+  }
   const { job, jsonPath } =
     flags.spec !== undefined
       ? addFromFile(config, {
@@ -238,6 +263,7 @@ function hasIntakeFlags(flags: FlagBag): boolean {
     flags.repo ||
       flags.spec ||
       flags.prompt ||
+      flags.jira ||
       flags.title ||
       flags.workflow ||
       flags.context ||
@@ -246,7 +272,7 @@ function hasIntakeFlags(flags: FlagBag): boolean {
   );
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const command = argv[0];
   if (!command || command === "--help" || command === "-h" || command === "help") usage();
@@ -255,7 +281,7 @@ function main(): void {
     return;
   }
   if (command === "add") {
-    addCommand(argv.slice(1));
+    await addCommand(argv.slice(1));
     return;
   }
   if (command === "import") {
@@ -282,7 +308,7 @@ function main(): void {
 }
 
 try {
-  main();
+  await main();
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
