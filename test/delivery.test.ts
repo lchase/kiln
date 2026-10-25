@@ -10,12 +10,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join, sep } from "node:path";
 import { after, describe, it } from "node:test";
 import { resolveKilnConfig } from "../src/config.js";
 import { writeDelivery } from "../src/delivery.js";
 import { answerJob, runStatus, runTick } from "../src/driver.js";
-import { installGitShim } from "../src/git-shim.js";
 import {
   realGitRemote,
   type GitHubHost,
@@ -258,6 +257,27 @@ function landRun(checkout: string, jobId: string, runId: string): void {
 
 function sleep(seconds: number): void {
   spawnSync("sleep", [String(seconds)]);
+}
+
+/** PATH of the yak process Kiln spawned. The child is still starting when tick returns. */
+function childPath(pid: number): string {
+  const start = Date.now();
+  let lastError = "process not visible yet";
+  while (Date.now() - start < 2000) {
+    try {
+      const raw = readFileSync(`/proc/${pid}/environ`);
+      const path = raw
+        .toString("utf8")
+        .split("\0")
+        .find((entry) => entry.startsWith("PATH="));
+      assert.ok(path, "yak child has no PATH");
+      return path.slice("PATH=".length);
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      sleep(0.05);
+    }
+  }
+  throw new Error(`could not read yak child PATH for pid ${pid}: ${lastError}`);
 }
 
 function waitForWorktree(checkout: string, timeoutMs = 60000): { runId: string; head: string } {
@@ -658,24 +678,32 @@ describe("delivery", { concurrency: 1 }, () => {
     stopJob(config.kilnDir, other);
   });
 
-  it("rewrites only yak's worktree add, and refuses to push the base branch", () => {
-    const { cwd } = workDir();
+  it("does not put a kiln bin directory on the yak child's PATH, and refuses to push the base branch", () => {
+    const { cwd, home } = workDir();
     const { checkout } = initOrigin(join(cwd, "repos"));
-    const first = git(checkout, ["rev-parse", "HEAD"]).trim();
-    const second = commitFile(checkout, "second.txt", "second\n", "second");
-    const shim = installGitShim(join(cwd, ".kiln"));
-    const wt = join(cwd, "cut");
-    const result = spawnSync("git", ["worktree", "add", "-b", "yak/demo", wt, "HEAD"], {
-      cwd: checkout,
-      encoding: "utf8",
-      env: { ...process.env, PATH: `${shim}:${process.env.PATH ?? ""}`, KILN_WORKTREE_BASE: first },
-    });
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(git(wt, ["rev-parse", "HEAD"]).trim(), first);
-    assert.equal(git(checkout, ["rev-parse", "HEAD"]).trim(), second);
-    assert.equal(git(checkout, ["branch", "--show-current"]).trim(), "main");
+    assert.equal(
+      runCli(["repo", "add", "web", checkout, "--test", testCommand, "--deliver", "pr", "--base", "main"], { cwd, home }).status,
+      0,
+    );
+    useMock(cwd);
+    const id = addJob(cwd, home, "web", "Show the weekly summary");
+    const config = resolveKilnConfig({ cwd, home });
+    const github = new FakeGitHub();
+    const remote = recordingGit();
+    const launched = runTick(config, { github, git: remote.git });
+    assert.match(launched, new RegExp(`launch ${id}\\s+web`));
+    const crumb = JSON.parse(readFileSync(join(config.kilnDir, "launching", `${id}.json`), "utf8")) as { pid?: number };
+    assert.ok(crumb.pid && crumb.pid > 0);
+    const pathEnv = childPath(crumb.pid);
+    const kilnBin = join(config.kilnDir, "bin");
+    assert.equal(existsSync(kilnBin), false);
+    for (const entry of pathEnv.split(delimiter)) {
+      assert.notEqual(entry, kilnBin);
+      assert.equal(entry.endsWith(`${sep}.kiln${sep}bin`), false, entry);
+    }
     assert.throws(() => realGitRemote.pushBranch(checkout, "main", "main"), /Refusing to push main/);
     assert.throws(() => realGitRemote.pushBranch(checkout, "feature", "main"), /only pushes yak/);
+    stopJob(config.kilnDir, id);
   });
 });
 
