@@ -20,9 +20,21 @@ export const KilnConfigFileSchema = z.object({
 export type KilnConfigFile = z.infer<typeof KilnConfigFileSchema>;
 
 /**
+ * Where a job came from. Adapters set this; tick and reconcile do not branch on it.
+ * `ref` is an absolute spec path (`file`), `inline` or `stdin` (`prompt`), or the
+ * absolute ticket path (`tickets`).
+ */
+export const JobSourceSchema = z.object({
+  kind: z.enum(["file", "prompt", "tickets"]),
+  ref: z.string().min(1),
+});
+export type JobSource = z.infer<typeof JobSourceSchema>;
+
+/**
  * One unit of factory work. Stored as `<kilnDir>/jobs/<id>.json`.
- * `spec` is a markdown file copied under the kiln directory.
+ * `spec` is a markdown file under the kiln directory.
  * `dependsOn` names other job ids. There is no plan and no stored state.
+ * Every intake writes this same shape.
  */
 export const JobSchema = z.object({
   id: z.string().min(1),
@@ -31,6 +43,7 @@ export const JobSchema = z.object({
   spec: z.string().min(1),
   title: z.string().min(1),
   dependsOn: z.array(z.string().min(1)).optional(),
+  source: JobSourceSchema,
   createdAt: z.string().min(1),
 });
 export type Job = z.infer<typeof JobSchema>;

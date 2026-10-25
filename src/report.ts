@@ -71,6 +71,7 @@ export function renderStatus(observation: Observation, jobId?: string): string {
     const run = job.run ? `  run ${job.run.runId}` : "";
     const branch = state === "done" && job.run ? `  branch yak/${job.run.runId}` : "";
     lines.push(`${job.jobId}  ${job.repo}  ${job.workflow}  ${state}${run}${branch}`);
+    if (job.source) lines.push(`  source ${job.source.kind} ${job.source.ref}`);
     if (state === "failed" && job.launchFailed && job.logPath) {
       lines.push(`  log ${job.logPath}`);
     }

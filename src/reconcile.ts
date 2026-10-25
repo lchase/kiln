@@ -1,4 +1,4 @@
-import type { JobState } from "./schemas.js";
+import type { JobSource, JobState } from "./schemas.js";
 
 /**
  * One tick's decisions. Pure: the same observation always yields the same
@@ -47,6 +47,8 @@ export interface ObservedJob {
   workflow: string;
   title: string;
   dependsOn: string[];
+  /** Set from the job file. Status prints it. Decide ignores it. */
+  source?: JobSource;
   /** A launching breadcrumb exists, its child pid is alive, and no journal is visible yet. */
   launching: boolean;
   /** The child pid is dead and no journal was written. Terminal: do not relaunch. */

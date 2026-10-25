@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 import { addRepo, renderRepoList, resolveKilnConfig } from "./config.js";
 import { answerJob, runStatus, runTick } from "./driver.js";
-import { createJob, renderAddedJob } from "./jobs.js";
+import { addFromFile } from "./intake/file.js";
+import { addFromPrompt } from "./intake/prompt.js";
+import { importTickets } from "./intake/tickets.js";
+import { renderAddedJob } from "./jobs.js";
 
 function usage(): never {
   console.error(
     [
       "Usage: kiln repo add <name> <path> [--test <cmd>] [--config <file>]",
       "       kiln repo list [--config <file>]",
-      "       kiln add <workflow> --repo <name> --spec <file.md> [--title <text>] [--after <jobId>]... [--config <file>]",
+      "       kiln add <workflow> --repo <name> (--spec <file.md> | --prompt <text>) [--title <text>] [--after <jobId>]... [--config <file>]",
+      "       kiln import <dir> --repo <name> [--workflow <name>] [--context <file.md>] [--dry-run] [--config <file>]",
       "       kiln tick [--config <file>]",
       "       kiln status [jobId] [--config <file>]",
       "       kiln approve <jobId> [--config <file>]",
@@ -17,9 +21,13 @@ function usage(): never {
       "repo add registers a checkout. Relative paths are stored relative to the",
       "config directory. ~ is expanded from the home directory.",
       "",
-      "add copies the spec into the kiln directory and writes one job file.",
+      "add writes one job from a spec file or from --prompt text (--prompt - reads stdin).",
       "The repo and the workflow (workflows/<name>.yaml) must already exist.",
       "--after names jobs that must be done before this one launches.",
+      "",
+      "import reads a directory of NN-slug.md tickets and writes one job per file.",
+      "Blocked-by becomes dependsOn. Re-running the same directory does not duplicate jobs.",
+      "--dry-run prints the jobs and writes nothing. Jira is not an intake.",
       "",
       "tick launches at most one ready job: dependencies done, under maxConcurrent.",
       "status prints the derived state. approve and reject answer the human gate.",
@@ -34,12 +42,16 @@ interface FlagBag {
   test?: string;
   repo?: string;
   spec?: string;
+  prompt?: string;
   title?: string;
+  workflow?: string;
+  context?: string;
+  dryRun: boolean;
   after: string[];
 }
 
 function parseFlags(argv: string[]): FlagBag {
-  const bag: FlagBag = { positionals: [], after: [] };
+  const bag: FlagBag = { positionals: [], after: [], dryRun: false };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const next = argv[i + 1];
@@ -67,6 +79,28 @@ function parseFlags(argv: string[]): FlagBag {
       i += 1;
       continue;
     }
+    if (flag === "--prompt") {
+      if (!next || next.startsWith("--")) usage();
+      bag.prompt = next;
+      i += 1;
+      continue;
+    }
+    if (flag === "--workflow") {
+      if (!next || next.startsWith("--")) usage();
+      bag.workflow = next;
+      i += 1;
+      continue;
+    }
+    if (flag === "--context") {
+      if (!next || next.startsWith("--")) usage();
+      bag.context = next;
+      i += 1;
+      continue;
+    }
+    if (flag === "--dry-run") {
+      bag.dryRun = true;
+      continue;
+    }
     if (flag === "--title") {
       if (!next || next.startsWith("--")) usage();
       bag.title = next;
@@ -89,9 +123,7 @@ function repoCommand(argv: string[]): void {
   const sub = argv[0];
   const flags = parseFlags(argv.slice(1));
   if (sub === "list") {
-    if (flags.positionals.length !== 0 || flags.test || flags.repo || flags.spec || flags.title || flags.after.length) {
-      usage();
-    }
+    if (flags.positionals.length !== 0 || hasIntakeFlags(flags) || flags.test) usage();
     const config = resolveKilnConfig({ configPath: flags.configPath });
     process.stdout.write(renderRepoList(config));
     return;
@@ -99,9 +131,7 @@ function repoCommand(argv: string[]): void {
   if (sub === "add") {
     const name = flags.positionals[0];
     const repoPath = flags.positionals[1];
-    if (!name || !repoPath || flags.positionals.length !== 2 || flags.repo || flags.spec || flags.title || flags.after.length) {
-      usage();
-    }
+    if (!name || !repoPath || flags.positionals.length !== 2 || hasIntakeFlags(flags)) usage();
     process.stdout.write(
       addRepo({
         configPath: flags.configPath,
@@ -118,33 +148,79 @@ function repoCommand(argv: string[]): void {
 function addCommand(argv: string[]): void {
   const flags = parseFlags(argv);
   const workflow = flags.positionals[0];
-  if (!workflow || flags.positionals.length !== 1 || !flags.repo || !flags.spec || flags.test) usage();
+  const spec = flags.spec !== undefined;
+  const prompt = flags.prompt !== undefined;
+  if (
+    !workflow ||
+    flags.positionals.length !== 1 ||
+    !flags.repo ||
+    spec === prompt ||
+    flags.test ||
+    flags.workflow ||
+    flags.context ||
+    flags.dryRun
+  ) {
+    usage();
+  }
   const config = resolveKilnConfig({ configPath: flags.configPath });
-  const { job, jsonPath } = createJob(config, {
-    workflow,
+  const { job, jsonPath } =
+    flags.spec !== undefined
+      ? addFromFile(config, {
+          workflow,
+          repo: flags.repo,
+          specPath: flags.spec,
+          ...(flags.title !== undefined ? { title: flags.title } : {}),
+          dependsOn: flags.after,
+          cwd: process.cwd(),
+        })
+      : addFromPrompt(config, {
+          workflow,
+          repo: flags.repo,
+          prompt: flags.prompt ?? "",
+          ...(flags.title !== undefined ? { title: flags.title } : {}),
+          dependsOn: flags.after,
+        });
+  process.stdout.write(renderAddedJob(job, jsonPath));
+}
+
+function importCommand(argv: string[]): void {
+  const flags = parseFlags(argv);
+  const dir = flags.positionals[0];
+  if (
+    !dir ||
+    flags.positionals.length !== 1 ||
+    !flags.repo ||
+    flags.spec ||
+    flags.prompt ||
+    flags.title ||
+    flags.after.length > 0 ||
+    flags.test
+  ) {
+    usage();
+  }
+  const config = resolveKilnConfig({ configPath: flags.configPath });
+  const result = importTickets(config, {
+    dir,
     repo: flags.repo,
-    specPath: flags.spec,
-    ...(flags.title !== undefined ? { title: flags.title } : {}),
-    dependsOn: flags.after,
+    ...(flags.workflow !== undefined ? { workflow: flags.workflow } : {}),
+    ...(flags.context !== undefined ? { contextPath: flags.context } : {}),
+    dryRun: flags.dryRun,
     cwd: process.cwd(),
   });
-  process.stdout.write(renderAddedJob(job, jsonPath));
+  process.stdout.write(result.report);
+  if (result.warnings.length > 0) process.stderr.write(`${result.warnings.join("\n")}\n`);
 }
 
 function tickCommand(argv: string[]): void {
   const flags = parseFlags(argv);
-  if (flags.positionals.length !== 0 || flags.test || flags.repo || flags.spec || flags.title || flags.after.length) {
-    usage();
-  }
+  if (flags.positionals.length !== 0 || flags.test || hasIntakeFlags(flags)) usage();
   const config = resolveKilnConfig({ configPath: flags.configPath });
   process.stdout.write(runTick(config));
 }
 
 function statusCommand(argv: string[]): void {
   const flags = parseFlags(argv);
-  if (flags.positionals.length > 1 || flags.test || flags.repo || flags.spec || flags.title || flags.after.length) {
-    usage();
-  }
+  if (flags.positionals.length > 1 || flags.test || hasIntakeFlags(flags)) usage();
   const config = resolveKilnConfig({ configPath: flags.configPath });
   process.stdout.write(runStatus(config, flags.positionals[0]));
 }
@@ -152,11 +228,22 @@ function statusCommand(argv: string[]): void {
 function gateCommand(choice: "approve" | "reject", argv: string[]): void {
   const flags = parseFlags(argv);
   const jobId = flags.positionals[0];
-  if (!jobId || flags.positionals.length !== 1 || flags.test || flags.repo || flags.spec || flags.title || flags.after.length) {
-    usage();
-  }
+  if (!jobId || flags.positionals.length !== 1 || flags.test || hasIntakeFlags(flags)) usage();
   const config = resolveKilnConfig({ configPath: flags.configPath });
   process.stdout.write(answerJob(config, jobId, choice));
+}
+
+function hasIntakeFlags(flags: FlagBag): boolean {
+  return Boolean(
+    flags.repo ||
+      flags.spec ||
+      flags.prompt ||
+      flags.title ||
+      flags.workflow ||
+      flags.context ||
+      flags.dryRun ||
+      flags.after.length > 0,
+  );
 }
 
 function main(): void {
@@ -169,6 +256,10 @@ function main(): void {
   }
   if (command === "add") {
     addCommand(argv.slice(1));
+    return;
+  }
+  if (command === "import") {
+    importCommand(argv.slice(1));
     return;
   }
   if (command === "tick") {
