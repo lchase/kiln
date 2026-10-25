@@ -1,7 +1,7 @@
 {
   "name": "kiln",
   "version": "0.0.1",
-  "description": "Refine a requirement into the contracts between repos, then drive each task with yak.",
+  "description": "Run a workflow on any registered repo. A markdown spec is the input.",
   "type": "module",
   "bin": {
     "kiln": "./dist/cli.js"

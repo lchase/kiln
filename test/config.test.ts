@@ -1,51 +1,71 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { loadKilnConfig, resolveKilnConfig } from "../src/config.js";
+import { addRepo, loadKilnConfig, resolveKilnConfig } from "../src/config.js";
 import { KilnConfigError } from "../src/errors.js";
-import { packageRoot } from "../src/paths.js";
-import { planBasename, writePlanFiles } from "../src/plans.js";
+import { jobBasename, packageRoot } from "../src/paths.js";
 
 const root = packageRoot();
-const exampleConfig = join(root, "examples", "kiln.config.json");
 
 describe("kiln config", () => {
-  it("loads the committed example config as fictional Pebble data", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "kiln-example-cwd-"));
+  it("resolves a relative repo path from the config directory and accepts any repo name", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "kiln-cfg-"));
+    const configDir = join(cwd, ".kiln");
+    const checkout = join(cwd, "repos", "web");
+    mkdirSync(checkout, { recursive: true });
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(
+      join(configDir, "kiln.config.json"),
+      JSON.stringify({
+        adapter: "mock",
+        repos: { web: { path: "../repos/web", test: "npm test" } },
+      }),
+    );
     try {
-      const loaded = loadKilnConfig(exampleConfig, { cwd });
-      assert.equal(loaded.example, true);
-      assert.match(loaded.note ?? "", /EXAMPLE CONFIG/);
-      assert.match(loaded.checkouts.frontend, /examples\/checkouts\/frontend$/);
-      assert.match(loaded.checkouts["ai-core"], /examples\/checkouts\/ai-core$/);
-      assert.match(loaded.checkouts["evals-obs"], /examples\/checkouts\/evals-obs$/);
-      assert.deepEqual(
-        loaded.ownership.map((map) => map.repo),
-        ["frontend", "ai-core", "evals-obs"],
-      );
-      assert.equal(loaded.plansDir, join(cwd, ".kiln", "plans"));
-      assert.equal(loaded.plansDir.includes(`${join("examples", "plans")}`), false);
+      const loaded = loadKilnConfig(join(configDir, "kiln.config.json"), { cwd });
+      assert.equal(loaded.repos.web?.path, checkout);
+      assert.equal(loaded.repos.web?.test, "npm test");
+      assert.equal(loaded.kilnDir, configDir);
+      assert.equal(loaded.jobsDir, join(configDir, "jobs"));
+      assert.equal(loaded.adapter, "mock");
+      assert.equal("frontend" in loaded.repos, false);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
 
-  it("prefers .kiln in the working directory over ~/.kiln and the example config", () => {
+  it("expands ~ in a repo path", () => {
+    const home = mkdtempSync(join(tmpdir(), "kiln-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "kiln-cwd-"));
+    const checkout = join(home, "checkouts", "api");
+    mkdirSync(checkout, { recursive: true });
+    const configDir = join(home, ".kiln");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(
+      join(configDir, "kiln.config.json"),
+      JSON.stringify({ repos: { api: { path: "~/checkouts/api" } } }),
+    );
+    try {
+      const loaded = loadKilnConfig(join(configDir, "kiln.config.json"), { cwd, home });
+      assert.equal(loaded.repos.api?.path, checkout);
+      assert.equal(loaded.repos.api?.test, undefined);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers .kiln in the working directory over ~/.kiln", () => {
     const cwd = mkdtempSync(join(tmpdir(), "kiln-cwd-"));
     const home = mkdtempSync(join(tmpdir(), "kiln-home-"));
     try {
-      writeLocalConfig(join(cwd, ".kiln"), "from-cwd");
-      writeLocalConfig(join(home, ".kiln"), "from-home");
-      const loaded = resolveKilnConfig({
-        cwd,
-        home,
-        requirementPath: join(root, "examples", "requirements", "thin-jira.md"),
-      });
-      assert.equal(loaded.example, false);
+      writeLocal(join(cwd, ".kiln"), "from-cwd");
+      writeLocal(join(home, ".kiln"), "from-home");
+      const loaded = resolveKilnConfig({ cwd, home });
       assert.match(loaded.note ?? "", /from-cwd/);
-      assert.equal(loaded.plansDir, join(cwd, ".kiln", "plans"));
+      assert.equal(loaded.jobsDir, join(cwd, ".kiln", "jobs"));
     } finally {
       rmSync(cwd, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
@@ -56,63 +76,90 @@ describe("kiln config", () => {
     const cwd = mkdtempSync(join(tmpdir(), "kiln-cwd-"));
     const home = mkdtempSync(join(tmpdir(), "kiln-home-"));
     try {
-      writeLocalConfig(join(home, ".kiln"), "from-home");
-      const loaded = resolveKilnConfig({ cwd, home, requirementPath: join(cwd, "ticket.md") });
+      writeLocal(join(home, ".kiln"), "from-home");
+      const loaded = resolveKilnConfig({ cwd, home });
       assert.match(loaded.note ?? "", /from-home/);
-      assert.equal(loaded.plansDir, join(home, ".kiln", "plans"));
+      assert.equal(loaded.kilnDir, join(home, ".kiln"));
     } finally {
       rmSync(cwd, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  it("falls back to the example config only for shipped example requirements", () => {
+  it("refuses to run when no config exists", () => {
     const cwd = mkdtempSync(join(tmpdir(), "kiln-cwd-"));
     const home = mkdtempSync(join(tmpdir(), "kiln-home-"));
     try {
-      const loaded = resolveKilnConfig({
-        cwd,
-        home,
-        requirementPath: join(root, "examples", "requirements", "weekly-reflection.md"),
-      });
-      assert.equal(loaded.example, true);
-      assert.equal(loaded.configPath, exampleConfig);
-
-      assert.throws(
-        () => resolveKilnConfig({ cwd, home, requirementPath: join(cwd, "TICKET-9.md") }),
-        KilnConfigError,
-      );
+      assert.throws(() => resolveKilnConfig({ cwd, home }), KilnConfigError);
+      try {
+        resolveKilnConfig({ cwd, home });
+      } catch (error) {
+        assert.match(error instanceof Error ? error.message : "", /kiln repo add/);
+        assert.doesNotMatch(error instanceof Error ? error.message : "", /three checkout/);
+      }
     } finally {
       rmSync(cwd, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  it("writes plans under cwd/.kiln when the config file is not inside a .kiln directory", () => {
+  it("writes jobs under cwd/.kiln when the config file is not inside a .kiln directory", () => {
     const cwd = mkdtempSync(join(tmpdir(), "kiln-cwd-"));
     const configDir = join(cwd, "elsewhere");
+    const checkout = join(cwd, "repo");
+    mkdirSync(checkout, { recursive: true });
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(
+      join(configDir, "kiln.config.json"),
+      JSON.stringify({ repos: { web: { path: checkout } } }),
+    );
     try {
-      writeLocalConfig(configDir, "outside-kiln");
       const loaded = loadKilnConfig(join(configDir, "kiln.config.json"), { cwd });
       assert.equal(loaded.kilnDir, join(cwd, ".kiln"));
-      assert.equal(loaded.plansDir, join(cwd, ".kiln", "plans"));
-      assert.equal(loaded.plansDir.startsWith(configDir), false);
+      assert.equal(loaded.jobsDir, join(cwd, ".kiln", "jobs"));
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
 
-  it("writes plan files only inside the plans directory", () => {
-    const dir = mkdtempSync(join(tmpdir(), "kiln-plans-"));
+  it("stores a relative path from repo add and keeps an existing test command", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "kiln-add-"));
+    const home = join(cwd, "home");
+    const checkout = join(cwd, "repos", "web");
+    mkdirSync(checkout, { recursive: true });
+    mkdirSync(home, { recursive: true });
     try {
-      const written = writePlanFiles(join(dir, "plans"), "EX-202", '{"kind":"plan"}\n', "# Plan\n");
-      assert.equal(written.jsonPath, join(dir, "plans", "EX-202.json"));
-      assert.equal(readFileSync(written.markdownPath, "utf8"), "# Plan\n");
-      assert.equal(planBasename("../EX-202"), "EX-202");
-      assert.throws(() => planBasename(".."), /cannot be used as a plan filename/);
+      const first = addRepo({ cwd, home, name: "web", repoPath: "repos/web", test: "npm test" });
+      assert.match(first, new RegExp(checkout));
+      const configPath = join(cwd, ".kiln", "kiln.config.json");
+      const stored = JSON.parse(readFileSync(configPath, "utf8")) as {
+        repos: { web: { path: string; test?: string } };
+      };
+      assert.equal(stored.repos.web.path, "../repos/web");
+      assert.equal(stored.repos.web.test, "npm test");
+      addRepo({ cwd, home, name: "web", repoPath: checkout });
+      const updated = JSON.parse(readFileSync(configPath, "utf8")) as {
+        repos: { web: { path: string; test?: string } };
+      };
+      assert.equal(updated.repos.web.path, checkout);
+      assert.equal(updated.repos.web.test, "npm test");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
     }
+  });
+
+  it("rejects a repo name that is not a single path segment", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "kiln-name-"));
+    try {
+      assert.throws(() => addRepo({ cwd, home: cwd, name: "../web", repoPath: cwd }), /Repo name/);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("turns a job id into one safe path segment", () => {
+    assert.equal(jobBasename("../job-1"), "job-1");
+    assert.throws(() => jobBasename(".."), /cannot be used as a file name/);
   });
 
   it("gitignores the local kiln directory", () => {
@@ -121,26 +168,11 @@ describe("kiln config", () => {
   });
 });
 
-function writeLocalConfig(dir: string, note: string): void {
-  mkdirSync(dir, { recursive: true });
+function writeLocal(dir: string, note: string): void {
+  const checkout = join(dir, "repo");
+  mkdirSync(checkout, { recursive: true });
   writeFileSync(
     join(dir, "kiln.config.json"),
-    JSON.stringify({
-      note,
-      repos: {
-        frontend: {
-          checkout: join(root, "examples", "checkouts", "frontend"),
-          ownership: join(root, "examples", "ownership", "frontend.json"),
-        },
-        "ai-core": {
-          checkout: join(root, "examples", "checkouts", "ai-core"),
-          ownership: join(root, "examples", "ownership", "ai-core.json"),
-        },
-        "evals-obs": {
-          checkout: join(root, "examples", "checkouts", "evals-obs"),
-          ownership: join(root, "examples", "ownership", "evals-obs.json"),
-        },
-      },
-    }),
+    JSON.stringify({ note, repos: { web: { path: checkout } } }),
   );
 }

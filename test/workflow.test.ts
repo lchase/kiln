@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { packageRoot } from "../src/paths.js";
 import { yakCliPath } from "../src/report.js";
-import { materializeFeatureWorkflow } from "../src/workflow.js";
+import { materializeWorkflow, workflowInputs } from "../src/workflow.js";
 
 const root = packageRoot();
 const keep: string[] = [];
@@ -79,7 +79,7 @@ describe("feature workflow", () => {
     assert.doesNotMatch(relative.stderr, /run .* started/);
 
     const kilnDir = join(foreign, "kiln");
-    const rendered = materializeFeatureWorkflow(kilnDir, "PEBBLE-VALIDATE", "show-sunday");
+    const rendered = materializeWorkflow(kilnDir, "jvalidate", "feature");
     const renderedText = readFileSync(rendered, "utf8");
     assert.doesNotMatch(renderedText, /file: prompts\//);
     assert.match(renderedText, /file: "\//);
@@ -138,5 +138,22 @@ describe("feature workflow", () => {
     assert.doesNotMatch(`${run.stdout}\n${run.stderr}`, /prompt references/);
     assert.doesNotMatch(`${run.stdout}\n${run.stderr}`, /needs artifact/);
     assert.match(run.stderr, /no such file or directory|ENOENT|mock fixture/);
+  });
+
+  it("fills the feature schema from the spec text and does not invent extra fields", () => {
+    const source = readFileSync(join(root, "workflows", "feature.yaml"), "utf8");
+    const input = workflowInputs(source, {
+      title: "Sunday summary",
+      specText: "# Sunday summary\n\nShow the paragraph.",
+      baseRef: "0123456789abcdef0123456789abcdef01234567",
+      runNonce: "nonce-1",
+    });
+    assert.equal(input.title, "Sunday summary");
+    assert.equal(input.description, "# Sunday summary\n\nShow the paragraph.");
+    assert.equal(input.acceptance, input.description);
+    assert.equal(input.contracts, "none");
+    assert.equal(input.baseRef, "0123456789abcdef0123456789abcdef01234567");
+    assert.equal(input.runNonce, "nonce-1");
+    assert.equal("spec" in input, false);
   });
 });
