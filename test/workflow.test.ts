@@ -86,7 +86,8 @@ describe("feature workflow", () => {
     const specFile = renderedText.match(/file: "([^"]*spec-[0-9a-f]+\.md)"/)?.[1];
     assert.ok(specFile);
     const combined = readFileSync(specFile, "utf8");
-    assert.match(combined, /Contracts this task publishes or depends on/);
+    assert.match(combined, /Do not write code/);
+    assert.doesNotMatch(combined, /input\.contracts/);
     assert.match(combined, /\{\{input\.baseRef\}\}/);
     assert.match(combined, /git branch --show-current/);
     assert.match(combined, /Write exactly one file, `<job folder>\/spec\.md`/);
@@ -109,7 +110,14 @@ describe("feature workflow", () => {
     assert.ok(buildFile);
     assert.ok(approverFile);
     assert.match(readFileSync(buildFile, "utf8"), /this is round 1/);
+    assert.match(readFileSync(buildFile, "utf8"), /signal, no exit code/);
     assert.match(readFileSync(approverFile, "utf8"), /Only the final round is provided/);
+    const codeFile = renderedText.match(/file: "([^"]*code-[0-9a-f]+\.md)"/)?.[1];
+    assert.ok(codeFile);
+    assert.match(
+      readFileSync(codeFile, "utf8"),
+      /Use the verify output provided; do not re-run tests, builds, or anything that writes to the working tree\. Read-only git and file inspection only\./,
+    );
 
     const run = yak(
       [
@@ -125,8 +133,6 @@ describe("feature workflow", () => {
         "description=Show the week",
         "--input",
         "acceptance=The paragraph is visible",
-        "--input",
-        "contracts=none",
         "--input",
         "runNonce=pebble-nonce",
         "--input",
@@ -151,7 +157,7 @@ describe("feature workflow", () => {
     assert.equal(input.title, "Sunday summary");
     assert.equal(input.description, "# Sunday summary\n\nShow the paragraph.");
     assert.equal(input.acceptance, input.description);
-    assert.equal(input.contracts, "none");
+    assert.equal("contracts" in input, false);
     assert.equal(input.baseRef, "0123456789abcdef0123456789abcdef01234567");
     assert.equal(input.runNonce, "nonce-1");
     assert.equal("spec" in input, false);

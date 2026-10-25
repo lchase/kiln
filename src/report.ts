@@ -80,6 +80,11 @@ export function renderStatus(observation: Observation, jobId?: string): string {
     if (state === "dead" && job.run) {
       lines.push(`  fix: cd ${shellQuote(job.run.checkout)} && ${yakInvocation("cancel", job.run.runId)}`);
     }
+    if (state === "blocked") {
+      for (const dep of missingDependencyIds(job, observation)) {
+        lines.push(`  blocked on missing job ${dep}`);
+      }
+    }
     if (state === "needs-human" && job.run) {
       for (const gate of job.run.gates) {
         lines.push(`  gate ${gate.stepId}: ${gate.prompt}`);
@@ -88,6 +93,11 @@ export function renderStatus(observation: Observation, jobId?: string): string {
     }
   }
   return `${lines.join("\n")}\n`;
+}
+
+function missingDependencyIds(job: ObservedJob, observation: Observation): string[] {
+  const known = new Set(observation.jobs.map((candidate) => candidate.jobId));
+  return job.dependsOn.filter((id) => !known.has(id));
 }
 
 function appendGateCommands(lines: string[], job: ObservedJob, gate: ObservedGate): void {
