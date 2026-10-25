@@ -1,6 +1,6 @@
 # Kiln
 
-Kiln runs a workflow against a git checkout. Register any repo, add a job from a markdown spec, a prompt, a directory of tickets, or a Jira Cloud issue, and tick. Tick launches ready jobs in yak worktrees. Status shows each job. Approve or reject answers a human gate.
+Kiln runs a workflow against a git checkout. Register any repo, add a job from a markdown spec, a prompt, a directory of tickets, or a Jira Cloud issue, and tick. Tick launches ready jobs in yak worktrees. Status shows each job. Approve or reject answers a human gate. `kiln serve` opens that same derived state in a browser on this machine.
 
 A ready spec is the input. Kiln does not build or iterate requirements.
 
@@ -155,6 +155,24 @@ Create a token at <https://id.atlassian.com/manage-profile/security/api-tokens>.
 A Blocks link where this issue is blocked by another key becomes `dependsOn` when a kiln job with `source` `jira` and that key already exists. Otherwise Kiln prints a warning naming the key and still creates the job. `--after` is merged with those ids. Issue type Spike or Research uses the same rule as a spike ticket: `investigation` when `workflows/investigation.yaml` exists, and a warning on the requested workflow when it does not. Running add again for the same key prints the existing job id and creates nothing. `--dry-run` prints the job and writes nothing.
 
 `examples/spec.md` is a fictional spec you can copy.
+
+## Serve
+
+```bash
+kiln serve
+kiln serve --port 4100 --tick 30
+kiln serve --no-tick
+```
+
+`kiln serve` listens on `127.0.0.1` only (port 4100 unless `--port` is set). It reads the same derived state as `kiln status` and calls the same approve and reject functions. Nothing new is stored.
+
+`/` is the inbox: jobs in `needs-human`, with the gate prompt, the artifacts and review output yak wrote, links to the spec and the log, and Approve / Reject. `/board` groups every job by state, shows `dependsOn` (including blocked-by), the stacked flag, the pull request for `in-review` and `done`, and the failure or launch error for `failed`. Both pages refresh every 3 seconds.
+
+`GET /api/jobs` and `GET /api/jobs/<id>` return that view as JSON. `POST /api/jobs/<id>/approve` and `POST /api/jobs/<id>/reject` answer the gate. A browser POST from another origin is rejected. The page and the stylesheet ship inside the package (`assets/serve.css`, read from the package root).
+
+By default, serve runs `kiln tick` once when it starts and then every 30 seconds. `--tick <seconds>` changes the interval. `--no-tick` leaves the factory where it is. The tick uses the same lock as `kiln tick`, so a second tick exits with "another kiln tick is running" instead of launching twice. There is no intake form in this UI yet.
+
+The Jira API token is not rendered. Do not commit checkout paths or job files.
 
 ## Tick, status, approve
 

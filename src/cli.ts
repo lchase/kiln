@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { addRepo, renderRepoList, resolveKilnConfig } from "./config.js";
 import { answerJob, runStatus, runTick } from "./driver.js";
+import { startServe } from "./serve.js";
 import { addFromFile } from "./intake/file.js";
 import { addFromJira } from "./intake/jira.js";
 import { addFromPrompt } from "./intake/prompt.js";
@@ -18,6 +19,7 @@ function usage(): never {
       "       kiln status [jobId] [--config <file>]",
       "       kiln approve <jobId> [--config <file>]",
       "       kiln reject <jobId> [--config <file>]",
+      "       kiln serve [--port 4100] [--tick <seconds>|--no-tick] [--config <file>]",
       "",
       "repo add registers a checkout. A relative path is stored absolute, resolved",
       "from the working directory. ~ is expanded from the home directory.",
@@ -47,6 +49,11 @@ function usage(): never {
       "Stacked jobs launch once the upstream has landed. deliver=pr then pushes",
       "yak/<run-id> and opens a draft pull request. status prints the derived state.",
       "approve and reject answer the human gate.",
+      "",
+      "serve listens on 127.0.0.1. The inbox lists needs-human jobs. The board",
+      "groups every job by the same derived state as status. Approve and reject",
+      "call the same functions as the CLI. POST from another origin is rejected.",
+      "A tick runs every 30 seconds unless --no-tick is set, using the tick lock.",
     ].join("\n"),
   );
   process.exit(2);
@@ -68,10 +75,13 @@ interface FlagBag {
   deliver?: "local" | "pr";
   base?: string;
   after: string[];
+  port?: number;
+  tickSeconds?: number;
+  noTick: boolean;
 }
 
 function parseFlags(argv: string[]): FlagBag {
-  const bag: FlagBag = { positionals: [], after: [], dryRun: false, stack: false };
+  const bag: FlagBag = { positionals: [], after: [], dryRun: false, stack: false, noTick: false };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const next = argv[i + 1];
@@ -155,15 +165,40 @@ function parseFlags(argv: string[]): FlagBag {
       i += 1;
       continue;
     }
+    if (flag === "--port") {
+      if (!next || !/^\d+$/.test(next)) usage();
+      const port = Number(next);
+      if (port > 65535) usage();
+      bag.port = port;
+      i += 1;
+      continue;
+    }
+    if (flag === "--tick") {
+      if (!next || !/^[1-9]\d*$/.test(next)) usage();
+      const seconds = Number(next);
+      if (seconds > 86_400) usage();
+      bag.tickSeconds = seconds;
+      i += 1;
+      continue;
+    }
+    if (flag === "--no-tick") {
+      bag.noTick = true;
+      continue;
+    }
     if (flag?.startsWith("--")) usage();
     if (flag !== undefined) bag.positionals.push(flag);
   }
   return bag;
 }
 
+function rejectServeFlags(flags: FlagBag): void {
+  if (flags.port !== undefined || flags.tickSeconds !== undefined || flags.noTick) usage();
+}
+
 function repoCommand(argv: string[]): void {
   const sub = argv[0];
   const flags = parseFlags(argv.slice(1));
+  rejectServeFlags(flags);
   if (sub === "list") {
     if (flags.positionals.length !== 0 || hasIntakeFlags(flags) || flags.test || flags.deliver || flags.base) usage();
     const config = resolveKilnConfig({ configPath: flags.configPath });
@@ -191,6 +226,7 @@ function repoCommand(argv: string[]): void {
 
 async function addCommand(argv: string[]): Promise<void> {
   const flags = parseFlags(argv);
+  rejectServeFlags(flags);
   const workflow = flags.positionals[0];
   const selected = [flags.spec !== undefined, flags.prompt !== undefined, flags.jira !== undefined].filter(Boolean).length;
   if (
@@ -246,6 +282,7 @@ async function addCommand(argv: string[]): Promise<void> {
 
 function importCommand(argv: string[]): void {
   const flags = parseFlags(argv);
+  rejectServeFlags(flags);
   const dir = flags.positionals[0];
   if (
     !dir ||
@@ -277,6 +314,7 @@ function importCommand(argv: string[]): void {
 
 function tickCommand(argv: string[]): void {
   const flags = parseFlags(argv);
+  rejectServeFlags(flags);
   if (flags.positionals.length !== 0 || flags.test || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.stack) {
     usage();
   }
@@ -286,6 +324,7 @@ function tickCommand(argv: string[]): void {
 
 function statusCommand(argv: string[]): void {
   const flags = parseFlags(argv);
+  rejectServeFlags(flags);
   if (flags.positionals.length > 1 || flags.test || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.stack) {
     usage();
   }
@@ -295,12 +334,36 @@ function statusCommand(argv: string[]): void {
 
 function gateCommand(choice: "approve" | "reject", argv: string[]): void {
   const flags = parseFlags(argv);
+  rejectServeFlags(flags);
   const jobId = flags.positionals[0];
   if (!jobId || flags.positionals.length !== 1 || flags.test || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.stack) {
     usage();
   }
   const config = resolveKilnConfig({ configPath: flags.configPath });
   process.stdout.write(answerJob(config, jobId, choice));
+}
+
+async function serveCommand(argv: string[]): Promise<void> {
+  const flags = parseFlags(argv);
+  if (
+    flags.positionals.length !== 0 ||
+    flags.test ||
+    hasIntakeFlags(flags) ||
+    flags.deliver ||
+    flags.base ||
+    flags.stack ||
+    (flags.noTick && flags.tickSeconds !== undefined)
+  ) {
+    usage();
+  }
+  const config = resolveKilnConfig({ configPath: flags.configPath });
+  const port = flags.port ?? 4100;
+  const tickSeconds = flags.noTick ? undefined : (flags.tickSeconds ?? 30);
+  await startServe({
+    config,
+    port,
+    ...(tickSeconds !== undefined ? { tickSeconds } : {}),
+  });
 }
 
 function hasIntakeFlags(flags: FlagBag): boolean {
@@ -348,6 +411,10 @@ async function main(): Promise<void> {
   }
   if (command === "reject") {
     gateCommand("reject", argv.slice(1));
+    return;
+  }
+  if (command === "serve") {
+    await serveCommand(argv.slice(1));
     return;
   }
   usage();

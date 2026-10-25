@@ -24,12 +24,13 @@ import {
   isMerged,
 } from "./delivery.js";
 import { defaultHost, type KilnHost, type PullRequestState } from "./host.js";
-import { readJobSpec } from "./jobs.js";
+import { readJobSpec, resolveJobSpec } from "./jobs.js";
 import { jobBasename, packageRoot } from "./paths.js";
 import {
   decide,
   jobState,
   type Observation,
+  type ObservedArtifact,
   type ObservedGate,
   type ObservedJob,
   type ObservedRun,
@@ -39,9 +40,11 @@ import {
   gateAnswerCommand,
   renderStatus,
   renderTick,
+  statusView,
   yakCliPath,
   type DeliverReport,
   type LaunchReport,
+  type StatusView,
 } from "./report.js";
 import { JobSchema, type Job } from "./schemas.js";
 import { materializeWorkflow, workflowInputs } from "./workflow.js";
@@ -79,8 +82,13 @@ export function parseJobTag(tag: string): string | undefined {
   return id;
 }
 
+/** The derived view `kiln status` prints and `kiln serve` renders. */
+export function readStatus(config: LoadedKilnConfig, jobId?: string, host: KilnHost = defaultHost()): StatusView {
+  return statusView(observe(config, host).observation, jobId);
+}
+
 export function runStatus(config: LoadedKilnConfig, jobId?: string, host: KilnHost = defaultHost()): string {
-  return renderStatus(observe(config, host).observation, jobId);
+  return renderStatus(readStatus(config, jobId, host));
 }
 
 export function runTick(config: LoadedKilnConfig, host: KilnHost = defaultHost()): string {
@@ -164,6 +172,8 @@ function observe(config: LoadedKilnConfig, host: KilnHost): World {
       entry.job?.stack && (entry.job.dependsOn?.length ?? 0) !== 1
         ? "stack needs exactly one dependency."
         : undefined;
+    const logPath = crumb?.logPath || existingLog(config.kilnDir, entry.meta.jobId);
+    const specPath = entry.job ? resolveJobSpec(config.kilnDir, entry.job.spec) : undefined;
     jobs.push({
       jobId: entry.meta.jobId,
       repo: entry.job?.repo ?? "",
@@ -171,13 +181,14 @@ function observe(config: LoadedKilnConfig, host: KilnHost): World {
       title: entry.job?.title ?? "",
       dependsOn: entry.job?.dependsOn ?? [],
       ...(entry.job?.source ? { source: entry.job.source } : {}),
+      ...(specPath ? { specPath } : {}),
       deliver,
       ...(entry.job?.stack ? { stack: true } : {}),
       ...(delivery ? { delivery } : {}),
       launching: Boolean(crumb) && !run && childAlive,
       launchFailed: Boolean(crumb) && !run && !childAlive,
       ...(launchError ? { launchError } : {}),
-      ...(crumb?.logPath ? { logPath: crumb.logPath } : {}),
+      ...(logPath ? { logPath } : {}),
       ...(run ? { run } : {}),
       ...(entry.meta.error || repoError || stackError
         ? { error: entry.meta.error ?? repoError ?? stackError }
@@ -560,25 +571,143 @@ function openGates(runDir: string, events: JournalEvent[]): ObservedGate[] {
 }
 
 function readGate(runDir: string, stepId: string): ObservedGate {
+  const reviews = readReviewArtifacts(runDir);
   const file = join(runDir, "pending", `${stepId}.request.json`);
-  if (!existsSync(file)) return { stepId, prompt: "(request file missing)" };
+  if (!existsSync(file)) {
+    return { stepId, prompt: "(request file missing)", ...(reviews.length > 0 ? { reviews } : {}) };
+  }
   const request = JSON.parse(readFileSync(file, "utf8")) as {
     kind?: string;
     rendered?: string;
     tripped?: string;
     iteration?: number;
     answerSchema?: unknown;
+    context?: { artifacts?: unknown };
   };
   const prompt =
     request.kind === "loop-exhausted"
       ? `loop exhausted (${request.tripped ?? "budget"} at iteration ${request.iteration ?? "?"})`
       : (request.rendered ?? stepId).split("\n")[0] ?? stepId;
   const shape = answerShape(request.answerSchema);
+  const rendered = typeof request.rendered === "string" ? clipText(request.rendered, 2000) : undefined;
+  const artifacts = readNamedArtifacts(runDir, artifactNames(request.context?.artifacts));
   return {
     stepId,
     prompt,
+    ...(rendered ? { rendered } : {}),
     ...(shape ? { answerField: shape.field, choices: shape.choices } : {}),
+    ...(artifacts.length > 0 ? { artifacts } : {}),
+    ...(reviews.length > 0 ? { reviews } : {}),
   };
+}
+
+const REVIEW_STEPS = ["security", "ux", "ui", "code"] as const;
+const ARTIFACT_NAME = /^[A-Za-z0-9._-]+$/;
+const SECRET_KEY = /api[_-]?token|password|secret|authorization|credential/i;
+
+/** The launch log stays after the breadcrumb is cleared. Status prints it only for a failed launch. */
+function existingLog(kilnDir: string, jobId: string): string | undefined {
+  let name: string;
+  try {
+    name = jobBasename(jobId);
+  } catch {
+    return undefined;
+  }
+  const path = join(kilnDir, "logs", `${name}.log`);
+  return existsSync(path) ? path : undefined;
+}
+
+function artifactNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const names: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string" || !ARTIFACT_NAME.test(entry) || names.includes(entry)) continue;
+    names.push(entry);
+  }
+  return names;
+}
+
+function readNamedArtifacts(runDir: string, names: string[]): ObservedArtifact[] {
+  const found: ObservedArtifact[] = [];
+  for (const name of names) {
+    const file = join(runDir, "artifacts", `${name}.json`);
+    if (!existsSync(file)) continue;
+    found.push(readArtifactSummary(file, name));
+  }
+  return found;
+}
+
+function readReviewArtifacts(runDir: string): ObservedArtifact[] {
+  const dir = join(runDir, "artifacts");
+  if (!existsSync(dir)) return [];
+  let files: string[];
+  try {
+    files = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const best = new Map<string, { iter: number; file: string }>();
+  for (const file of files) {
+    const match = /^(security|ux|ui|code)(?:\.(\d+))?\.json$/.exec(file);
+    if (!match?.[1]) continue;
+    const iter = match[2] ? Number(match[2]) : 0;
+    const previous = best.get(match[1]);
+    if (!previous || iter >= previous.iter) best.set(match[1], { iter, file });
+  }
+  const found: ObservedArtifact[] = [];
+  for (const step of REVIEW_STEPS) {
+    const picked = best.get(step);
+    if (!picked) continue;
+    found.push(readArtifactSummary(join(dir, picked.file), step));
+  }
+  return found;
+}
+
+function readArtifactSummary(file: string, name: string): ObservedArtifact {
+  if (!existsSync(file)) return { name, summary: "(missing artifact)" };
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    return { name, summary: summarizeArtifact(name, parsed) };
+  } catch {
+    return { name, summary: "(unreadable artifact)" };
+  }
+}
+
+function summarizeArtifact(name: string, value: unknown): string {
+  const clean = redactSecrets(value);
+  if (name === "input" && isRecord(clean)) {
+    const title = clean.title;
+    return typeof title === "string" && title.trim() ? `title: ${clipText(title, 120)}` : "(no title)";
+  }
+  if (isRecord(clean)) {
+    const head = typeof clean.decision === "string" ? clean.decision : typeof clean.verdict === "string" ? clean.verdict : undefined;
+    const detail = typeof clean.reason === "string" ? clean.reason : typeof clean.findings === "string" ? clean.findings : undefined;
+    if (head) return clipText(detail ? `${head} — ${detail}` : head, 280);
+  }
+  try {
+    return clipText(JSON.stringify(clean), 280);
+  } catch {
+    return "(unreadable artifact)";
+  }
+}
+
+function redactSecrets(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactSecrets);
+  if (!isRecord(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, inner] of Object.entries(value)) {
+    out[key] = SECRET_KEY.test(key) ? "[redacted]" : redactSecrets(inner);
+  }
+  return out;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function clipText(text: string, max: number): string {
+  const trimmed = text.trim();
+  return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1)}...`;
 }
 
 function answerShape(schema: unknown): { field: string; choices: string[] } | undefined {
