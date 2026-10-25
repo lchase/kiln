@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import type { LoadedKilnConfig } from "./config.js";
+import { packageRoot } from "./paths.js";
 import { planBasename } from "./plans.js";
 import { renderStatus, renderTick, yakCliPath, type LaunchReport } from "./report.js";
 import {
@@ -27,8 +28,8 @@ import {
   type RunStatus,
 } from "./reconcile.js";
 import { PlanSchema, type Plan, type Task } from "./schemas.js";
-import { packageRoot } from "./paths.js";
 import { validatePlan } from "./validate.js";
+import { materializeFeatureWorkflow } from "./workflow.js";
 
 interface JournalEvent {
   t: string;
@@ -169,10 +170,7 @@ function launchTask(config: LoadedKilnConfig, planFile: Plan, task: Task): Launc
       `Repo ${task.repo} has an empty test command. Set repos.${task.repo}.test in the kiln config. The feature workflow refuses to run an empty KILN_TEST.`,
     );
   }
-  const workflow = join(packageRoot(), "workflows", "feature.yaml");
-  if (!existsSync(workflow)) {
-    throw new Error(`Feature workflow not found at ${workflow}.`);
-  }
+  const workflow = materializeFeatureWorkflow(config.kilnDir, planFile.requirementId, task.id);
   const logPath = join(
     config.kilnDir,
     "logs",
@@ -183,7 +181,11 @@ function launchTask(config: LoadedKilnConfig, planFile: Plan, task: Task): Launc
   const crumbPath = breadcrumbPath(config.kilnDir, planFile.requirementId, task.id);
   ensureCheckoutExcludes(checkout);
 
-  const input = { ...taskInput(planFile, task), runNonce: randomUUID() };
+  const input = {
+    ...taskInput(planFile, task),
+    runNonce: randomUUID(),
+    baseRef: checkoutHead(checkout),
+  };
   const args = [
     yakCliPath(),
     "run",
@@ -211,7 +213,12 @@ function launchTask(config: LoadedKilnConfig, planFile: Plan, task: Task): Launc
       cwd: checkout,
       detached: true,
       stdio: ["ignore", logFd, logFd],
-      env: { ...process.env, KILN_TEST: testCommand, KILN_TASK_TITLE: task.title },
+      env: {
+        ...process.env,
+        KILN_TEST: testCommand,
+        KILN_TASK_TITLE: task.title,
+        KILN_VERIFY_WRAPPER: join(packageRoot(), "dist", "truncate-output.js"),
+      },
     });
     child.unref();
     const pid = child.pid ?? 0;
@@ -520,6 +527,17 @@ function ensureCheckoutExcludes(checkout: string): void {
   if (missing.length === 0) return;
   const suffix = current.length === 0 || current.endsWith("\n") ? "" : "\n";
   writeFileSync(exclude, `${current}${suffix}${missing.join("\n")}\n`);
+}
+
+/** Checkout HEAD at launch. The worktree branch is cut from this commit. */
+function checkoutHead(checkout: string): string {
+  const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: checkout, encoding: "utf8" });
+  const sha = result.stdout.trim();
+  if (result.status !== 0 || !/^[0-9a-f]{40}$/.test(sha)) {
+    const detail = (result.stderr || result.stdout || "no HEAD").trim();
+    throw new Error(`Could not record the base SHA for ${checkout}: ${detail}`);
+  }
+  return sha;
 }
 
 /** Main git dir, including when `.git` is a file (a linked worktree). */
