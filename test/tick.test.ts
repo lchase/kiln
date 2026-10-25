@@ -425,12 +425,13 @@ describe("kiln tick", { concurrency: 1 }, () => {
       approver: [{ output: { decision: "APPROVE", reason: "Round 2 reviews passed." } }],
     });
     const id = addJob(cwd, home, "feature", "web", "Sunday heading");
-    const launched = runCli(["tick"], { cwd, home, env: promptEnv(promptLog) });
+    const launched = runCli(["tick"], { cwd, home, env: promptEnv(promptLog, 200) });
     assert.equal(launched.status, 0, launched.stderr);
     const suspended = waitForStatus(cwd, home, id, /needs-human/, 60000);
     const runId = runIdOf(suspended, id);
     assert.deepEqual(stepIterations(web, runId, "build"), [1, 2]);
     assert.deepEqual(stepIterations(web, runId, "code"), [1, 2]);
+    assertReviewersOverlap(web, runId, 1);
     assert.equal(readArtifact(web, runId, "code.1.json").verdict, "CHANGES");
     assert.equal(readArtifact(web, runId, "code.2.json").verdict, "PASS");
     const prompts = readPrompts(promptLog);
@@ -522,12 +523,35 @@ describe("kiln tick", { concurrency: 1 }, () => {
   });
 });
 
-function promptEnv(promptLog: string): Record<string, string> {
+function promptEnv(promptLog: string, delayMs?: number): Record<string, string> {
   const hook = join(root, "test", "hooks", "register-record-mock-prompts.mjs");
   return {
     NODE_OPTIONS: `--import ${hook}`,
     KILN_PROMPT_LOG: promptLog,
+    ...(delayMs === undefined ? {} : { KILN_MOCK_DELAY_MS: String(delayMs) }),
   };
+}
+
+/** The four reviewers' step.started events all land before any of them finishes. */
+function assertReviewersOverlap(checkout: string, runId: string, iteration: number): void {
+  const reviewers = new Set(["security", "ux", "ui", "code"]);
+  const lines = readFileSync(join(checkout, ".runs", runId, "journal.jsonl"), "utf8").split("\n");
+  const starts: number[] = [];
+  const finishes: number[] = [];
+  lines.forEach((line, index) => {
+    if (!line.trim()) return;
+    try {
+      const event = JSON.parse(line) as { t?: string; stepId?: string; iteration?: number };
+      if (!event.stepId || !reviewers.has(event.stepId) || event.iteration !== iteration) return;
+      if (event.t === "step.started") starts.push(index);
+      if (event.t === "step.completed") finishes.push(index);
+    } catch {
+      // A torn last line is ignored, same as the driver.
+    }
+  });
+  assert.deepEqual(starts.length, 4, lines.filter((line) => line.includes("security") || line.includes("\"ux\"")).join("\n"));
+  assert.equal(finishes.length, 4);
+  assert.ok(Math.max(...starts) < Math.min(...finishes), lines.join("\n"));
 }
 
 function commitFeatureFixtures(checkout: string, fixtures: Record<string, unknown[]>): void {

@@ -18,7 +18,7 @@
 # because yak resolves prompt.file from the checkout cwd
 # (yak src/steps/agent.ts, path.resolve(cwd, file)).
 #
-# yak 0.5 limits this file still works inside:
+# yak 0.6 limits this file still works inside:
 # - command.run is not templated. verify runs $KILN_TEST through
 #   dist/truncate-output.js ($KILN_VERIFY_WRAPPER). `kiln tick` sets
 #   KILN_TEST from repos.<repo>.test. An empty value fails the step. The
@@ -35,8 +35,9 @@
 #   review-ui.md itself returns PASS when no UI changed.
 # - A loop-body artifact is not a top-level producer. The approver reads the
 #   last verify on rounds.verify; needs: [verify] on the approver is rejected.
-#   Reviewers run inside the loop, so they need verify directly. They also
-#   need input, for baseRef.
+#   Reviewers run inside the loop, so they need verify directly. They inherit
+#   input (for baseRef) instead of listing it in needs, and the loop's
+#   concurrency is 4 so the four reviewers start together.
 name: kiln-feature
 version: "1"
 inputSchema:
@@ -82,11 +83,14 @@ steps:
       budget:
         maxIterations: 2
       onExhausted: continue
+      concurrency: 4
       body:
         # security, ux, ui, code, and verify are later in this body, so on
         # build they are the previous round. Round 1 leaves them undefined;
-        # the prompt's `.field ||` defaults cover that. `{{ security || "x" }}`
-        # does not validate.
+        # the prompt's `.field ||` defaults cover findings and verify text.
+        # Exit code 0 is a real result, so the prompt checks == 0 or > 0
+        # instead of naming null (yak reads null as a prompt root).
+        # `{{ security || "x" }}` does not validate.
         - id: build
           needs: [input, spec, security, ux, ui, code, verify]
           agent:
@@ -112,17 +116,16 @@ steps:
             capture: [stdout, stderr, exitCode]
           produces: verify
 
-        # Reviewers run one after another. A separate yak change adds an
-        # opt-in loop `concurrency` field. Once that lands, setting
-        # `concurrency: 4` here and making each reviewer need only
-        # [input, spec, build, verify] makes them parallel. This file does
-        # not set concurrency, and does not depend on that field.
-        # Reviewers have no Write or Edit. Bash stays, because the factory
-        # prompts diff with git.
+        # Build and verify stay in order. These four do not need each other,
+        # so concurrency 4 starts them together. They have no Write or Edit.
+        # Bash stays, because the factory prompts diff with git. input is
+        # inherited for baseRef; it is not in needs.
         - id: security
-          needs: [input, spec, build, verify]
+          needs: [spec, build, verify]
           agent:
             model: opus
+            context:
+              inherit: [input]
             prompt:
               file: prompts/kiln/security.md
             schema:
@@ -137,9 +140,11 @@ steps:
           produces: security
 
         - id: ux
-          needs: [input, spec, build, verify]
+          needs: [spec, build, verify]
           agent:
             model: sonnet
+            context:
+              inherit: [input]
             prompt:
               file: prompts/kiln/ux.md
             schema:
@@ -154,9 +159,11 @@ steps:
           produces: ux
 
         - id: ui
-          needs: [input, spec, build, verify]
+          needs: [spec, build, verify]
           agent:
             model: sonnet
+            context:
+              inherit: [input]
             prompt:
               file: prompts/kiln/ui.md
             schema:
@@ -171,9 +178,11 @@ steps:
           produces: ui
 
         - id: code
-          needs: [input, spec, build, verify]
+          needs: [spec, build, verify]
           agent:
             model: sonnet
+            context:
+              inherit: [input]
             prompt:
               file: prompts/kiln/code.md
             schema:
