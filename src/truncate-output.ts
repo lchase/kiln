@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { writeSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 /** Last lines of verify output kept for later prompts. */
@@ -51,6 +52,29 @@ function capTail(current: string, chunk: string, cap: number): { text: string; c
   return { text: lastBytes(next, cap).text, cut: true };
 }
 
+/**
+ * `process.stdout.write` queues behind an in-flight write. `process.exit`
+ * leaves that queue in the process and the parent's `close` handler never
+ * sees it. A blocking write puts the bytes in the pipe first.
+ */
+function writeAll(fd: number, text: string): void {
+  if (text.length === 0) return;
+  const buf = Buffer.from(text);
+  let offset = 0;
+  while (offset < buf.length) {
+    let wrote = 0;
+    try {
+      wrote = writeSync(fd, buf, offset);
+    } catch (error) {
+      const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+      if (code === "EAGAIN" || code === "EWOULDBLOCK") continue;
+      throw error;
+    }
+    if (wrote <= 0) return;
+    offset += wrote;
+  }
+}
+
 function isDirectRun(): boolean {
   const entry = process.argv[1];
   if (!entry) return false;
@@ -60,7 +84,7 @@ function isDirectRun(): boolean {
 function main(): void {
   const command = process.env.KILN_TEST;
   if (!command?.trim()) {
-    process.stderr.write("KILN_TEST is empty\n");
+    writeAll(2, "KILN_TEST is empty\n");
     process.exit(1);
   }
   const child = spawn(command, { shell: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -70,8 +94,8 @@ function main(): void {
   const finish = (code: number): void => {
     if (settled) return;
     settled = true;
-    process.stdout.write(truncateCaptured(stdout, "stdout"));
-    process.stderr.write(truncateCaptured(stderr, "stderr"));
+    writeAll(1, truncateCaptured(stdout, "stdout"));
+    writeAll(2, truncateCaptured(stderr, "stderr"));
     process.exit(code);
   };
   child.stdout?.setEncoding("utf8");

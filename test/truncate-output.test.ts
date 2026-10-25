@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,8 +44,9 @@ describe("truncate verify output", () => {
     const dir = mkdtempSync(join(tmpdir(), "kiln-truncate-"));
     keep.push(dir);
     const script = join(dir, "run.mjs");
-    // process.exit drops stderr that has not reached the pipe. Under a parallel
-    // suite the wrapper then sees fewer than 200 lines and does not truncate.
+    // process.exit() returns while stderr writes are still queued in this
+    // process. The wrapper listens for close, and those bytes are not in the
+    // pipe, so a parallel suite sees fewer than 200 lines and does not truncate.
     writeFileSync(
       script,
       [
@@ -65,5 +66,54 @@ describe("truncate verify output", () => {
     assert.match(result.stderr, /\[truncated: showing the last 200 lines or 20480 bytes of stderr\]/);
     assert.match(result.stderr, /(^|\n)err-249\n/);
     assert.doesNotMatch(result.stderr, /(^|\n)err-0\n/);
+  });
+
+  it("writes the truncated tail before exiting, so a late reader still sees it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiln-truncate-"));
+    keep.push(dir);
+    const script = join(dir, "big.mjs");
+    const stdoutText = `${"o".repeat(30_000)}\n`;
+    const stderrText = `${"e".repeat(80)}\n`.repeat(400);
+    writeFileSync(
+      script,
+      [
+        `process.stdout.write(${JSON.stringify(stdoutText)});`,
+        `process.stderr.write(${JSON.stringify(stderrText)});`,
+        "process.exitCode = 4;",
+        "",
+      ].join("\n"),
+    );
+    const expectedOut = truncateCaptured(stdoutText, "stdout");
+    const expectedErr = truncateCaptured(stderrText, "stderr");
+    const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
+      const child = spawn(process.execPath, [join(packageRoot(), "dist", "truncate-output.js")], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, KILN_TEST: `node ${JSON.stringify(script)}` },
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.pause();
+      child.stderr?.pause();
+      setTimeout(() => {
+        child.stdout?.setEncoding("utf8");
+        child.stderr?.setEncoding("utf8");
+        child.stdout?.on("data", (chunk: string) => {
+          stdout += chunk;
+        });
+        child.stderr?.on("data", (chunk: string) => {
+          stderr += chunk;
+        });
+        child.stdout?.resume();
+        child.stderr?.resume();
+      }, 50);
+      const killer = setTimeout(() => child.kill("SIGKILL"), 5000);
+      child.on("close", (status) => {
+        clearTimeout(killer);
+        resolve({ status, stdout, stderr });
+      });
+    });
+    assert.equal(result.status, 4);
+    assert.equal(result.stdout, expectedOut);
+    assert.equal(result.stderr, expectedErr);
   });
 });

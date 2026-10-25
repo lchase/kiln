@@ -532,6 +532,8 @@ describe("kiln tick", { concurrency: 1 }, () => {
     const { cwd, home, web } = checkoutPair();
     const promptLog = join(cwd, "prompt-log");
     mkdirSync(promptLog);
+    // The red round must let the event loop drain. process.exit() drops
+    // stderr that is still queued in the script, and the wrapper never sees it.
     writeFileSync(
       join(web, "verify-once.mjs"),
       [
@@ -542,9 +544,10 @@ describe("kiln tick", { concurrency: 1 }, () => {
         "if (n === 0) {",
         "  for (let i = 0; i < 250; i += 1) console.error('verify-line-' + i);",
         "  console.error('verify failed round 1');",
-        "  process.exit(1);",
+        "  process.exitCode = 1;",
+        "} else {",
+        "  console.log('verify ok round 2');",
         "}",
-        "console.log('verify ok round 2');",
         "",
       ].join("\n"),
     );
