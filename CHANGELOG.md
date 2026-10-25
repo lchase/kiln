@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/lchase/kiln/compare/kiln-v0.1.1...kiln-v0.2.0) (2026-10-25)
+
+
+### Features
+
+* keep kiln state in one machine-level home ([#14](https://github.com/lchase/kiln/issues/14)) ([4929bfe](https://github.com/lchase/kiln/commit/4929bfe2f22dd59f8a3138ad073e4a3d53bea1fc))
+
 ## [0.1.1](https://github.com/lchase/kiln/compare/kiln-v0.1.0...kiln-v0.1.1) (2026-10-25)
 
 
