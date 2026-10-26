@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { readBoardFiles, readReviewRounds, type BoardFile, type BoardReviewRound } from "./board.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import {
   inFlightCount,
@@ -73,6 +74,59 @@ export function gateAnswerCommand(
 
 export type StatusState = JobState | "invalid";
 
+export type StepPhase = "done" | "current" | "pending" | "failed";
+
+export interface StepProgress {
+  id: string;
+  phase: StepPhase;
+}
+
+export interface StepEvent {
+  t: "step.started" | "step.completed" | "step.failed";
+  stepId: string;
+  detail?: string;
+}
+
+/**
+ * Mark a workflow's leaf steps from yak journal events.
+ * A later `step.started` reopens a step that already completed (the next loop round).
+ * Events whose id is not in the plan are ignored when the plan is non-empty,
+ * so a loop container does not sit beside its body. An empty plan uses
+ * first-seen event order.
+ */
+export function stepProgress(plan: string[], events: StepEvent[]): StepProgress[] {
+  const order = [...plan];
+  const phase = new Map<string, StepPhase>();
+  for (const id of order) phase.set(id, "pending");
+  for (const event of events) {
+    if (!event.stepId) continue;
+    if (!phase.has(event.stepId)) {
+      if (plan.length > 0) continue;
+      order.push(event.stepId);
+      phase.set(event.stepId, "pending");
+    }
+    if (event.t === "step.started") phase.set(event.stepId, "current");
+    else if (event.t === "step.completed") phase.set(event.stepId, "done");
+    else if (event.t === "step.failed") phase.set(event.stepId, "failed");
+  }
+  return order.map((id) => ({ id, phase: phase.get(id) ?? "pending" }));
+}
+
+/** Detail of the latest step that failed and has not started or completed since. */
+export function latestStepFailure(events: StepEvent[]): string | undefined {
+  const settled = new Set<string>();
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!event) continue;
+    if (event.t === "step.started" || event.t === "step.completed") {
+      settled.add(event.stepId);
+      continue;
+    }
+    if (event.t === "step.failed" && !settled.has(event.stepId) && event.detail) return event.detail;
+  }
+  return undefined;
+}
+
 export interface StatusArtifactView {
   name: string;
   summary: string;
@@ -131,6 +185,24 @@ export interface StatusJobView {
   gates: StatusGateView[];
   canApprove: boolean;
   canReject: boolean;
+  /** Leaf steps with phases taken from yak run events. Empty when the workflow has no steps. */
+  steps: StepProgress[];
+  /** Job file `createdAt`. */
+  createdAt?: string;
+  /** Yak `run.started` time. */
+  startedAt?: string;
+  /** Yak `run.finished` time. */
+  finishedAt?: string;
+  /** Last lines of the launch log. */
+  logTail?: string;
+  /** Worktree diff stat, or the build summary when the tree is clean. */
+  diffSummary?: string;
+  /** Latest open step failure, from a `step.failed` event. */
+  failureDetail?: string;
+  /** One row per review iteration. Unsuffixed `security.json` is round 1. */
+  rounds?: BoardReviewRound[];
+  /** Spec, build, decision, reviews, and the gate, for the console drawer. */
+  files?: BoardFile[];
 }
 
 export interface StatusView {
@@ -226,6 +298,10 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
       gates: [],
       canApprove: false,
       canReject: false,
+      steps: progressFor(job),
+      ...(job.createdAt ? { createdAt: job.createdAt } : {}),
+      ...(job.logTail ? { logTail: job.logTail } : {}),
+      ...boardFields(job),
     };
   }
 
@@ -234,6 +310,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
   const prNumber = job.delivery?.prNumber;
   const runId = job.run?.runId;
   const showBranch = (state === "done" || state === "in-review") && runId !== undefined;
+  const failureDetail = job.run?.stepEvents ? latestStepFailure(job.run.stepEvents) : undefined;
   return {
     jobId: job.jobId,
     title: job.title,
@@ -263,7 +340,38 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     gates,
     canApprove: gates.some((gate) => gate.choices.includes("approve")),
     canReject: gates.some((gate) => gate.choices.includes("reject")),
+    steps: progressFor(job),
+    ...(job.createdAt ? { createdAt: job.createdAt } : {}),
+    ...(job.run?.startedAt ? { startedAt: job.run.startedAt } : {}),
+    ...(job.run?.finishedAt ? { finishedAt: job.run.finishedAt } : {}),
+    ...(job.logTail ? { logTail: job.logTail } : {}),
+    ...(job.diffSummary ? { diffSummary: job.diffSummary } : {}),
+    ...(failureDetail ? { failureDetail } : {}),
+    ...boardFields(job),
   };
+}
+
+function boardFields(job: ObservedJob): { rounds?: BoardReviewRound[]; files?: BoardFile[] } {
+  const runDir = job.run ? join(job.run.checkout, ".runs", job.run.runId) : undefined;
+  const rounds = readReviewRounds(runDir);
+  const files = readBoardFiles({
+    ...(runDir ? { runDir } : {}),
+    ...(job.specPath ? { specPath: job.specPath } : {}),
+    ...(job.findingsPath ? { findingsPath: job.findingsPath } : {}),
+    ...(job.workflow !== INVESTIGATION_WORKFLOW && job.diffSummary ? { diffSummary: job.diffSummary } : {}),
+    ...(job.logTail ? { logTail: job.logTail } : {}),
+    ...(job.workflow ? { workflow: job.workflow } : {}),
+    gates: job.run?.gates ?? [],
+  });
+  return {
+    ...(rounds.length > 0 ? { rounds } : {}),
+    ...(files.length > 0 ? { files } : {}),
+  };
+}
+
+function progressFor(job: ObservedJob): StepProgress[] {
+  const plan = job.run?.stepPlan?.length ? job.run.stepPlan : (job.stepPlan ?? []);
+  return stepProgress(plan, job.run?.stepEvents ?? []);
 }
 
 function toGateView(gate: ObservedGate): StatusGateView {

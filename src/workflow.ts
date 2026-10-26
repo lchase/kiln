@@ -103,6 +103,66 @@ export function workflowInputs(workflowYaml: string, input: LaunchInput): Record
   return out;
 }
 
+/**
+ * Leaf step ids under the root `steps:` block, in file order.
+ * A step that contains nested `- id:` entries is a loop or map container
+ * and is omitted; its nested ids are the ones a run actually starts.
+ */
+export function workflowLeafSteps(yaml: string): string[] {
+  const lines = yaml.split("\n");
+  let inSteps = false;
+  const nodes: { id: string; indent: number }[] = [];
+  for (const line of lines) {
+    if (!inSteps) {
+      if (line === "steps:" || line.startsWith("steps:")) inSteps = true;
+      continue;
+    }
+    if (/^\S/.test(line)) break;
+    const match = /^(\s*)- id:\s*([A-Za-z0-9._-]+)\s*(?:#.*)?$/.exec(line);
+    if (!match?.[2]) continue;
+    nodes.push({ id: match[2], indent: match[1]?.length ?? 0 });
+  }
+  const leaves: string[] = [];
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes[index];
+    const next = nodes[index + 1];
+    if (!node) continue;
+    if (next && next.indent > node.indent) continue;
+    leaves.push(node.id);
+  }
+  return leaves;
+}
+
+/** Leaf step ids from a yak `workflow.json` `steps` array. Loop and map containers expand to their body. */
+export function leafStepIds(steps: unknown): string[] {
+  if (!Array.isArray(steps)) return [];
+  const ids: string[] = [];
+  for (const step of steps) {
+    if (typeof step !== "object" || step === null || !("id" in step)) continue;
+    const id = step.id;
+    if (typeof id !== "string" || id.length === 0) continue;
+    const kind = "kind" in step ? step.kind : undefined;
+    if (kind === "loop" && "body" in step) {
+      ids.push(...leafStepIds(step.body));
+      continue;
+    }
+    if (kind === "map" && "step" in step) {
+      ids.push(...leafStepIds([step.step]));
+      continue;
+    }
+    ids.push(id);
+  }
+  return ids;
+}
+
+/** Leaf steps of a packaged workflow. An unknown name is an empty plan, not an error. */
+export function workflowStepPlan(name: string): string[] {
+  if (!WORKFLOW_NAME.test(name)) return [];
+  const path = join(packageRoot(), "workflows", `${name}.yaml`);
+  if (!existsSync(path)) return [];
+  return workflowLeafSteps(readFileSync(path, "utf8"));
+}
+
 /** True when the workflow runs the repo test command. Investigation does not. */
 export function workflowNeedsTestCommand(workflowYaml: string): boolean {
   return /\bKILN_TEST\b/.test(workflowYaml) || workflowYaml.includes("KILN_VERIFY_WRAPPER");

@@ -56,6 +56,17 @@ export interface ObservedRun {
   gateDecision?: "approve" | "reject";
   /** From the run's input artifact, so a resume command can set KILN_TASK_TITLE. */
   title?: string;
+  /** `run.started` `at`, when the journal recorded one. */
+  startedAt?: string;
+  /** `run.finished` `at`, when the journal recorded one. */
+  finishedAt?: string;
+  /**
+   * Leaf step ids in workflow order, from the run's `workflow.json`.
+   * The loop container is omitted; its body steps are the strip.
+   */
+  stepPlan?: string[];
+  /** Yak `step.started`, `step.completed`, and `step.failed` events, in order. */
+  stepEvents?: { t: "step.started" | "step.completed" | "step.failed"; stepId: string; detail?: string }[];
 }
 
 export interface ObservedJob {
@@ -100,6 +111,17 @@ export interface ObservedJob {
   /** Fetch or base selection failed. Status shows it. The next tick retries. */
   launchError?: string;
   logPath?: string;
+  /** Job file `createdAt`. Status does not print it. The console uses it as elapsed time before a run starts. */
+  createdAt?: string;
+  /** Last lines of the launch log. The console shows this; status does not. */
+  logTail?: string;
+  /**
+   * `git diff --stat` for a suspended feature run, or the build artifact
+   * summary when the worktree has no diff. The console shows it on a gate.
+   */
+  diffSummary?: string;
+  /** Leaf steps from the packaged workflow, used when the job has no run yet. */
+  stepPlan?: string[];
   run?: ObservedRun;
   /** The job file could not be used. Decide skips it. */
   error?: string;

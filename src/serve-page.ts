@@ -1,45 +1,78 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { AttentionItem, AttentionView } from "./attention.js";
+import { readBoardFiles, stageOf, stagesFor, type BoardFile, type BoardReviewRound, type BoardStage } from "./board.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
-import { statusDetails, type StatusJobView, type StatusState, type StatusView } from "./report.js";
-import { JOB_STATES } from "./schemas.js";
+import { packageRoot } from "./paths.js";
+import type { StatusJobView } from "./report.js";
 
-const REFRESH_SECONDS = 3;
+const REVIEWERS = [
+  ["security", "sec"],
+  ["ux", "ux"],
+  ["ui", "ui"],
+  ["code", "code"],
+] as const;
 
-export function renderInbox(css: string, view: StatusView): string {
-  const waiting = view.jobs.filter((job) => job.state === "needs-human");
-  const body = waiting.length === 0 ? emptyInbox() : waiting.map(renderInboxCard).join("\n");
-  return document({
-    css,
-    title: "Kiln inbox",
-    refresh: true,
-    current: "inbox",
-    main: `<h1>Inbox</h1>
-<p class="lede">Jobs waiting on a person. Approve and reject use the same gate as the CLI.</p>
-${body}`,
-  });
+const LIVE_SCRIPT = readFileSync(join(packageRoot(), "assets", "serve.js"), "utf8");
+
+function kilnVersion(): string {
+  try {
+    const parsed = JSON.parse(readFileSync(join(packageRoot(), "package.json"), "utf8")) as { version?: unknown };
+    return typeof parsed.version === "string" ? parsed.version : "";
+  } catch {
+    return "";
+  }
 }
 
-export function renderBoard(css: string, view: StatusView): string {
-  const groups: string[] = [];
-  const states: StatusState[] = [...JOB_STATES, "invalid"];
-  for (const state of states) {
-    const jobs = view.jobs.filter((job) => job.state === state);
-    if (jobs.length === 0) continue;
-    groups.push(`<section class="group" id="state-${escapeHtml(state)}">
-<h2>${escapeHtml(state)} <span class="count">${jobs.length}</span></h2>
-${jobs.map(renderBoardJob).join("\n")}
-</section>`);
+const VERSION = kilnVersion();
+
+export function renderConsole(css: string, attention: AttentionView): string {
+  const items = [...attention.needsYou, ...attention.inFlight, ...attention.doneRecently];
+  const stages = stagesFor(items.map((item) => item.job));
+  const grouped = new Map<string, AttentionItem[]>();
+  for (const item of items) {
+    const stage = stageOf(item.job);
+    const list = grouped.get(stage) ?? [];
+    list.push(item);
+    grouped.set(stage, list);
   }
-  const main =
-    groups.length > 0
-      ? groups.join("\n")
-      : `<h1>Board</h1><p class="empty">No jobs.</p>`;
-  const titled = groups.length > 0 ? `<h1>Board</h1>\n${main}` : main;
+  const tracks = stages
+    .map((stage) => ((grouped.get(stage.id)?.length ?? 0) === 0 ? "40px" : "minmax(0, 1fr)"))
+    .join(" ");
+  const columns = stages.map((stage) => column(stage, grouped.get(stage.id) ?? [])).join("\n");
+  const repos = [...new Set(items.map((item) => item.job.repo).filter((repo) => repo.length > 0))].sort();
+  const chips = [
+    chip("", "all", items.length, true),
+    ...repos.map((repo) => chip(repo, repo, items.filter((item) => item.job.repo === repo).length, false)),
+  ].join("");
+  const version = VERSION ? `<span class="ver">v${escapeHtml(VERSION)}</span>` : "";
+  const body = `<header>
+<div class="brand"><span class="logo" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12V6l5-3 5 3v6l-5 3-5-3z"/><path d="M3 6l5 3 5-3M8 9v6"/></svg></span><h1>Kiln</h1>${version}</div>
+<div class="status" id="status">${items.length === 1 ? "1 job" : `${items.length} jobs`}</div>
+</header>
+<nav class="repos" aria-label="Filter by repo">${chips}</nav>
+<main class="board" id="board" style="--cols: ${tracks}">
+${columns}
+</main>
+<nav class="toolbar" aria-label="Kiln commands">
+<button class="tool" type="button" data-act="approve" data-tip="Approve" aria-label="Approve"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></button>
+<button class="tool" type="button" data-act="retry" data-tip="Retry" aria-label="Retry"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></svg></button>
+<button class="tool" type="button" data-act="pr" data-tip="Open pull request" aria-label="Open pull request"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5v7M18 15.5V10a3 3 0 0 0-3-3h-3"/></svg></button>
+<button class="tool" type="button" id="notify" data-tip="Notify me" aria-label="Notify me"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 7 3 7H3s3 0 3-7"/><path d="M10 19a2 2 0 0 0 4 0"/></svg></button>
+<span class="sep" aria-hidden="true"></span>
+<button class="tool" type="button" id="compact" aria-pressed="true" data-tip="expand empty columns" aria-label="expand empty columns"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h7m0 0-3-3m3 3-3 3M21 12h-7m0 0 3-3m-3 3 3 3M12 4v16"/></svg></button>
+</nav>
+<div class="scrim" data-close></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Job">
+${items.map((item) => sheet(item)).join("\n")}
+</aside>`;
   return document({
     css,
-    title: "Kiln board",
-    refresh: true,
-    current: "board",
-    main: titled,
+    title: `(${attention.needsYouCount}) Kiln`,
+    needsYou: attention.needsYouCount,
+    revision: attention.revision,
+    live: true,
+    body,
   });
 }
 
@@ -47,11 +80,12 @@ export function renderTextPage(css: string, title: string, text: string): string
   return document({
     css,
     title,
-    refresh: false,
-    current: "inbox",
-    main: `<a class="back" href="/">Inbox</a>
-<h1>${escapeHtml(title)}</h1>
-<pre class="text">${escapeHtml(text)}</pre>`,
+    needsYou: 0,
+    revision: "",
+    live: false,
+    body: `<a class="back" href="/">Console</a>
+<div class="page"><h1>${escapeHtml(title)}</h1>
+<pre class="text">${escapeHtml(text)}</pre></div>`,
   });
 }
 
@@ -59,167 +93,236 @@ export function renderMessagePage(css: string, title: string, message: string): 
   return document({
     css,
     title,
-    refresh: false,
-    current: "inbox",
-    main: `<a class="back" href="/">Inbox</a>
-<h1>${escapeHtml(title)}</h1>
-<p class="empty">${escapeHtml(message)}</p>`,
+    needsYou: 0,
+    revision: "",
+    live: false,
+    body: `<a class="back" href="/">Console</a>
+<div class="page"><h1>${escapeHtml(title)}</h1>
+<p class="empty">${escapeHtml(message)}</p></div>`,
   });
 }
 
-function emptyInbox(): string {
-  return `<p class="empty">Nothing is waiting on a person. The <a href="/board">board</a> lists every job.</p>`;
+function column(stage: BoardStage, items: AttentionItem[]): string {
+  const slim = items.length === 0;
+  const tone = stage.tone ? ` ${stage.tone}` : "";
+  const cards = items.map((item) => card(item, stage.id)).join("\n");
+  const count = items.length ? String(items.length) : "";
+  return `<section class="col${slim ? " slim" : ""}${tone}" id="col-${escapeHtml(stage.id)}" data-stage="${escapeHtml(stage.id)}" aria-label="${escapeHtml(stage.label)}, ${items.length}">
+<div class="slim-face"><span class="count">${items.length}</span><div class="v"><h2>${escapeHtml(stage.label)}</h2><span class="who">${escapeHtml(stage.who)}</span></div></div>
+<div class="full"><div class="col-head"><h2>${escapeHtml(stage.label)}</h2><span class="who">${escapeHtml(stage.who)}</span><span class="count">${escapeHtml(count)}</span></div>
+${cards || ""}<div class="empty"${items.length > 0 ? " hidden" : ""}>none</div></div>
+</section>`;
 }
 
-function renderInboxCard(job: StatusJobView): string {
-  const gates = job.gates
-    .map((gate) => {
-      const asking = gate.rendered && gate.rendered !== gate.prompt ? gate.rendered : gate.prompt;
-      const artifacts =
-        gate.artifacts.length === 0
-          ? ""
-          : `<ul class="facts">${gate.artifacts
-              .map(
-                (artifact) =>
-                  `<li><span class="name">${escapeHtml(artifact.name)}</span> ${escapeHtml(artifact.summary)}</li>`,
-              )
-              .join("")}</ul>`;
-      const reviews =
-        gate.reviews.length === 0
-          ? ""
-          : `<h4>Reviews</h4><ul class="facts">${gate.reviews
-              .map(
-                (review) =>
-                  `<li><span class="name">${escapeHtml(review.name)}</span> ${escapeHtml(review.summary)}</li>`,
-              )
-              .join("")}</ul>`;
-      return `<p class="prompt">${escapeHtml(asking)}</p>${artifacts}${reviews}`;
-    })
-    .join("\n");
-  return `<article class="card" id="job-${escapeHtml(job.jobId)}">
-<h2>${escapeHtml(job.title || job.jobId)}</h2>
-<p class="meta">${escapeHtml(job.repo)} · ${escapeHtml(job.workflow)} · <code>${escapeHtml(job.jobId)}</code>${job.stack ? ' · <span class="chip">stacked</span>' : ""}</p>
-${gates}
-${resourceLinks(job)}
-${actionForms(job)}
-</article>`;
+function card(item: AttentionItem, stage: string): string {
+  const job = item.job;
+  const classes = ["card"];
+  if (stage === "needs-human") classes.push("human");
+  if (stage === "merged") classes.push("merged");
+  if (stage === "queued") classes.push("queued");
+  const deps = job.dependsOn.map((dep) => dep.jobId).join(" ");
+  const pulse = job.state === "running" ? '<span class="pulse" aria-label="running"></span>' : "";
+  const flag = stage === "needs-human" ? '<span class="flag">your call</span>' : "";
+  const branch = branchOf(job);
+  return `<div role="button" tabindex="0" class="${classes.join(" ")}" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-deps="${escapeHtml(deps)}" data-repo="${escapeHtml(job.repo)}" data-stage="${escapeHtml(stage)}">
+<div class="card-top">${pulse}<span class="num">${escapeHtml(job.jobId)}</span>${flag}</div>
+<div class="branch repo">${escapeHtml(job.repo)}</div>
+<p class="title">${escapeHtml(job.title || job.jobId)}</p>
+${branch ? `<div class="branch">${escapeHtml(branch)}</div>` : ""}
+${prLink(job)}
+${roundsHtml(job, stage)}
+${noteHtml(item)}
+${dependsHtml(job)}
+</div>`;
 }
 
-function renderBoardJob(job: StatusJobView): string {
-  const deps =
-    job.dependsOn.length === 0
-      ? ""
-      : `<p class="deps">depends on ${job.dependsOn
-          .map((dep) => {
-            const why = dep.blockedDetail ? ` <span class="why">${escapeHtml(dep.blockedDetail)}</span>` : "";
-            return `<a href="/board#job-${encodeURIComponent(dep.jobId)}">${escapeHtml(dep.jobId)}</a> <span class="chip">${escapeHtml(dep.state)}</span>${why}`;
-          })
-          .join(", ")}</p>`;
-  const pr =
-    job.prUrl && (job.state === "in-review" || job.state === "done" || job.state === "failed")
-      ? renderPr(job.prUrl)
-      : "";
-  const details = statusDetails(job);
-  const detailList =
-    details.length === 0
-      ? ""
-      : `<ul class="details">${details
-          .map((line) => `<li class="${detailClass(job.state, line)}">${escapeHtml(line)}</li>`)
-          .join("")}</ul>`;
-  return `<article class="job" id="job-${escapeHtml(job.jobId)}">
+function sheet(item: AttentionItem): string {
+  const job = item.job;
+  const files = displayFiles(job);
+  const round = lastRound(job);
+  const pr = safeUrl(job.prUrl);
+  const num = `${job.repo}/${job.jobId} · ${job.workflow} · ${job.state}${round ? ` · round ${round}` : ""}`;
+  const branch = branchOf(job);
+  return `<section class="sheet" data-job="${escapeHtml(job.jobId)}"${pr ? ` data-pr="${escapeHtml(pr)}"` : ""} hidden>
+<div class="d-head">
+<div class="num">${escapeHtml(num)}</div>
 <h3>${escapeHtml(job.title || job.jobId)}</h3>
-<p class="meta">${escapeHtml(job.repo)} · ${escapeHtml(job.workflow)} · <code>${escapeHtml(job.jobId)}</code></p>
-<p class="chips"><span class="chip state-${escapeHtml(job.state)}">${escapeHtml(job.state)}</span>${job.stack ? '<span class="chip">stacked</span>' : ""}</p>
-${deps}
-${pr}
-${detailList}
-${resourceLinks(job)}
-</article>`;
+${branch ? `<div class="branch">${escapeHtml(branch)}</div>` : ""}
+${prLink(job)}
+${actionsHtml(item)}
+<button type="button" class="close" data-close aria-label="Close">×</button>
+</div>
+<div class="d-body">${filesNav(files, job)}</div>
+</section>`;
 }
 
-function detailClass(state: StatusState, line: string): string {
-  if (
-    line.startsWith("source ") ||
-    line.startsWith("gate ") ||
-    line.startsWith("approve:") ||
-    line.startsWith("reject:") ||
-    line.startsWith("waiting ") ||
-    line.startsWith("blocked on ") ||
-    line.startsWith("fix:")
-  ) {
-    return "";
+function filesNav(files: BoardFile[], job: StatusJobView): string {
+  let group = "";
+  const buttons = files
+    .map((file, index) => {
+      const head = file.group !== group ? `<div class="group">${escapeHtml(file.group)}</div>` : "";
+      group = file.group;
+      const dot = file.tone ? ` ${file.tone}` : "";
+      return `${head}<button type="button" class="file${index === 0 ? " on" : ""}" data-file="${escapeHtml(file.id)}"><span class="dot${dot}"></span>${escapeHtml(file.label)}</button>`;
+    })
+    .join("");
+  const sources = files
+    .map((file) => `<pre class="src" data-file="${escapeHtml(file.id)}" hidden>${escapeHtml(file.text)}</pre>`)
+    .join("");
+  const empty = files.length === 0 ? '<div class="empty">Nothing written yet.</div>' : "";
+  return `<nav class="files">${buttons}${routeLinks(job)}${empty}</nav><article class="doc"><div class="md" data-view></div>${sources}</article>`;
+}
+
+function routeLinks(job: StatusJobView): string {
+  const id = encodeURIComponent(job.jobId);
+  const links: string[] = [];
+  if (job.specPath) links.push(`<a class="file" href="/jobs/${id}/spec">spec</a>`);
+  if (job.logPath) links.push(`<a class="file" href="/jobs/${id}/log">log</a>`);
+  if (job.findingsPath) links.push(`<a class="file" href="/jobs/${id}/findings">Findings</a>`);
+  if (links.length === 0) return "";
+  return `<div class="group">Open</div>${links.join("")}`;
+}
+
+function actionsHtml(item: AttentionItem): string {
+  const id = encodeURIComponent(item.job.jobId);
+  const forms: string[] = [];
+  if (item.job.canApprove) {
+    forms.push(`<form method="post" action="/api/jobs/${id}/approve" class="act approve"><button type="submit">Approve</button></form>`);
   }
-  if (state === "failed" || state === "dead") return "bad";
+  if (item.job.canReject) {
+    forms.push(`<form method="post" action="/api/jobs/${id}/reject" class="act reject"><button type="submit">Reject</button></form>`);
+  }
+  if (item.retry) {
+    forms.push(`<form method="post" action="/api/jobs/${id}/retry" class="act retry"><button type="submit">Retry</button></form>`);
+  }
+  if (forms.length === 0) return "";
+  return `<div class="d-actions">${forms.join("")}</div>`;
+}
+
+function roundsHtml(job: StatusJobView, stage: string): string {
+  const rounds = job.rounds ?? [];
+  const last = rounds[rounds.length - 1]?.n;
+  const rows = rounds.map((round) => roundRow(round, stage === "review" && job.state === "running" && round.n === last));
+  if (job.state === "in-review" || (job.state === "done" && safeUrl(job.prUrl))) {
+    const n = (last ?? 0) + 1;
+    const tone = job.state === "done" ? " PASS" : "";
+    rows.push(
+      `<div class="round"><span class="r">R${n}</span><span class="chip${tone}" style="grid-column: 2 / -1">PR review</span></div>`,
+    );
+  }
+  if (rows.length === 0) return "";
+  return `<div class="rounds">${rows.join("")}</div>`;
+}
+
+function roundRow(round: BoardReviewRound, waiting: boolean): string {
+  const cells = REVIEWERS.map(([key, label]) => {
+    const verdict = round[key];
+    const tone = verdict === "PASS" || verdict === "CHANGES" ? verdict : waiting && !verdict ? "wait" : "";
+    return `<span class="chip${tone ? ` ${tone}` : ""}" title="${escapeHtml(`${key}: ${verdict || "pending"}`)}">${label}</span>`;
+  }).join("");
+  return `<div class="round"><span class="r">R${round.n}</span>${cells}</div>`;
+}
+
+function noteHtml(item: AttentionItem): string {
+  const lines = [noteText(item)];
+  if (item.errorTail) {
+    for (const line of item.errorTail.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed && !lines.some((existing) => existing.includes(trimmed))) lines.push(trimmed);
+    }
+  }
+  return `<div class="note">${lines.map((line) => escapeHtml(line)).join("<br>")}</div>`;
+}
+
+function noteText(item: AttentionItem): string {
+  const job = item.job;
+  if (job.state === "done") return safeUrl(job.prUrl) ? "merged via PR" : "landed locally";
+  return item.reason;
+}
+
+function dependsHtml(job: StatusJobView): string {
+  if (job.dependsOn.length === 0) return "";
+  const links = job.dependsOn
+    .map((dep) => `<a href="#job-${encodeURIComponent(dep.jobId)}">${escapeHtml(dep.jobId)}</a>`)
+    .join(", ");
+  return `<p class="deps">depends on ${links}</p>`;
+}
+
+function prLink(job: StatusJobView): string {
+  const safe = safeUrl(job.prUrl);
+  if (safe) {
+    const text = job.prNumber ? `PR #${job.prNumber}` : safe;
+    return `<div class="branch"><a href="${escapeHtml(safe)}" target="_blank" rel="noopener">${escapeHtml(text)}</a></div>`;
+  }
+  if (job.prUrl) return `<div class="branch">${escapeHtml(job.prUrl)}</div>`;
   return "";
 }
 
-function renderPr(url: string): string {
-  const safe = httpUrl(url);
-  if (!safe) return `<p class="links">${escapeHtml(url)}</p>`;
-  return `<p class="links"><a href="${escapeHtml(safe)}">Pull request</a></p>`;
+function branchOf(job: StatusJobView): string {
+  if (job.branch) return job.branch;
+  if (job.runId) return `yak/${job.runId}`;
+  return "";
 }
 
-function resourceLinks(job: StatusJobView): string {
-  const links: string[] = [];
-  const id = encodeURIComponent(job.jobId);
-  if (job.specPath) links.push(`<a href="/jobs/${id}/spec">Spec</a>`);
-  if (job.logPath) links.push(`<a href="/jobs/${id}/log">Log</a>`);
-  if (job.workflow === INVESTIGATION_WORKFLOW) links.push(`<a href="/jobs/${id}/findings">Findings</a>`);
-  if (links.length === 0) return "";
-  return `<p class="links">${links.join(" ")}</p>`;
+function lastRound(job: StatusJobView): number | undefined {
+  const rounds = job.rounds ?? [];
+  return rounds.length > 0 ? rounds[rounds.length - 1]?.n : undefined;
 }
 
-function actionForms(job: StatusJobView): string {
-  const forms: string[] = [];
-  const id = encodeURIComponent(job.jobId);
-  if (job.canApprove) {
-    forms.push(
-      `<form method="post" action="/api/jobs/${id}/approve"><button class="approve" type="submit">Approve</button></form>`,
-    );
+function displayFiles(job: StatusJobView): BoardFile[] {
+  if (job.files && job.files.length > 0) return job.files;
+  return readBoardFiles({
+    ...(job.diffSummary && job.workflow !== INVESTIGATION_WORKFLOW ? { diffSummary: job.diffSummary } : {}),
+    ...(job.logTail ? { logTail: job.logTail } : {}),
+    ...(job.workflow ? { workflow: job.workflow } : {}),
+    gates: job.gates.map((gate) => ({
+      stepId: gate.stepId,
+      prompt: gate.prompt,
+      ...(gate.rendered ? { rendered: gate.rendered } : {}),
+      choices: gate.choices,
+      artifacts: gate.artifacts,
+      reviews: gate.reviews,
+    })),
+  });
+}
+
+function chip(id: string, label: string, count: number, pressed: boolean): string {
+  return `<button type="button" class="repo-f" aria-pressed="${pressed ? "true" : "false"}" data-repo="${escapeHtml(id)}">${escapeHtml(label)}<span class="n">${count}</span></button>`;
+}
+
+function safeUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
+    return url;
+  } catch {
+    return undefined;
   }
-  if (job.canReject) {
-    forms.push(
-      `<form method="post" action="/api/jobs/${id}/reject"><button class="reject" type="submit">Reject</button></form>`,
-    );
-  }
-  if (forms.length === 0) return "";
-  return `<div class="actions">${forms.join("")}</div>`;
 }
 
 function document(options: {
   css: string;
   title: string;
-  refresh: boolean;
-  current: "inbox" | "board";
-  main: string;
+  needsYou: number;
+  revision: string;
+  live: boolean;
+  body: string;
 }): string {
-  const refresh = options.refresh
-    ? `<meta http-equiv="refresh" content="${REFRESH_SECONDS}">`
-    : "";
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="same-origin">
-${refresh}
 <title>${escapeHtml(options.title)}</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&family=Roboto+Mono:wght@400;500&display=swap">
 <style>
 ${options.css}
 </style>
 </head>
-<body>
-<header class="top">
-  <a class="kiln-mark" href="/">Kiln</a>
-  <nav>
-    <a href="/" ${options.current === "inbox" ? 'aria-current="page"' : ""}>Inbox</a>
-    <a href="/board" ${options.current === "board" ? 'aria-current="page"' : ""}>Board</a>
-  </nav>
-  ${options.refresh ? `<p class="refresh">Refreshes every ${REFRESH_SECONDS}s</p>` : ""}
-</header>
-<main>
-${options.main}
-</main>
+<body data-needs-you="${options.needsYou}" data-revision="${escapeHtml(options.revision)}">
+${options.body}
+${options.live ? `<script>\n${LIVE_SCRIPT}\n</script>` : ""}
 </body>
 </html>
 `;
@@ -232,14 +335,4 @@ export function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
-}
-
-function httpUrl(value: string): string | undefined {
-  try {
-    const url = new URL(value);
-    if (url.protocol === "http:" || url.protocol === "https:") return url.href;
-  } catch {
-    return undefined;
-  }
-  return undefined;
 }

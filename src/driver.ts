@@ -8,10 +8,13 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import { buildAttention, type KilnStatus } from "./attention.js";
 import type { LoadedKilnConfig } from "./config.js";
 import {
   clearLaunchError,
@@ -54,17 +57,19 @@ import {
   type DeliverReport,
   type FindingsReport,
   type LaunchReport,
-  type StatusView,
+  type StepEvent,
 } from "./report.js";
 import { JobSchema, type Job } from "./schemas.js";
-import { materializeWorkflow, workflowInputs, workflowNeedsTestCommand } from "./workflow.js";
+import { leafStepIds, materializeWorkflow, workflowInputs, workflowNeedsTestCommand, workflowStepPlan } from "./workflow.js";
 
 interface JournalEvent {
   t: string;
+  at?: string;
   tag?: string;
   status?: string;
   stepId?: string;
   pid?: number;
+  failure?: { detail?: unknown; reason?: unknown };
 }
 
 interface Breadcrumb {
@@ -93,8 +98,9 @@ export function parseJobTag(tag: string): string | undefined {
 }
 
 /** The derived view `kiln status` prints and `kiln serve` renders. */
-export function readStatus(config: LoadedKilnConfig, jobId?: string, host: KilnHost = defaultHost()): StatusView {
-  return statusView(observe(config, host).observation, jobId);
+export function readStatus(config: LoadedKilnConfig, jobId?: string, host: KilnHost = defaultHost()): KilnStatus {
+  const view = statusView(observe(config, host).observation, jobId);
+  return { ...view, attention: buildAttention(view.jobs) };
 }
 
 export function runStatus(config: LoadedKilnConfig, jobId?: string, host: KilnHost = defaultHost()): string {
@@ -141,6 +147,60 @@ export function answerJob(
     recordInvestigationFindings(config, observe(config, host), jobId);
   }
   return output.endsWith("\n") || output.length === 0 ? output : `${output}\n`;
+}
+
+/**
+ * Run a failed or dead job again.
+ * A landed job whose only failure is opening the pull request is handed to
+ * the same deliver path tick uses. Everything else is a new `yak run`, the
+ * same launch tick uses. Yak run ids sort by time, so the new journal
+ * supersedes the old one. A dead journal is cancelled first.
+ */
+export function retryJob(config: LoadedKilnConfig, jobId: string, host: KilnHost = defaultHost()): string {
+  return withTickLock(config.kilnDir, () => {
+    const world = observe(config, host);
+    const observed = world.observation.jobs.find((candidate) => candidate.jobId === jobId);
+    if (!observed) throw new Error(`No job ${jobId}.`);
+    if (observed.error) throw new Error(`Job ${jobId} is invalid: ${observed.error}`);
+    const state = jobState(observed, world.observation);
+    if (state !== "failed" && state !== "dead") {
+      throw new Error(`Job ${jobId} is ${state}, not failed or dead.`);
+    }
+    const job = world.jobs.get(jobId);
+    if (!job) throw new Error(`No job ${jobId}.`);
+    const crumb = readBreadcrumbs(config.kilnDir).find((candidate) => candidate.jobId === jobId);
+    if (crumb && pidAlive(crumb.pid)) {
+      throw new Error(`Job ${jobId} is already launching.`);
+    }
+    if (shouldRedeliver(observed)) {
+      const report = deliverObserved(config, world, jobId, host);
+      if (!report.ok) throw new Error(report.detail);
+      const detail = report.detail.endsWith("\n") || report.detail.length === 0 ? report.detail : `${report.detail}\n`;
+      return `retry ${jobId}  ${job.repo}\n${detail}`;
+    }
+    if (state === "dead" && observed.run) {
+      try {
+        spawnSync(process.execPath, [yakCliPath(), "cancel", observed.run.runId], {
+          cwd: observed.run.checkout,
+          encoding: "utf8",
+          timeout: 20_000,
+        });
+      } catch {
+        // Cancel is the same cleanup status prints. The new run still supersedes the journal.
+      }
+    }
+    const logPath = join(config.kilnDir, "logs", `${jobBasename(job.id)}.log`);
+    if (existsSync(logPath)) writeFileSync(logPath, "");
+    const report = launchJob(config, world, job, host);
+    const output = report.output.endsWith("\n") || report.output.length === 0 ? report.output : `${report.output}\n`;
+    return `retry ${report.jobId}  ${report.repo}\n${output}`;
+  });
+}
+
+function shouldRedeliver(job: ObservedJob): boolean {
+  if (!isLanded(job)) return false;
+  if (job.delivery?.prState === "CLOSED") return false;
+  return Boolean(job.delivery?.error) && !job.delivery?.prNumber;
 }
 
 function gateForChoice(gates: ObservedGate[], choice: "approve" | "reject"): ObservedGate | undefined {
@@ -191,6 +251,14 @@ function observe(config: LoadedKilnConfig, host: KilnHost): World {
       entry.job?.workflow === INVESTIGATION_WORKFLOW
         ? existingFindingsPath(config.kilnDir, entry.job.id)
         : undefined;
+    const logTail = readLogTail(logPath);
+    const stepPlan = entry.job ? workflowStepPlan(entry.job.workflow) : undefined;
+    const diffSummary =
+      run &&
+      run.status === "suspended" &&
+      entry.job?.workflow !== INVESTIGATION_WORKFLOW
+        ? readDiffSummary(run.checkout, run.runId)
+        : undefined;
     jobs.push({
       jobId: entry.meta.jobId,
       repo: entry.job?.repo ?? "",
@@ -207,6 +275,10 @@ function observe(config: LoadedKilnConfig, host: KilnHost): World {
       launchFailed: Boolean(crumb) && !run && !childAlive,
       ...(launchError ? { launchError } : {}),
       ...(logPath ? { logPath } : {}),
+      ...(entry.job?.createdAt ? { createdAt: entry.job.createdAt } : {}),
+      ...(logTail ? { logTail } : {}),
+      ...(diffSummary ? { diffSummary } : {}),
+      ...(stepPlan && stepPlan.length > 0 ? { stepPlan } : {}),
       ...(run ? { run } : {}),
       ...(entry.meta.error || repoError || stackError
         ? { error: entry.meta.error ?? repoError ?? stackError }
@@ -546,6 +618,9 @@ function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun> {
       const status = classify(events);
       const gateDecision = readApproveDecision(runDir);
       const title = readRunTitle(runDir);
+      const finished = [...events].reverse().find((event) => event.t === "run.finished");
+      const stepPlan = readRunStepPlan(runDir);
+      const stepEvents = stepEventsFrom(events);
       const run: ObservedRun = {
         runId,
         checkout: repo.path,
@@ -553,12 +628,118 @@ function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun> {
         gates: status === "suspended" ? openGates(runDir, events) : [],
         ...(gateDecision ? { gateDecision } : {}),
         ...(title ? { title } : {}),
+        ...(typeof started?.at === "string" ? { startedAt: started.at } : {}),
+        ...(typeof finished?.at === "string" ? { finishedAt: finished.at } : {}),
+        ...(stepPlan.length > 0 ? { stepPlan } : {}),
+        ...(stepEvents.length > 0 ? { stepEvents } : {}),
       };
       const previous = byTag.get(started.tag);
       if (!previous || run.runId > previous.runId) byTag.set(started.tag, run);
     }
   }
   return byTag;
+}
+
+function stepEventsFrom(events: JournalEvent[]): StepEvent[] {
+  const found: StepEvent[] = [];
+  for (const event of events) {
+    if (event.t !== "step.started" && event.t !== "step.completed" && event.t !== "step.failed") continue;
+    if (!event.stepId) continue;
+    const detail = event.t === "step.failed" ? formatFailure(event.failure) : undefined;
+    found.push({
+      t: event.t,
+      stepId: event.stepId,
+      ...(detail ? { detail } : {}),
+    });
+  }
+  return found;
+}
+
+function formatFailure(failure: JournalEvent["failure"]): string | undefined {
+  if (!failure) return undefined;
+  const detail = typeof failure.detail === "string" ? failure.detail.trim() : "";
+  const reason = typeof failure.reason === "string" ? failure.reason.trim() : "";
+  const text = detail && reason ? `${detail} (${reason})` : detail || reason;
+  return text || undefined;
+}
+
+function readRunStepPlan(runDir: string): string[] {
+  const file = join(runDir, "workflow.json");
+  if (!existsSync(file)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as { steps?: unknown };
+    return leafStepIds(parsed.steps);
+  } catch {
+    return [];
+  }
+}
+
+function readDiffSummary(checkout: string, runId: string): string | undefined {
+  const worktree = join(checkout, ".yak", "worktrees", runId);
+  if (existsSync(worktree)) {
+    const result = spawnSync("git", ["diff", "--stat", "HEAD"], {
+      cwd: worktree,
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    const text = result.status === 0 ? result.stdout.trim() : "";
+    if (text) return clipText(text, 1500);
+  }
+  return readBuildSummary(join(checkout, ".runs", runId));
+}
+
+function readBuildSummary(runDir: string): string | undefined {
+  const dir = join(runDir, "artifacts");
+  if (!existsSync(dir)) return undefined;
+  let files: string[];
+  try {
+    files = readdirSync(dir);
+  } catch {
+    return undefined;
+  }
+  let best: { iter: number; file: string } | undefined;
+  for (const file of files) {
+    const match = /^build(?:\.(\d+))?\.json$/.exec(file);
+    if (!match) continue;
+    const iter = match[1] ? Number(match[1]) : 0;
+    if (!best || iter >= best.iter) best = { iter, file };
+  }
+  if (!best) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(join(dir, best.file), "utf8")) as { summary?: unknown };
+    if (typeof parsed.summary !== "string" || !parsed.summary.trim()) return undefined;
+    return clipText(parsed.summary.trim(), 280);
+  } catch {
+    return undefined;
+  }
+}
+
+function readLogTail(logPath: string | undefined): string | undefined {
+  if (!logPath) return undefined;
+  let size: number;
+  try {
+    size = statSync(logPath).size;
+  } catch {
+    return undefined;
+  }
+  if (size <= 0) return undefined;
+  const take = Math.min(size, 64_000);
+  let fd: number | undefined;
+  try {
+    fd = openSync(logPath, "r");
+    const buffer = Buffer.alloc(take);
+    readSync(fd, buffer, 0, take, size - take);
+    const text = buffer.toString("utf8");
+    const lines = text.split(/\r?\n/);
+    if (size > take) lines.shift();
+    while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+    const tail = lines.slice(-40).join("\n").trim();
+    return tail || undefined;
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 function listRunDirs(checkout: string): string[] {
