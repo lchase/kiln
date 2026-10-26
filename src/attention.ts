@@ -234,7 +234,14 @@ function attentionRevision(
   graph: AttentionGraph,
 ): string {
   const body = JSON.stringify({
-    needsYou: needsYou.map((item) => [item.job.jobId, item.job.state, item.reason]),
+    needsYou: needsYou.map((item) => [
+      item.job.jobId,
+      item.job.state,
+      item.reason,
+      item.job.attemptCount,
+      item.job.lastFailureReason ?? "",
+      item.job.nextRetryAt ?? "",
+    ]),
     inFlight: inFlight.map((item) => [
       item.job.jobId,
       item.job.state,

@@ -41,7 +41,7 @@ function observed(overrides: Partial<ObservedJob> & Pick<ObservedJob, "jobId" | 
 }
 
 function observation(jobs: ObservedJob[]): Observation {
-  return { maxConcurrent: 2, jobs, breadcrumbsToClear: [] };
+  return { maxConcurrent: 2, maxAttempts: 3, jobs, breadcrumbsToClear: [] };
 }
 
 describe("statusView", () => {
@@ -183,7 +183,7 @@ describe("renderStatus", () => {
         gateDecision: "approve",
       },
     };
-    const observation: Observation = { maxConcurrent: 2, jobs: [job], breadcrumbsToClear: [] };
+    const observation: Observation = { maxConcurrent: 2, maxAttempts: 3, jobs: [job], breadcrumbsToClear: [] };
     const view = statusView(observation);
     assert.equal(view.jobs[0]?.findingsPath, "/tmp/kiln/findings/j1.md");
     const text = renderStatus(view);
@@ -193,7 +193,7 @@ describe("renderStatus", () => {
     assert.doesNotMatch(text, /pr https:/);
 
     const missing: ObservedJob = { ...job, findingsPath: undefined };
-    const open = statusView({ maxConcurrent: 2, jobs: [missing], breadcrumbsToClear: [] });
+    const open = statusView({ maxConcurrent: 2, maxAttempts: 3, jobs: [missing], breadcrumbsToClear: [] });
     assert.equal(open.jobs[0]?.findingsPath, undefined);
     assert.match(renderStatus(open), /findings missing/);
   });

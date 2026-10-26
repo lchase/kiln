@@ -172,7 +172,7 @@ kiln serve --no-tick
 
 `GET /api/jobs` and `GET /api/jobs/<id>` return that view as JSON, including the attention sections. `POST /api/jobs/<id>/approve`, `POST /api/jobs/<id>/reject`, and `POST /api/jobs/<id>/retry` call the same functions as the CLI. A browser POST from another origin is rejected. The page and the stylesheet ship inside the package (`assets/serve.css`, read from the package root).
 
-`kiln retry <jobId>` re-runs a failed or dead job with the same launch tick uses. A landed job that only failed to open its pull request is delivered again instead.
+`kiln retry <jobId>` relaunches a failed or dead job with the same launch tick uses, and clears `<kiln-dir>/attempts/<job-id>.json`. A landed job that only failed to open its pull request is delivered again instead. The board's Retry button calls that same function.
 
 By default, serve runs `kiln tick` once when it starts and then every 30 seconds. `--tick <seconds>` changes the interval. `--no-tick` leaves the factory where it is. The tick uses the same lock as `kiln tick`, so a second tick exits with "another kiln tick is running" instead of launching twice. There is no intake form in this UI yet.
 
@@ -195,7 +195,9 @@ while true; do npm run kiln -- tick; sleep 30; done
 
 A job is ready when its dependencies are met and the number of jobs in flight is under `maxConcurrent`. The default is after merged: every job in `dependsOn` is `done`. `--stack` is met when that one upstream has landed. A rejected gate does not unblock the next job. An ok run with no readable approval does not either.
 
-`npm run kiln -- status` lists jobs across repos. When a job has `source`, status prints `source <kind> <ref>`. For `needs-human` it prints `approve: kiln approve <id>` and `reject: kiln reject <id>`. Run those as `npm run kiln -- approve <id>` and `npm run kiln -- reject <id>`. For `done` and `in-review` it prints `branch yak/<run-id>`. For `deliver=pr` it also prints the pull request url once one exists. For an investigation whose findings file exists, it prints `findings <path>`. That path is `findingsPath` on the same status view `kiln serve` renders, and the console links it. For `blocked` on a dependency id that has no job file, it prints `blocked on missing job <id>`. While an upstream pull request is open, it prints `waiting for PR #N to merge`. `npm run kiln -- retry <id>` re-runs a failed or dead job.
+`stallTimeoutMs` (default `900000`, 15 minutes) and `maxAttempts` (default `3`) live in the kiln config. `stallTimeoutMs` of `0` or below turns stall detection off. A running job with no yak journal event and no log output for that long is killed, process tree included, and marked failed with reason `stalled`. A process that is already gone when `kiln tick` or `kiln serve` starts is `orphaned`. An agent or launch crash is `crashed`. A non-zero exit that is not a gate rejection is `failed`. Those four retry on their own after `10s × 2^(n-1)`, capped at 5 minutes. A rejected gate, a cancelled run, and an ok run with no readable approval do not. After `maxAttempts` the job is `dead`. Each attempt is a file under `<kiln-dir>/attempts/<job-id>.json`, so state stays derived. Status prints `attempts`, `reason`, and `next retry` from the same view `readStatus` returns. On the board, a failed or dead card in Needs human shows `attempt N/M`, the reason, and the next retry time in the browser's local time.
+
+`npm run kiln -- status` lists jobs across repos. When a job has `source`, status prints `source <kind> <ref>`. For `needs-human` it prints `approve: kiln approve <id>` and `reject: kiln reject <id>`. Run those as `npm run kiln -- approve <id>` and `npm run kiln -- reject <id>`. For `done` and `in-review` it prints `branch yak/<run-id>`. For `deliver=pr` it also prints the pull request url once one exists. For an investigation whose findings file exists, it prints `findings <path>`. That path is `findingsPath` on the same status view `kiln serve` renders, and the console links it. For `blocked` on a dependency id that has no job file, it prints `blocked on missing job <id>`. While an upstream pull request is open, it prints `waiting for PR #N to merge`. `npm run kiln -- retry <id>` relaunches a failed or dead job, or delivers again when the only failure is opening the pull request, and clears the attempt ledger.
 
 State is derived from the yak journal, the gate files, and (for `deliver=pr`) `gh pr view`:
 
@@ -207,8 +209,8 @@ State is derived from the yak journal, the gate files, and (for `deliver=pr`) `g
 | `needs-human` | The run is suspended on an open gate |
 | `approved` | The gate says approve and the run has not finished. This still holds a slot |
 | `rejected` | The run finished ok and the gate says reject |
-| `failed` | The run failed, the launch died before a journal, the run finished ok with no readable approval, or a pull request could not be opened |
-| `dead` | The journal's process is gone. Status prints the cancel command |
+| `failed` | The run failed, the launch died before a journal, the run finished ok with no readable approval, a pull request could not be opened, or a transient failure is waiting to retry |
+| `dead` | The attempt budget is used up. Before the next tick, a journal whose process is already gone is also `dead`. Status prints the cancel command when a process is gone, and `kiln retry <id>` once attempts are exhausted |
 | `in-review` | `deliver=pr` and the run has landed. The pull request is open, or the next tick still has to open it |
 | `done` | `deliver=local`: the run finished ok and the gate says approve. `deliver=pr`: that pull request has merged. An investigation is `done` when the gate says approve, including when the repo is `deliver=pr`. It does not enter `in-review` |
 

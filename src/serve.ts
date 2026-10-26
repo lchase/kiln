@@ -2,7 +2,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import type { LoadedKilnConfig } from "./config.js";
-import { answerJob, readStatus, retryJob, runTick } from "./driver.js";
+import { answerJob, readStatus, retryJob, runTick, startupRecovery } from "./driver.js";
+import { defaultHost } from "./host.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import { packageRoot } from "./paths.js";
 import type { StatusJobView } from "./report.js";
@@ -25,6 +26,7 @@ const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
  * Listens on 127.0.0.1 only. Resolves when the process is signalled.
  */
 export function startServe(options: ServeOptions): Promise<void> {
+  startupRecovery(options.config);
   const css = loadServeCss();
   const secrets = secretValues(options.config);
   let port = options.port;
@@ -66,7 +68,7 @@ export function startServe(options: ServeOptions): Promise<void> {
       if (options.tickSeconds === undefined) return;
       const tick = (): void => {
         if (stopped) return;
-        safeTick(options.config, secrets);
+        safeTick(options.config, secrets, false);
       };
       firstTick = setTimeout(tick, 0);
       timer = setInterval(tick, options.tickSeconds * 1000);
@@ -82,9 +84,9 @@ export function loadServeCss(): string {
   return readFileSync(path, "utf8");
 }
 
-function safeTick(config: LoadedKilnConfig, secrets: string[]): void {
+function safeTick(config: LoadedKilnConfig, secrets: string[], startup: boolean): void {
   try {
-    runTick(config);
+    runTick(config, defaultHost(), { startup });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`tick: ${redact(message, secrets)}\n`);

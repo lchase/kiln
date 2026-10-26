@@ -131,6 +131,7 @@ function card(item: AttentionItem, stage: string): string {
 ${branch ? `<div class="branch">${escapeHtml(branch)}</div>` : ""}
 ${prLink(job)}
 ${roundsHtml(job, stage)}
+${attemptHtml(job, stage)}
 ${noteHtml(item)}
 ${dependsHtml(job)}
 </div>`;
@@ -221,6 +222,20 @@ function roundRow(round: BoardReviewRound, waiting: boolean): string {
     return `<span class="chip${tone ? ` ${tone}` : ""}" title="${escapeHtml(`${key}: ${verdict || "pending"}`)}">${label}</span>`;
   }).join("");
   return `<div class="round"><span class="r">R${round.n}</span>${cells}</div>`;
+}
+
+/** Attempt budget on a Needs human card. Only failed and dead jobs have one. */
+function attemptHtml(job: StatusJobView, stage: string): string {
+  if (stage !== "needs-human" || (job.state !== "failed" && job.state !== "dead")) return "";
+  if (job.attemptCount <= 0 && !job.lastFailureReason && !job.nextRetryAt) return "";
+  const parts: string[] = [];
+  if (job.attemptCount > 0) parts.push(`attempt ${job.attemptCount}/${job.maxAttempts}`);
+  if (job.lastFailureReason) parts.push(job.lastFailureReason);
+  const line = parts.length > 0 ? `<div class="meta">${escapeHtml(parts.join(" · "))}</div>` : "";
+  const when = job.nextRetryAt
+    ? `<div class="meta">next retry <time datetime="${escapeHtml(job.nextRetryAt)}">${escapeHtml(job.nextRetryAt)}</time></div>`
+    : "";
+  return `${line}${when}`;
 }
 
 function noteHtml(item: AttentionItem): string {

@@ -20,6 +20,7 @@ function job(overrides: Partial<ObservedJob> & Pick<ObservedJob, "jobId" | "repo
 function observation(overrides: Partial<Observation> = {}): Observation {
   return {
     maxConcurrent: 2,
+    maxAttempts: 3,
     jobs: [],
     breadcrumbsToClear: [],
     ...overrides,
@@ -249,5 +250,53 @@ describe("decide", () => {
     const independent = job({ jobId: "sunday-heading", repo: "web" });
     const open = observation({ maxConcurrent: 1, jobs: [dead, independent] });
     assert.deepEqual(decide(open), [{ type: "launch", jobId: "sunday-heading", repo: "web" }]);
+  });
+
+  it("retries a recorded failure when it is due and not a rejection or an exhausted job", () => {
+    const again = job({
+      jobId: "again",
+      repo: "web",
+      run: run("dead"),
+      runRetired: true,
+      attemptCount: 1,
+      lastFailureReason: "crashed",
+      nextRetryAt: "2026-01-01T00:00:10.000Z",
+    });
+    const other = job({ jobId: "other", repo: "web" });
+    const waiting = observation({ maxConcurrent: 2, jobs: [again, other] });
+    assert.equal(jobState(again, waiting), "failed");
+    assert.deepEqual(decide(waiting, new Date("2026-01-01T00:00:09.000Z")), [
+      { type: "launch", jobId: "other", repo: "web" },
+    ]);
+    assert.deepEqual(decide(waiting, new Date("2026-01-01T00:00:10.000Z")), [
+      { type: "retry", jobId: "again", repo: "web" },
+    ]);
+
+    const rejected = job({
+      jobId: "nope",
+      repo: "web",
+      run: run("ok"),
+      runRetired: true,
+      nextRetryAt: "2020-01-01T00:00:00.000Z",
+    });
+    rejected.run!.gateDecision = "reject";
+    const refused = observation({ jobs: [rejected] });
+    assert.equal(jobState(rejected, refused), "rejected");
+    assert.deepEqual(decide(refused, new Date("2026-01-01T00:00:00.000Z")), []);
+
+    const exhausted = job({
+      jobId: "budget",
+      repo: "web",
+      run: run("failed"),
+      runRetired: true,
+      retriesExhausted: true,
+      attemptCount: 3,
+      lastFailureReason: "failed",
+    });
+    const done = observation({ jobs: [exhausted, other] });
+    assert.equal(jobState(exhausted, done), "dead");
+    assert.deepEqual(decide(done, new Date("2026-06-01T00:00:00.000Z")), [
+      { type: "launch", jobId: "other", repo: "web" },
+    ]);
   });
 });

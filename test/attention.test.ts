@@ -24,6 +24,8 @@ function job(overrides: Partial<StatusJobView> & Pick<StatusJobView, "jobId" | "
     dependsOn: [],
     stack: false,
     launchFailed: false,
+    attemptCount: 0,
+    maxAttempts: 3,
     prPending: false,
     prClosedUnmerged: false,
     noReadableApproval: false,
@@ -284,7 +286,7 @@ describe("attention view", () => {
       launchError: "origin fetch failed",
       logTail: "origin fetch failed\nexit 1",
     });
-    const view = statusView({ maxConcurrent: 2, jobs: [running, blocked, failed], breadcrumbsToClear: [] });
+    const view = statusView({ maxConcurrent: 2, maxAttempts: 3, jobs: [running, blocked, failed], breadcrumbsToClear: [] });
     assert.equal(view.jobs[0]?.state, "running");
     assert.deepEqual(
       view.jobs[0]?.steps.map((step) => [step.id, step.phase]),
@@ -386,5 +388,5 @@ function observed(overrides: Partial<ObservedJob> & Pick<ObservedJob, "jobId" | 
 }
 
 function observation(jobs: ObservedJob[]): Observation {
-  return { maxConcurrent: 2, jobs, breadcrumbsToClear: [] };
+  return { maxConcurrent: 2, maxAttempts: 3, jobs, breadcrumbsToClear: [] };
 }

@@ -250,6 +250,8 @@ h1 { margin: 0; font-size: 18px; line-height: 24px; font-weight: 500; }
   overflow-wrap: anywhere;
 }
 .deps { margin: 8px 0 0; font-family: var(--mono); font-size: 12px; line-height: 16px; color: var(--muted); overflow-wrap: anywhere; }
+.meta { margin-top: 8px; font-family: var(--mono); font-size: 12px; line-height: 16px; color: var(--muted); overflow-wrap: anywhere; }
+.meta time { font-family: inherit; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) {
   .pulse, .chip.wait, .status::before { animation: none; }

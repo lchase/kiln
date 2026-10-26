@@ -195,6 +195,8 @@ function viewJob(overrides: Partial<StatusJobView> & Pick<StatusJobView, "jobId"
     dependsOn: [],
     stack: false,
     launchFailed: false,
+    attemptCount: 0,
+    maxAttempts: 3,
     prPending: false,
     prClosedUnmerged: false,
     noReadableApproval: false,
@@ -251,6 +253,45 @@ describe("serve pages", () => {
     assert.match(settled, /id="col-merged"/);
     assert.match(settled, /landed locally/);
     assert.doesNotMatch(settled, /Show more/);
+  });
+
+  it("shows attempt, reason, and next retry on a Needs human card for a dead job", () => {
+    const html = page([
+      viewJob({
+        jobId: "dead-1",
+        state: "dead",
+        title: "Stalled build",
+        attemptCount: 3,
+        maxAttempts: 3,
+        lastFailureReason: "stalled",
+      }),
+      viewJob({
+        jobId: "fail-1",
+        state: "failed",
+        title: "Crashed build",
+        attemptCount: 1,
+        maxAttempts: 3,
+        lastFailureReason: "orphaned",
+        nextRetryAt: "2026-10-26T03:00:00.000Z",
+      }),
+      viewJob({
+        jobId: "gate-1",
+        state: "needs-human",
+        title: "Waiting",
+        canApprove: true,
+      }),
+    ]);
+    assert.match(html, /id="col-needs-human"/);
+    assert.match(html, /your call/);
+    assert.match(html, /id="job-dead-1"[\s\S]*attempt 3\/3 · stalled/);
+    assert.match(html, /id="job-fail-1"[\s\S]*attempt 1\/3 · orphaned/);
+    assert.match(html, /datetime="2026-10-26T03:00:00.000Z"/);
+    assert.match(html, /next retry /);
+    const gateStart = html.indexOf('id="job-gate-1"');
+    const gateEnd = html.indexOf('id="job-', gateStart + 1);
+    const gate = html.slice(gateStart, gateEnd === -1 ? undefined : gateEnd);
+    assert.doesNotMatch(gate, /attempt /);
+    assert.match(html, /action="\/api\/jobs\/dead-1\/retry"/);
   });
 
   it("puts queued and blocked jobs in Queued, and does not format the clock as UTC", () => {

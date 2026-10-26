@@ -31,9 +31,21 @@ export const JiraConfigSchema = z.object({
 });
 export type JiraConfig = z.infer<typeof JiraConfigSchema>;
 
+/** No yak event and no log output for this long stalls a running job. `<= 0` disables it. */
+export const DEFAULT_STALL_TIMEOUT_MS = 15 * 60 * 1000;
+/** Transient failures retry until this many attempts, then the job is dead. */
+export const DEFAULT_MAX_ATTEMPTS = 3;
+
 export const KilnConfigFileSchema = z.object({
   note: z.string().min(1).optional(),
   maxConcurrent: z.number().int().min(1).optional(),
+  /**
+   * Milliseconds without a yak event or log output before a running job is
+   * killed and retried. Default 15 minutes. `0` or negative disables stall detection.
+   */
+  stallTimeoutMs: z.number().int().optional(),
+  /** Transient failures before the job is dead. Default 3. */
+  maxAttempts: z.number().int().min(1).optional(),
   adapter: z.enum(["mock", "claude-code"]).optional(),
   repos: z.record(z.string(), RepoEntrySchema),
   jira: JiraConfigSchema.optional(),
@@ -90,7 +102,9 @@ export type Job = z.infer<typeof JobSchema>;
  * `deliver=pr`. It does not enter `in-review`. A reject, a failure, a dead
  * process, and an ok run with no readable approval do not unblock an
  * after-merged dependent. A stacked job unblocks when its one upstream has
- * landed, which includes `in-review`.
+ * landed, which includes `in-review`. `dead` is also a job whose transient
+ * failures have used `maxAttempts`. Those attempts live under the kiln
+ * directory, not in this file.
  */
 export const JOB_STATES = [
   "queued",

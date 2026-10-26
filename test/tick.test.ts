@@ -371,7 +371,7 @@ describe("kiln tick", { concurrency: 1 }, () => {
     assert.equal(git(web, ["log", "-1", "--format=%s", `yak/${sundayRun}`]).trim(), "kiln: Sunday heading");
   });
 
-  it("marks a dead journal dead, prints cancel, and launches the next job under maxConcurrent 1", () => {
+  it("prints cancel for a dead journal, marks it orphaned on tick, and launches the next job", () => {
     const { cwd, home, web } = checkoutPair();
     useMock(home, 1);
     const calm = addJob(cwd, home, "feature", "web", "Calm empty copy");
@@ -398,7 +398,11 @@ describe("kiln tick", { concurrency: 1 }, () => {
     const tick = runCli(["tick"], { cwd, home });
     assert.match(tick.stdout, new RegExp(`launch ${sunday}\\s+web`));
     assert.doesNotMatch(tick.stdout, new RegExp(`launch ${calm}`));
-    assert.match(runCli(["status", calm], { cwd, home }).stdout, /dead/);
+    const after = runCli(["status", calm], { cwd, home });
+    assert.match(after.stdout, new RegExp(`${calm}\\s+web\\s+feature\\s+failed`));
+    assert.match(after.stdout, /reason orphaned/);
+    assert.match(after.stdout, /attempts 1/);
+    assert.match(after.stdout, /next retry /);
   });
 
   it("does not relaunch a job whose launch pid died before a journal existed", () => {
