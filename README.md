@@ -164,13 +164,15 @@ kiln serve --port 4100 --tick 30
 kiln serve --no-tick
 ```
 
-`kiln serve` listens on `127.0.0.1` only (port 4100 unless `--port` is set). It reads the same derived state as `kiln status` and calls the same approve and reject functions. Nothing new is stored.
+`kiln serve` listens on `127.0.0.1` only (port 4100 unless `--port` is set). It reads the same derived state as `kiln status` and calls the same approve, reject, and retry functions. Nothing new is stored.
 
-`/` is the inbox: jobs in `needs-human`, with the gate prompt, the artifacts and review output yak wrote, links to the spec and the log, and Approve / Reject. An investigation job also links to its findings. `/board` groups every job by state, shows `dependsOn` (including blocked-by), the stacked flag, the pull request for `in-review` and `done`, and the failure or launch error for `failed`. Both pages refresh every 3 seconds.
+`/` is the console, in attention order. Needs you is always expanded: human gates (the question, the diff summary or the findings, Approve / Reject), failed and dead jobs (the error tail and Retry), and open pull requests. In flight is one row per running, approved, queued, or blocked job, with a step strip taken from yak run events, elapsed time, and an expandable log tail. A blocked row says what it is waiting on. A dependency graph (inline SVG) colors nodes by state; stacked edges are dashed. Done recently is collapsed. `/board` is the same page. The document title is `(N) Kiln`, where N is the needs-you count. The page polls every 3 seconds. After you opt in, a desktop notification fires when that count goes up.
 
 `GET /jobs/<id>/findings` renders the approved findings markdown as text. HTML in that file is escaped. The page is read-only.
 
-`GET /api/jobs` and `GET /api/jobs/<id>` return that view as JSON. `POST /api/jobs/<id>/approve` and `POST /api/jobs/<id>/reject` answer the gate. A browser POST from another origin is rejected. The page and the stylesheet ship inside the package (`assets/serve.css`, read from the package root).
+`GET /api/jobs` and `GET /api/jobs/<id>` return that view as JSON, including the attention sections. `POST /api/jobs/<id>/approve`, `POST /api/jobs/<id>/reject`, and `POST /api/jobs/<id>/retry` call the same functions as the CLI. A browser POST from another origin is rejected. The page and the stylesheet ship inside the package (`assets/serve.css`, read from the package root).
+
+`kiln retry <jobId>` re-runs a failed or dead job with the same launch tick uses. A landed job that only failed to open its pull request is delivered again instead.
 
 By default, serve runs `kiln tick` once when it starts and then every 30 seconds. `--tick <seconds>` changes the interval. `--no-tick` leaves the factory where it is. The tick uses the same lock as `kiln tick`, so a second tick exits with "another kiln tick is running" instead of launching twice. There is no intake form in this UI yet.
 
@@ -193,7 +195,7 @@ while true; do npm run kiln -- tick; sleep 30; done
 
 A job is ready when its dependencies are met and the number of jobs in flight is under `maxConcurrent`. The default is after merged: every job in `dependsOn` is `done`. `--stack` is met when that one upstream has landed. A rejected gate does not unblock the next job. An ok run with no readable approval does not either.
 
-`npm run kiln -- status` lists jobs across repos. When a job has `source`, status prints `source <kind> <ref>`. For `needs-human` it prints `approve: kiln approve <id>` and `reject: kiln reject <id>`. Run those as `npm run kiln -- approve <id>` and `npm run kiln -- reject <id>`. For `done` and `in-review` it prints `branch yak/<run-id>`. For `deliver=pr` it also prints the pull request url once one exists. For an investigation whose findings file exists, it prints `findings <path>`. That path is `findingsPath` on the same status view `kiln serve` renders, and the inbox and board link it. For `blocked` on a dependency id that has no job file, it prints `blocked on missing job <id>`. While an upstream pull request is open, it prints `waiting for PR #N to merge`.
+`npm run kiln -- status` lists jobs across repos. When a job has `source`, status prints `source <kind> <ref>`. For `needs-human` it prints `approve: kiln approve <id>` and `reject: kiln reject <id>`. Run those as `npm run kiln -- approve <id>` and `npm run kiln -- reject <id>`. For `done` and `in-review` it prints `branch yak/<run-id>`. For `deliver=pr` it also prints the pull request url once one exists. For an investigation whose findings file exists, it prints `findings <path>`. That path is `findingsPath` on the same status view `kiln serve` renders, and the console links it. For `blocked` on a dependency id that has no job file, it prints `blocked on missing job <id>`. While an upstream pull request is open, it prints `waiting for PR #N to merge`. `npm run kiln -- retry <id>` re-runs a failed or dead job.
 
 State is derived from the yak journal, the gate files, and (for `deliver=pr`) `gh pr view`:
 

@@ -4,9 +4,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
+import { buildAttention } from "../src/attention.js";
 import { packageRoot } from "../src/paths.js";
-import { renderBoard, renderInbox } from "../src/serve-page.js";
 import type { StatusJobView } from "../src/report.js";
+import { renderConsole } from "../src/serve-page.js";
 
 const root = packageRoot();
 const keep: string[] = [];
@@ -200,8 +201,13 @@ function viewJob(overrides: Partial<StatusJobView> & Pick<StatusJobView, "jobId"
     gates: [],
     canApprove: false,
     canReject: false,
+    steps: [],
     ...overrides,
   };
+}
+
+function page(jobs: StatusJobView[]): string {
+  return renderConsole("/* kiln-serve */", buildAttention(jobs));
 }
 
 after(() => {
@@ -213,67 +219,73 @@ after(() => {
 
 describe("serve pages", () => {
   it("escapes job text and does not link a javascript pull request url", () => {
-    const css = "/* kiln-serve */";
-    const inbox = renderInbox(css, {
-      jobs: [
-        viewJob({
-          jobId: "job-1",
-          state: "needs-human",
-          title: "<script>alert(1)</script>",
-          canApprove: true,
-          canReject: true,
-          gates: [
-            {
-              stepId: "approve",
-              prompt: "<b>Approve?</b>",
-              choices: ["approve", "reject"],
-              artifacts: [{ name: "decision", summary: "APPROVE — ok" }],
-              reviews: [],
-            },
-          ],
-        }),
-      ],
-    });
-    assert.match(inbox, /\/\* kiln-serve \*\//);
-    assert.match(inbox, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
-    assert.match(inbox, /&lt;b&gt;Approve\?&lt;\/b&gt;/);
-    assert.doesNotMatch(inbox, /<script>alert/);
-    assert.match(inbox, /action="\/api\/jobs\/job-1\/approve"/);
+    const html = page([
+      viewJob({
+        jobId: "job-1",
+        state: "needs-human",
+        title: "<script>alert(1)</script>",
+        canApprove: true,
+        canReject: true,
+        gates: [
+          {
+            stepId: "approve",
+            prompt: "<b>Approve?</b>",
+            choices: ["approve", "reject"],
+            artifacts: [{ name: "decision", summary: "APPROVE — ok" }],
+            reviews: [],
+          },
+        ],
+      }),
+    ]);
+    assert.match(html, /\/\* kiln-serve \*\//);
+    assert.match(html, /\(1\) Kiln/);
+    assert.match(html, /Needs you/);
+    assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+    assert.match(html, /&lt;b&gt;Approve\?&lt;\/b&gt;/);
+    assert.doesNotMatch(html, /<script>alert/);
+    assert.match(html, /action="\/api\/jobs\/job-1\/approve"/);
 
-    const board = renderBoard(css, {
-      jobs: [viewJob({ jobId: "job-1", state: "done", title: "Done", prUrl: "javascript:alert(1)" })],
-    });
-    assert.match(board, /javascript:alert\(1\)/);
-    assert.doesNotMatch(board, /href="javascript:/);
+    const settled = page([viewJob({ jobId: "job-1", state: "done", title: "Done", prUrl: "javascript:alert(1)" })]);
+    assert.match(settled, /javascript:alert\(1\)/);
+    assert.doesNotMatch(settled, /href="javascript:/);
+    assert.match(settled, /<details class="done-recent">/);
+    assert.doesNotMatch(settled, /<details class="done-recent" open/);
   });
 
-  it("links findings for an investigation job on the inbox and the board", () => {
-    const css = "/* kiln-serve */";
+  it("links findings for an investigation and keeps a failed job's retry", () => {
     const probe = viewJob({
       jobId: "probe-1",
       workflow: "investigation",
       state: "needs-human",
       title: "Probe the unconfirmed platform facts",
       findingsPath: "/tmp/kiln/findings/probe-1.md",
+      gates: [
+        {
+          stepId: "approve",
+          prompt: 'Approve findings for "Probe"?',
+          rendered: 'Approve findings for "Probe"?\n\n## Questions\n\nWhich runner?',
+          choices: ["approve", "reject"],
+          artifacts: [],
+          reviews: [],
+        },
+      ],
     });
     const feature = viewJob({
       jobId: "feat-1",
-      state: "needs-human",
+      state: "failed",
       title: "Render the empty state",
+      launchError: "builder exploded",
+      logTail: "verify: expected 1 received 0",
     });
-    const inbox = renderInbox(css, { jobs: [probe, feature] });
-    assert.match(inbox, /href="\/jobs\/probe-1\/findings"/);
-    assert.match(inbox, />Findings</);
-    assert.doesNotMatch(inbox, /href="\/jobs\/feat-1\/findings"/);
-
-    const board = renderBoard(css, {
-      jobs: [
-        { ...probe, state: "done" },
-        { ...feature, state: "queued" },
-      ],
-    });
-    assert.match(board, /href="\/jobs\/probe-1\/findings"/);
-    assert.doesNotMatch(board, /href="\/jobs\/feat-1\/findings"/);
+    const html = page([probe, feature]);
+    assert.match(html, /href="\/jobs\/probe-1\/findings"/);
+    assert.match(html, />Findings</);
+    assert.match(html, /Which runner\?/);
+    assert.doesNotMatch(html, /href="\/jobs\/feat-1\/findings"/);
+    assert.match(html, /action="\/api\/jobs\/feat-1\/retry"/);
+    assert.match(html, /builder exploded/);
+    assert.match(html, /Failed: builder exploded/);
+    assert.match(html, /\(2\) Kiln/);
   });
 });
 
@@ -292,9 +304,13 @@ describe("kiln serve", () => {
 
     const status = runCli(["status", "--port", "1"], { cwd, home });
     assert.equal(status.status, 2);
+
+    const retry = runCli(["retry"], { cwd, home });
+    assert.equal(retry.status, 2);
+    assert.match(retry.stderr, /kiln retry/);
   });
 
-  it("binds 127.0.0.1, serves the inbox, and rejects a cross-origin POST", async () => {
+  it("binds 127.0.0.1, serves the console, and rejects a cross-origin POST", async () => {
     const { cwd, home } = workDir("kiln-serve-empty-");
     const repo = join(cwd, "web");
     mkdirSync(repo);
@@ -307,7 +323,8 @@ describe("kiln serve", () => {
       const homePage = await text(server.url);
       assert.equal(homePage.status, 200);
       assert.match(homePage.body, /kiln-serve/);
-      assert.match(homePage.body, /Inbox/);
+      assert.match(homePage.body, /Needs you/);
+      assert.match(homePage.body, /\(0\) Kiln/);
       assert.doesNotMatch(homePage.body, new RegExp(TOKEN));
 
       const jobs = await text(`${server.url}/api/jobs`);
@@ -328,6 +345,13 @@ describe("kiln serve", () => {
         headers: { Origin: "http://127.0.0.1:1", Accept: "application/json" },
       });
       assert.equal(wrongPort.status, 403);
+
+      const retryDenied = await text(`${server.url}/api/jobs/job-1/retry`, {
+        method: "POST",
+        headers: { Origin: "http://evil.example", Accept: "application/json" },
+      });
+      assert.equal(retryDenied.status, 403);
+      assert.match(retryDenied.body, /Cross-origin request rejected/);
 
       const missing = await text(`${server.url}/api/jobs/job-1/approve`, {
         method: "POST",
@@ -378,15 +402,21 @@ describe("kiln serve", () => {
 
       const board = await text(`${server.url}/board`);
       assert.equal(board.status, 200);
+      assert.match(board.body, /Needs you/);
+      assert.match(board.body, /In flight/);
       assert.match(board.body, /state-blocked">blocked</);
       assert.match(board.body, new RegExp(`id="job-${downstream}"`));
-      assert.match(board.body, new RegExp(`href="/board#job-${upstream}"`));
+      assert.match(board.body, new RegExp(`href="#job-${upstream}"`));
       assert.match(board.body, /List the weekly summary/);
       assert.match(board.body, /depends on/);
+      assert.match(board.body, new RegExp(`Waiting on ${upstream} \\(needs-human\\)`));
 
       const listed = JSON.parse((await text(`${server.url}/api/jobs`)).body) as {
         jobs: { jobId: string; state: string; dependsOn: { jobId: string; state: string }[]; stack: boolean }[];
+        attention: { needsYouCount: number; needsYou: { job: { jobId: string } }[] };
       };
+      assert.equal(listed.attention.needsYouCount, 1);
+      assert.equal(listed.attention.needsYou[0]?.job.jobId, upstream);
       const blocked = listed.jobs.find((job) => job.jobId === downstream);
       assert.ok(blocked, JSON.stringify(listed));
       assert.equal(blocked.state, "blocked");
@@ -492,6 +522,90 @@ describe("kiln serve", () => {
       await stop(server.child);
     }
   });
+
+  it(
+    "retries a failed job through the same launch as the CLI and rejects a cross-origin retry",
+    { timeout: 120_000 },
+    async () => {
+      const { cwd, home } = workDir("kiln-serve-retry-");
+      const web = join(cwd, "repos", "web");
+      initCheckout(web);
+      assert.equal(runCli(["repo", "add", "web", web, "--test", testCommand], { cwd, home }).status, 0);
+      useMock(home);
+      const id = addJob(cwd, home, "web", "Show the weekly summary");
+      const runId = "2020-01-01T00-00-00Z-old";
+      const runDir = join(web, ".runs", runId);
+      mkdirSync(runDir, { recursive: true });
+      const gone = 2_147_483_646;
+      assert.throws(() => process.kill(gone, 0));
+      writeFileSync(
+        join(runDir, "journal.jsonl"),
+        [
+          JSON.stringify({
+            t: "run.started",
+            at: "2020-01-01T00:00:00.000Z",
+            runId,
+            tag: `kiln:${id}`,
+            pid: gone,
+          }),
+          JSON.stringify({ t: "step.started", at: "2020-01-01T00:00:01.000Z", stepId: "spec" }),
+          JSON.stringify({
+            t: "step.failed",
+            at: "2020-01-01T00:00:02.000Z",
+            stepId: "spec",
+            failure: { reason: "command-failed", detail: "builder exploded" },
+          }),
+          JSON.stringify({ t: "run.finished", at: "2020-01-01T00:00:03.000Z", status: "failed" }),
+          "",
+        ].join("\n"),
+      );
+      const logDir = join(home, ".kiln", "logs");
+      mkdirSync(logDir, { recursive: true });
+      writeFileSync(join(logDir, `${id}.log`), "builder exploded\nverify: expected 1 received 0\n");
+
+      const server = await startServe(["--port", "0", "--no-tick"], { cwd, home });
+      try {
+        const html = await text(`${server.url}/`);
+        assert.equal(html.status, 200);
+        assert.match(html.body, /\(1\) Kiln/);
+        assert.match(html.body, /Failed: builder exploded/);
+        assert.match(html.body, /verify: expected 1 received 0/);
+        assert.match(html.body, new RegExp(`action="/api/jobs/${id}/retry"`));
+        assert.match(html.body, /class="failed">spec</);
+
+        const denied = await text(`${server.url}/api/jobs/${id}/retry`, {
+          method: "POST",
+          headers: { Origin: "https://evil.example", Accept: "application/json" },
+        });
+        assert.equal(denied.status, 403);
+        assert.match(denied.body, /Cross-origin request rejected/);
+        const still = JSON.parse((await text(`${server.url}/api/jobs/${id}`)).body) as { state: string };
+        assert.equal(still.state, "failed");
+
+        const retried = await text(`${server.url}/api/jobs/${id}/retry`, {
+          method: "POST",
+          headers: { Origin: server.url, Accept: "application/json" },
+        });
+        assert.equal(retried.status, 200, retried.body);
+        const start = Date.now();
+        let state = "";
+        let last = "";
+        while (Date.now() - start < 60_000) {
+          const job = await text(`${server.url}/api/jobs/${id}`);
+          last = job.body;
+          state = (JSON.parse(job.body) as { state: string }).state;
+          if (state === "running" || state === "needs-human" || state === "approved" || state === "done") break;
+          await delay(200);
+        }
+        assert.match(state, /running|needs-human|approved|done/, last);
+        const cli = runCli(["retry", id], { cwd, home });
+        assert.notEqual(cli.status, 0);
+        assert.match(cli.stderr, /not failed or dead/);
+      } finally {
+        await stop(server.child);
+      }
+    },
+  );
 
   it(
     "runs kiln tick on an interval while serve is open",

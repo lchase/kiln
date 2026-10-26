@@ -2,11 +2,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import type { LoadedKilnConfig } from "./config.js";
-import { answerJob, readStatus, runTick } from "./driver.js";
+import { answerJob, readStatus, retryJob, runTick } from "./driver.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import { packageRoot } from "./paths.js";
 import type { StatusJobView } from "./report.js";
-import { renderBoard, renderInbox, renderMessagePage, renderTextPage } from "./serve-page.js";
+import { renderConsole, renderMessagePage, renderTextPage } from "./serve-page.js";
 
 export interface ServeOptions {
   config: LoadedKilnConfig;
@@ -115,14 +115,18 @@ async function handle(
       sendJson(res, 403, { error: "Cross-origin request rejected." }, secrets);
       return;
     }
-    const action = /^\/api\/jobs\/([^/]+)\/(approve|reject)$/.exec(path);
-    if (!action?.[1] || (action[2] !== "approve" && action[2] !== "reject")) {
+    const action = /^\/api\/jobs\/([^/]+)\/(approve|reject|retry)$/.exec(path);
+    if (!action?.[1] || (action[2] !== "approve" && action[2] !== "reject" && action[2] !== "retry")) {
       sendJson(res, 404, { error: "Not found." }, secrets);
       return;
     }
     const jobId = parseJobId(action[1]);
     if (!jobId) {
       sendJson(res, 404, { error: "Not found." }, secrets);
+      return;
+    }
+    if (action[2] === "retry") {
+      await retry(req, res, config, css, secrets, jobId);
       return;
     }
     await answer(req, res, config, css, secrets, jobId, action[2]);
@@ -134,12 +138,8 @@ async function handle(
     return;
   }
 
-  if (path === "/" || path === "") {
-    sendHtml(res, 200, renderInbox(css, readStatus(config)), secrets);
-    return;
-  }
-  if (path === "/board") {
-    sendHtml(res, 200, renderBoard(css, readStatus(config)), secrets);
+  if (path === "/" || path === "" || path === "/board") {
+    sendHtml(res, 200, renderConsole(css, readStatus(config).attention), secrets);
     return;
   }
   if (path === "/api/jobs") {
@@ -206,6 +206,31 @@ async function answer(
     const status = message.startsWith("No job ") ? 404 : 409;
     if (wantsJson(req)) sendJson(res, status, { error: message }, secrets);
     else sendHtml(res, status, renderMessagePage(css, "Could not answer", message), secrets);
+    return;
+  }
+  const job = findJob(config, jobId);
+  if (wantsJson(req)) {
+    sendJson(res, 200, { ok: true, job }, secrets);
+    return;
+  }
+  redirect(res, redirectTarget(req));
+}
+
+async function retry(
+  req: IncomingMessage,
+  res: ServerResponse,
+  config: LoadedKilnConfig,
+  css: string,
+  secrets: string[],
+  jobId: string,
+): Promise<void> {
+  try {
+    retryJob(config, jobId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = message.startsWith("No job ") ? 404 : 409;
+    if (wantsJson(req)) sendJson(res, status, { error: message }, secrets);
+    else sendHtml(res, status, renderMessagePage(css, "Could not retry", message), secrets);
     return;
   }
   const job = findJob(config, jobId);
@@ -346,7 +371,8 @@ function sendHtml(res: ServerResponse, status: number, html: string, secrets: st
     Connection: "close",
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
-    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    "Content-Security-Policy":
+      "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     "Referrer-Policy": "same-origin",
   });
   res.end(body);

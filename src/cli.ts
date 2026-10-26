@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { addRepo, renderRepoList, resolveKilnConfig } from "./config.js";
-import { answerJob, runStatus, runTick } from "./driver.js";
+import { answerJob, retryJob, runStatus, runTick } from "./driver.js";
 import { startServe } from "./serve.js";
 import { addFromFile } from "./intake/file.js";
 import { addFromJira } from "./intake/jira.js";
@@ -19,6 +19,7 @@ function usage(): never {
       "       kiln status [jobId] [--config <file>]",
       "       kiln approve <jobId> [--config <file>]",
       "       kiln reject <jobId> [--config <file>]",
+      "       kiln retry <jobId> [--config <file>]",
       "       kiln serve [--port 4100] [--tick <seconds>|--no-tick] [--config <file>]",
       "",
       "repo add registers a checkout. A relative path is stored absolute, resolved",
@@ -51,12 +52,15 @@ function usage(): never {
       "yak/<run-id> and opens a draft pull request. An investigation is done when",
       "its gate is approved. It does not open a pull request. status prints the",
       "derived state, and the findings path once an investigation is approved.",
-      "approve and reject answer the human gate.",
+      "approve and reject answer the human gate. retry launches a failed or dead",
+      "job again, the same way tick launches. A landed job that only failed to",
+      "open its pull request is delivered again instead.",
       "",
-      "serve listens on 127.0.0.1. The inbox lists needs-human jobs. The board",
-      "groups every job by the same derived state as status. Approve and reject",
-      "call the same functions as the CLI. POST from another origin is rejected.",
-      "A tick runs every 30 seconds unless --no-tick is set, using the tick lock.",
+      "serve listens on 127.0.0.1. The page lists what needs a person first,",
+      "then what is in flight, a dependency graph, and done jobs. Approve,",
+      "reject, and retry call the same functions as the CLI. POST from another",
+      "origin is rejected. A tick runs every 30 seconds unless --no-tick is",
+      "set, using the tick lock.",
     ].join("\n"),
   );
   process.exit(2);
@@ -335,6 +339,17 @@ function statusCommand(argv: string[]): void {
   process.stdout.write(runStatus(config, flags.positionals[0]));
 }
 
+function retryCommand(argv: string[]): void {
+  const flags = parseFlags(argv);
+  rejectServeFlags(flags);
+  const jobId = flags.positionals[0];
+  if (!jobId || flags.positionals.length !== 1 || flags.test || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.stack) {
+    usage();
+  }
+  const config = resolveKilnConfig({ configPath: flags.configPath });
+  process.stdout.write(retryJob(config, jobId));
+}
+
 function gateCommand(choice: "approve" | "reject", argv: string[]): void {
   const flags = parseFlags(argv);
   rejectServeFlags(flags);
@@ -414,6 +429,10 @@ async function main(): Promise<void> {
   }
   if (command === "reject") {
     gateCommand("reject", argv.slice(1));
+    return;
+  }
+  if (command === "retry") {
+    retryCommand(argv.slice(1));
     return;
   }
   if (command === "serve") {
