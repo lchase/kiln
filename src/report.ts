@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { readBoardFiles, readReviewRounds, type BoardFile, type BoardReviewRound } from "./board.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import {
   inFlightCount,
@@ -198,6 +199,10 @@ export interface StatusJobView {
   diffSummary?: string;
   /** Latest open step failure, from a `step.failed` event. */
   failureDetail?: string;
+  /** One row per review iteration. Unsuffixed `security.json` is round 1. */
+  rounds?: BoardReviewRound[];
+  /** Spec, build, decision, reviews, and the gate, for the console drawer. */
+  files?: BoardFile[];
 }
 
 export interface StatusView {
@@ -296,6 +301,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
       steps: progressFor(job),
       ...(job.createdAt ? { createdAt: job.createdAt } : {}),
       ...(job.logTail ? { logTail: job.logTail } : {}),
+      ...boardFields(job),
     };
   }
 
@@ -341,6 +347,25 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     ...(job.logTail ? { logTail: job.logTail } : {}),
     ...(job.diffSummary ? { diffSummary: job.diffSummary } : {}),
     ...(failureDetail ? { failureDetail } : {}),
+    ...boardFields(job),
+  };
+}
+
+function boardFields(job: ObservedJob): { rounds?: BoardReviewRound[]; files?: BoardFile[] } {
+  const runDir = job.run ? join(job.run.checkout, ".runs", job.run.runId) : undefined;
+  const rounds = readReviewRounds(runDir);
+  const files = readBoardFiles({
+    ...(runDir ? { runDir } : {}),
+    ...(job.specPath ? { specPath: job.specPath } : {}),
+    ...(job.findingsPath ? { findingsPath: job.findingsPath } : {}),
+    ...(job.workflow !== INVESTIGATION_WORKFLOW && job.diffSummary ? { diffSummary: job.diffSummary } : {}),
+    ...(job.logTail ? { logTail: job.logTail } : {}),
+    ...(job.workflow ? { workflow: job.workflow } : {}),
+    gates: job.run?.gates ?? [],
+  });
+  return {
+    ...(rounds.length > 0 ? { rounds } : {}),
+    ...(files.length > 0 ? { files } : {}),
   };
 }
 

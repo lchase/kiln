@@ -239,7 +239,7 @@ describe("serve pages", () => {
     ]);
     assert.match(html, /\/\* kiln-serve \*\//);
     assert.match(html, /\(1\) Kiln/);
-    assert.match(html, /Needs you/);
+    assert.match(html, /Needs human/);
     assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
     assert.match(html, /&lt;b&gt;Approve\?&lt;\/b&gt;/);
     assert.doesNotMatch(html, /<script>alert/);
@@ -248,11 +248,12 @@ describe("serve pages", () => {
     const settled = page([viewJob({ jobId: "job-1", state: "done", title: "Done", prUrl: "javascript:alert(1)" })]);
     assert.match(settled, /javascript:alert\(1\)/);
     assert.doesNotMatch(settled, /href="javascript:/);
-    assert.match(settled, /id="done"/);
-    assert.doesNotMatch(settled, /<details class="done-more"/);
+    assert.match(settled, /id="col-merged"/);
+    assert.match(settled, /landed locally/);
+    assert.doesNotMatch(settled, /Show more/);
   });
 
-  it("caps Done behind a closed Show more and keeps the graph panel closed", () => {
+  it("keeps every settled job on the board and does not render a graph", () => {
     const jobs = Array.from({ length: 5 }, (_, index) =>
       viewJob({
         jobId: `done-${index}`,
@@ -262,13 +263,10 @@ describe("serve pages", () => {
       }),
     );
     const html = page(jobs);
-    assert.match(html, /id="graph-panel" hidden/);
-    assert.match(html, /<details class="done-more">/);
-    assert.doesNotMatch(html, /<details class="done-more" open/);
-    assert.match(html, /<summary>Show more<\/summary>/);
-    const more = html.slice(html.indexOf('<details class="done-more">'), html.indexOf("</details>"));
-    assert.match(more, /id="job-done-0"/);
-    assert.doesNotMatch(html.slice(0, html.indexOf('<details class="done-more">')), /id="job-done-0"/);
+    assert.doesNotMatch(html, /id="graph-panel"/);
+    assert.doesNotMatch(html, /Show more/);
+    for (const index of jobs.keys()) assert.match(html, new RegExp(`id="job-done-${index}"`));
+    assert.match(html, /id="col-merged"/);
   });
 
   it("links findings for an investigation and keeps a failed job's retry", () => {
@@ -342,7 +340,7 @@ describe("kiln serve", () => {
       const homePage = await text(server.url);
       assert.equal(homePage.status, 200);
       assert.match(homePage.body, /kiln-serve/);
-      assert.match(homePage.body, /Needs you/);
+      assert.match(homePage.body, /Needs human/);
       assert.match(homePage.body, /\(0\) Kiln/);
       assert.doesNotMatch(homePage.body, new RegExp(TOKEN));
 
@@ -421,10 +419,10 @@ describe("kiln serve", () => {
 
       const board = await text(`${server.url}/board`);
       assert.equal(board.status, 200);
-      assert.match(board.body, /Needs you/);
-      assert.match(board.body, /Up next/);
-      assert.match(board.body, /id="drawer" hidden/);
-      assert.match(board.body, /state-blocked">blocked</);
+      assert.match(board.body, /Needs human/);
+      assert.match(board.body, /Spec/);
+      assert.match(board.body, /id="drawer"/);
+      assert.doesNotMatch(board.body, /id="graph-panel"/);
       assert.match(board.body, new RegExp(`id="job-${downstream}"`));
       assert.match(board.body, new RegExp(`href="#job-${upstream}"`));
       assert.match(board.body, /List the weekly summary/);
@@ -591,7 +589,8 @@ describe("kiln serve", () => {
         assert.match(html.body, /Failed: builder exploded/);
         assert.match(html.body, /verify: expected 1 received 0/);
         assert.match(html.body, new RegExp(`action="/api/jobs/${id}/retry"`));
-        assert.match(html.body, /class="failed">spec</);
+        assert.match(html.body, /Needs human/);
+        assert.match(html.body, /id="col-needs-human"/);
 
         const denied = await text(`${server.url}/api/jobs/${id}/retry`, {
           method: "POST",
