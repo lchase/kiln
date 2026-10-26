@@ -175,13 +175,21 @@ h1 { margin: 0; font-size: 18px; line-height: 24px; font-weight: 500; }
 .card.human { border: 2px solid var(--human); padding: 11px; }
 .card.merged { background: var(--bg); border-color: var(--line); }
 .card.merged .title { color: var(--muted); }
-.card.queued { background: var(--bg); border-color: var(--line); }
-.card.queued .title { color: var(--muted); font-weight: 400; }
+.card.queued,
+.card.retrying { background: var(--bg); border-color: var(--line); }
+.card.queued .title,
+.card.retrying .title { color: var(--muted); font-weight: 400; }
 .card.queued .num,
 .card.queued .branch,
 .card.queued .note,
-.card.queued .deps { color: var(--faint); }
-.card.queued:hover { border-color: var(--line-strong); }
+.card.queued .deps,
+.card.retrying .num,
+.card.retrying .branch,
+.card.retrying .note,
+.card.retrying .deps,
+.card.retrying .meta { color: var(--faint); }
+.card.queued:hover,
+.card.retrying:hover { border-color: var(--line-strong); }
 .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .num {
   font-family: var(--mono);

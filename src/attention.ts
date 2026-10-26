@@ -6,14 +6,39 @@ import type { StatusJobView, StatusState, StatusView } from "./report.js";
  * Attention order for `kiln serve`. Built from the same derived jobs as
  * `kiln status`. The console renders this and does not classify jobs again.
  *
- * Needs you: a person has to act, or a run is broken, or a pull request is open.
- * In flight: work is moving, waiting to launch, or waiting on another job.
+ * Needs you: a person has to act, a run is dead or failed with no automatic
+ * retry left, or a pull request is open. A failed job that still has a
+ * scheduled retry is in flight, not here.
+ * In flight: work is moving, waiting to launch, waiting to retry, or waiting
+ * on another job.
  * Done recently: finished or rejected, collapsed in the page.
  */
 
 const NEEDS_YOU: readonly StatusState[] = ["needs-human", "dead", "failed", "in-review", "invalid"];
 const IN_FLIGHT: readonly StatusState[] = ["running", "approved", "queued", "blocked"];
 const SETTLED: readonly StatusState[] = ["done", "rejected"];
+
+/** Reasons an automatic retry is allowed to schedule. A rejected gate is not one of these. */
+const RETRYABLE_REASONS = new Set(["stalled", "crashed", "orphaned", "failed"]);
+
+/**
+ * A failed job the driver will launch again on its own.
+ * Needs human, the `(N)` title, and desktop notifications all use this,
+ * so a waiting retry is not a call for a person.
+ */
+export function scheduledRetry(job: {
+  state: string;
+  attemptCount?: number;
+  maxAttempts?: number;
+  lastFailureReason?: string;
+  nextRetryAt?: string;
+}): boolean {
+  if (job.state !== "failed") return false;
+  if (!job.nextRetryAt || !Number.isFinite(Date.parse(job.nextRetryAt))) return false;
+  const max = job.maxAttempts;
+  if (max === undefined || !((job.attemptCount ?? 0) < max)) return false;
+  return job.lastFailureReason !== undefined && RETRYABLE_REASONS.has(job.lastFailureReason);
+}
 
 export interface AttentionItem {
   job: StatusJobView;
@@ -67,12 +92,12 @@ export interface KilnStatus extends StatusView {
 export function buildAttention(jobs: StatusJobView[]): AttentionView {
   const indexed = jobs.map((job, index) => ({ job, index }));
   const needsYou = indexed
-    .filter((entry) => NEEDS_YOU.includes(entry.job.state))
+    .filter((entry) => !scheduledRetry(entry.job) && NEEDS_YOU.includes(entry.job.state))
     .sort((left, right) => byRank(NEEDS_YOU, left, right))
     .map((entry) => toItem(entry.job));
   const inFlight = indexed
-    .filter((entry) => IN_FLIGHT.includes(entry.job.state))
-    .sort((left, right) => byRank(IN_FLIGHT, left, right))
+    .filter((entry) => scheduledRetry(entry.job) || IN_FLIGHT.includes(entry.job.state))
+    .sort((left, right) => byFlight(left, right))
     .map((entry) => toItem(entry.job));
   const doneRecently = indexed
     .filter((entry) => SETTLED.includes(entry.job.state))
@@ -203,6 +228,32 @@ function errorTail(job: StatusJobView): string | undefined {
   return parts.join("\n");
 }
 
+function byFlight(
+  left: { job: StatusJobView; index: number },
+  right: { job: StatusJobView; index: number },
+): number {
+  const rank = flightRank(left.job) - flightRank(right.job);
+  if (rank !== 0) return rank;
+  return left.index - right.index;
+}
+
+/** Running first, then a job waiting out its backoff, then the rest of the in-flight states. */
+function flightRank(job: StatusJobView): number {
+  if (scheduledRetry(job)) return 1;
+  switch (job.state) {
+    case "running":
+      return 0;
+    case "approved":
+      return 2;
+    case "queued":
+      return 3;
+    case "blocked":
+      return 4;
+    default:
+      return 5;
+  }
+}
+
 function byRank(
   order: readonly StatusState[],
   left: { job: StatusJobView; index: number },
@@ -247,6 +298,9 @@ function attentionRevision(
       item.job.state,
       item.reason,
       item.job.steps.map((step) => `${step.id}:${step.phase}`).join(","),
+      item.job.attemptCount,
+      item.job.lastFailureReason ?? "",
+      item.job.nextRetryAt ?? "",
     ]),
     doneRecently: doneRecently.map((item) => [item.job.jobId, item.job.state]),
     edges: graph.edges.map((edge) => [edge.from, edge.to, edge.stack]),

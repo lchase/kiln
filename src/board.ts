@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { scheduledRetry } from "./attention.js";
 import type { ObservedGate } from "./reconcile.js";
 
 /**
@@ -37,6 +38,10 @@ export interface StageJob {
   state: string;
   workflow: string;
   steps: { id: string; phase: string }[];
+  attemptCount?: number;
+  maxAttempts?: number;
+  lastFailureReason?: string;
+  nextRetryAt?: string;
 }
 
 const FEATURE_STAGES = ["spec", "build", "review", "approve", "land", "pr-review"] as const;
@@ -70,8 +75,13 @@ const STEP_STAGE: Record<string, string> = {
 
 const HUMAN_STATES = new Set(["needs-human", "failed", "dead", "invalid", "rejected"]);
 
-/** Column for one job. Human gates and broken runs sit in Needs human. */
+/**
+ * Column for one job. Human gates and broken runs sit in Needs human.
+ * A failed job with an automatic retry still scheduled stays on the step
+ * its last run reached. `scheduledRetry` is that decision.
+ */
 export function stageOf(job: StageJob): string {
+  if (scheduledRetry(job)) return runStage(job);
   if (HUMAN_STATES.has(job.state)) return "needs-human";
   if (job.state === "in-review") return "pr-review";
   if (job.state === "done") return "merged";
@@ -82,6 +92,26 @@ export function stageOf(job: StageJob): string {
     return "land";
   }
   if (current && STEP_STAGE[current.id]) return STEP_STAGE[current.id];
+  return runStage(job);
+}
+
+/**
+ * Stage of the last step the run actually reached.
+ * The approve gate's column is Needs human; a scheduled retry is not a gate,
+ * so that step stays on Approve. Spec or Explore when the run never started a step.
+ */
+function runStage(job: StageJob): string {
+  const last = [...job.steps].reverse().find((step) => step.phase === "current" || step.phase === "failed");
+  const stage = last ? STEP_STAGE[last.id] : undefined;
+  if (stage && stage !== "needs-human") return stage;
+  if (stage === "needs-human") {
+    const earlier = [...job.steps].reverse().find((step) => {
+      const mapped = STEP_STAGE[step.id];
+      return step.phase === "done" && mapped !== undefined && mapped !== "needs-human";
+    });
+    if (earlier) return STEP_STAGE[earlier.id] ?? "approve";
+    return "approve";
+  }
   return job.workflow === "investigation" ? "explore" : "spec";
 }
 
