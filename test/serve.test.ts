@@ -248,8 +248,27 @@ describe("serve pages", () => {
     const settled = page([viewJob({ jobId: "job-1", state: "done", title: "Done", prUrl: "javascript:alert(1)" })]);
     assert.match(settled, /javascript:alert\(1\)/);
     assert.doesNotMatch(settled, /href="javascript:/);
-    assert.match(settled, /<details class="done-recent">/);
-    assert.doesNotMatch(settled, /<details class="done-recent" open/);
+    assert.match(settled, /id="done"/);
+    assert.doesNotMatch(settled, /<details class="done-more"/);
+  });
+
+  it("caps Done behind a closed Show more and keeps the graph panel closed", () => {
+    const jobs = Array.from({ length: 5 }, (_, index) =>
+      viewJob({
+        jobId: `done-${index}`,
+        state: "done",
+        title: `Settled ${index}`,
+        finishedAt: `2026-10-2${index}T00:00:00.000Z`,
+      }),
+    );
+    const html = page(jobs);
+    assert.match(html, /id="graph-panel" hidden/);
+    assert.match(html, /<details class="done-more">/);
+    assert.doesNotMatch(html, /<details class="done-more" open/);
+    assert.match(html, /<summary>Show more<\/summary>/);
+    const more = html.slice(html.indexOf('<details class="done-more">'), html.indexOf("</details>"));
+    assert.match(more, /id="job-done-0"/);
+    assert.doesNotMatch(html.slice(0, html.indexOf('<details class="done-more">')), /id="job-done-0"/);
   });
 
   it("links findings for an investigation and keeps a failed job's retry", () => {
@@ -403,7 +422,8 @@ describe("kiln serve", () => {
       const board = await text(`${server.url}/board`);
       assert.equal(board.status, 200);
       assert.match(board.body, /Needs you/);
-      assert.match(board.body, /In flight/);
+      assert.match(board.body, /Up next/);
+      assert.match(board.body, /id="drawer" hidden/);
       assert.match(board.body, /state-blocked">blocked</);
       assert.match(board.body, new RegExp(`id="job-${downstream}"`));
       assert.match(board.body, new RegExp(`href="#job-${upstream}"`));

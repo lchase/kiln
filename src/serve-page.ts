@@ -7,28 +7,36 @@ const NODE_H = 58;
 const GAP_X = 72;
 const GAP_Y = 18;
 const PAD = 20;
+const DONE_CAP = 4;
 
 const STATE_COLOR: Record<string, string> = {
-  queued: "#8d8175",
-  blocked: "#a16207",
-  running: "#1d4e89",
-  "needs-human": "#c2410c",
-  approved: "#1f6b45",
-  rejected: "#7c6f64",
-  failed: "#9b2c2c",
-  dead: "#7f1d1d",
-  "in-review": "#6d28d9",
-  done: "#1f6b45",
-  invalid: "#9b2c2c",
-  missing: "#a8a29e",
+  queued: "#94a3b8",
+  blocked: "#fbbf24",
+  running: "#38bdf8",
+  "needs-human": "#fbbf24",
+  approved: "#38bdf8",
+  rejected: "#94a3b8",
+  failed: "#fb7185",
+  dead: "#fb7185",
+  "in-review": "#a78bfa",
+  done: "#34d399",
+  invalid: "#fb7185",
+  missing: "#64748b",
 };
 
 const LIVE_SCRIPT = `
 (function () {
   var KEY = "kiln-needs-you";
   var body = document.body;
+  var board = document.getElementById("board");
+  var drawer = document.getElementById("drawer");
+  var scrim = document.getElementById("scrim");
+  var graphPanel = document.getElementById("graph-panel");
+  var graphToggle = document.getElementById("graph-toggle");
   var count = Number(body.getAttribute("data-needs-you") || "0");
   document.title = "(" + count + ") Kiln";
+  var selected = null;
+  var hoverId = null;
 
   function note(n) {
     var raw = null;
@@ -89,6 +97,170 @@ const LIVE_SCRIPT = `
   tickTimes();
   setInterval(tickTimes, 1000);
 
+  function depsOf(el) {
+    return (el.getAttribute("data-deps") || "").split(/\\s+/).filter(Boolean);
+  }
+
+  function family(id) {
+    var up = [];
+    var down = [];
+    if (!id) return { up: up, down: down };
+    var cards = document.querySelectorAll(".card");
+    for (var i = 0; i < cards.length; i++) {
+      var card = cards[i];
+      var job = card.getAttribute("data-job");
+      var deps = depsOf(card);
+      if (job === id) up = deps;
+      if (deps.indexOf(id) !== -1 && job) down.push(job);
+    }
+    return { up: up, down: down };
+  }
+
+  function paint(id) {
+    var fam = family(id);
+    var hot = {};
+    if (id) hot[id] = "selected";
+    for (var u = 0; u < fam.up.length; u++) hot[fam.up[u]] = hot[fam.up[u]] || "upstream";
+    for (var d = 0; d < fam.down.length; d++) hot[fam.down[d]] = hot[fam.down[d]] || "downstream";
+    if (board) board.classList.toggle("lit", Boolean(id));
+    if (graphPanel) graphPanel.classList.toggle("lit", Boolean(id));
+    var cards = document.querySelectorAll(".card, .node-link");
+    for (var i = 0; i < cards.length; i++) {
+      var el = cards[i];
+      el.classList.remove("selected", "upstream", "downstream");
+      var job = el.getAttribute("data-job");
+      if (job && hot[job]) el.classList.add(hot[job]);
+    }
+    var edges = document.querySelectorAll(".edge");
+    for (var e = 0; e < edges.length; e++) {
+      var edge = edges[e];
+      var from = edge.getAttribute("data-from");
+      var to = edge.getAttribute("data-to");
+      var on = Boolean(id) && ((from && hot[from]) || (to && hot[to]));
+      edge.classList.toggle("hot", on);
+    }
+  }
+
+  function focusId() {
+    return hoverId || selected;
+  }
+
+  function openDrawer(id) {
+    if (!drawer || !id) return;
+    var panels = drawer.querySelectorAll(".drawer-panel");
+    var found = false;
+    for (var i = 0; i < panels.length; i++) {
+      var on = panels[i].getAttribute("data-job") === id;
+      panels[i].hidden = !on;
+      if (on) found = true;
+    }
+    if (!found) return;
+    selected = id;
+    drawer.hidden = false;
+    if (scrim) scrim.hidden = false;
+    body.classList.add("drawer-open");
+    paint(focusId());
+    try { sessionStorage.setItem("kiln-drawer", id); } catch (err) { /* private mode */ }
+  }
+
+  function closeDrawer() {
+    selected = null;
+    if (drawer) drawer.hidden = true;
+    if (scrim) scrim.hidden = true;
+    body.classList.remove("drawer-open");
+    var panels = document.querySelectorAll(".drawer-panel");
+    for (var i = 0; i < panels.length; i++) panels[i].hidden = true;
+    paint(focusId());
+    try { sessionStorage.removeItem("kiln-drawer"); } catch (err) { /* private mode */ }
+  }
+
+  function setGraph(open) {
+    if (!graphPanel) return;
+    graphPanel.hidden = !open;
+    if (graphToggle) graphToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    try { sessionStorage.setItem("kiln-graph", open ? "1" : "0"); } catch (err) { /* private mode */ }
+  }
+
+  document.addEventListener("click", function (event) {
+    var target = event.target;
+    if (!target || !target.closest) return;
+    if (target.closest("#drawer-close") || target.closest("#scrim")) {
+      closeDrawer();
+      return;
+    }
+    if (target.closest("#graph-toggle")) {
+      setGraph(graphPanel ? graphPanel.hidden : false);
+      return;
+    }
+    if (target.closest("#graph-close")) {
+      setGraph(false);
+      return;
+    }
+    var opener = target.closest(".card-open");
+    if (opener) {
+      var card = opener.closest(".card");
+      if (card) openDrawer(card.getAttribute("data-job"));
+      return;
+    }
+    var link = target.closest("a[href^='#job-']");
+    if (!link) return;
+    var href = link.getAttribute("href") || "";
+    var id = decodeURIComponent(href.slice("#job-".length));
+    var panels = document.querySelectorAll(".drawer-panel");
+    var known = false;
+    for (var i = 0; i < panels.length; i++) {
+      if (panels[i].getAttribute("data-job") === id) known = true;
+    }
+    if (!known) return;
+    event.preventDefault();
+    openDrawer(id);
+  });
+
+  if (board) {
+    board.addEventListener("mouseover", function (event) {
+      var card = event.target && event.target.closest ? event.target.closest(".card") : null;
+      hoverId = card ? card.getAttribute("data-job") : hoverId;
+      if (card) paint(focusId());
+    });
+    board.addEventListener("mouseout", function (event) {
+      var card = event.target && event.target.closest ? event.target.closest(".card") : null;
+      if (!card) return;
+      var next = event.relatedTarget && event.relatedTarget.closest ? event.relatedTarget.closest(".card") : null;
+      if (next === card) return;
+      hoverId = null;
+      paint(focusId());
+    });
+  }
+  if (graphPanel) {
+    graphPanel.addEventListener("mouseover", function (event) {
+      var node = event.target && event.target.closest ? event.target.closest(".node-link") : null;
+      if (!node) return;
+      hoverId = node.getAttribute("data-job");
+      paint(focusId());
+    });
+    graphPanel.addEventListener("mouseout", function (event) {
+      var node = event.target && event.target.closest ? event.target.closest(".node-link") : null;
+      if (!node) return;
+      var next = event.relatedTarget && event.relatedTarget.closest ? event.relatedTarget.closest(".node-link") : null;
+      if (next === node) return;
+      hoverId = null;
+      paint(focusId());
+    });
+  }
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape") return;
+    if (selected) closeDrawer();
+    else setGraph(false);
+  });
+
+  try {
+    var storedGraph = sessionStorage.getItem("kiln-graph");
+    if (storedGraph === "1") setGraph(true);
+    var storedDrawer = sessionStorage.getItem("kiln-drawer");
+    if (storedDrawer) openDrawer(storedDrawer);
+  } catch (err) { /* private mode */ }
+
   function applyTails(items) {
     if (!items) return;
     for (var i = 0; i < items.length; i++) {
@@ -115,7 +287,9 @@ const LIVE_SCRIPT = `
           location.reload();
           return;
         }
+        applyTails(attention.needsYou);
         applyTails(attention.inFlight);
+        applyTails(attention.doneRecently);
       })
       .catch(function () { /* the next poll retries */ });
   }
@@ -126,44 +300,28 @@ const LIVE_SCRIPT = `
 export function renderConsole(css: string, attention: AttentionView): string {
   const n = attention.needsYouCount;
   const countLabel = n === 1 ? "1 job needs you" : `${n} jobs need you`;
-  const needs =
-    attention.needsYou.length === 0
-      ? `<p class="empty">Nothing needs you.</p>`
-      : attention.needsYou.map(renderNeeds).join("\n");
-  const flight =
-    attention.inFlight.length === 0
-      ? `<p class="empty">Nothing is in flight.</p>`
-      : attention.inFlight.map(renderFlight).join("\n");
-  const doneCount = attention.doneRecently.length;
-  const done =
-    doneCount === 0
-      ? ""
-      : `<details class="done-recent">
-<summary>Done recently <span class="count">${doneCount}</span></summary>
-<div class="done-list">
-${attention.doneRecently.map(renderDone).join("\n")}
-</div>
-</details>`;
+  const columns = boardColumns(attention);
+  const drawers = columns.flatMap((column) => column.items).map(renderDrawer).join("\n");
   return document({
     css,
     title: `(${n}) Kiln`,
     live: true,
     needsYou: n,
     revision: attention.revision,
-    main: `<section id="needs-you">
-<h1>Needs you <span class="count">${n}</span></h1>
-${needs}
-</section>
-<section id="in-flight">
-<h1>In flight <span class="count">${attention.inFlight.length}</span></h1>
-${flight}
-</section>
-<section id="graph">
-<h1>Dependencies</h1>
+    main: `<div class="board" id="board">
+${columns.map(renderColumn).join("\n")}
+</div>
+<div id="graph-panel" hidden>
+<div class="panel-bar"><h2>Dependencies</h2><button type="button" id="graph-close">Close</button></div>
 ${renderGraph(attention)}
-</section>
-${done}`,
+</div>
+<aside id="drawer" hidden>
+<div class="panel-bar"><h2>Job</h2><button type="button" id="drawer-close">Close</button></div>
+${drawers}
+</aside>
+<div id="scrim" hidden></div>`,
     headerExtra: `<p class="needs-count" id="needs-count">${escapeHtml(countLabel)}</p>
+<button type="button" id="graph-toggle" aria-expanded="false" aria-controls="graph-panel">Graph</button>
 <button type="button" id="notify" hidden>Notify me</button>`,
   });
 }
@@ -206,7 +364,94 @@ export function formatElapsed(iso: string, now = Date.now()): string {
   return `${secs}s`;
 }
 
-function renderNeeds(item: AttentionItem): string {
+interface BoardColumn {
+  id: string;
+  title: string;
+  tone: string;
+  items: AttentionItem[];
+  showElapsed: boolean;
+  cap?: number;
+}
+
+function boardColumns(attention: AttentionView): BoardColumn[] {
+  const running = new Set(["running", "approved"]);
+  return [
+    {
+      id: "needs-you",
+      title: "Needs you",
+      tone: "amber",
+      items: attention.needsYou.filter((item) => item.job.state !== "in-review"),
+      showElapsed: false,
+    },
+    {
+      id: "running",
+      title: "Running",
+      tone: "sky",
+      items: attention.inFlight.filter((item) => running.has(item.job.state)),
+      showElapsed: true,
+    },
+    {
+      id: "up-next",
+      title: "Up next",
+      tone: "slate",
+      items: attention.inFlight.filter((item) => !running.has(item.job.state)),
+      showElapsed: false,
+    },
+    {
+      id: "in-review",
+      title: "In review",
+      tone: "violet",
+      items: attention.needsYou.filter((item) => item.job.state === "in-review"),
+      showElapsed: false,
+    },
+    {
+      id: "done",
+      title: "Done",
+      tone: "emerald",
+      items: attention.doneRecently,
+      showElapsed: false,
+      cap: DONE_CAP,
+    },
+  ];
+}
+
+function renderColumn(column: BoardColumn): string {
+  const visible = column.cap === undefined ? column.items : column.items.slice(0, column.cap);
+  const rest = column.cap === undefined ? [] : column.items.slice(column.cap);
+  const more =
+    rest.length === 0
+      ? ""
+      : `<details class="done-more"><summary>Show more</summary>${rest.map((item) => renderCard(item, column.showElapsed)).join("\n")}</details>`;
+  const body =
+    column.items.length === 0
+      ? `<p class="empty">Nothing here.</p>`
+      : `${visible.map((item) => renderCard(item, column.showElapsed)).join("\n")}
+${more}`;
+  return `<section class="column tone-${column.tone}" id="${column.id}">
+<header class="column-head"><h2>${escapeHtml(column.title)}</h2><span class="count">${column.items.length}</span></header>
+<div class="column-body">
+${body}
+</div>
+</section>`;
+}
+
+function renderCard(item: AttentionItem, showElapsed: boolean): string {
+  const job = item.job;
+  const deps = job.dependsOn.map((dep) => dep.jobId).join(" ");
+  const time = showElapsed ? elapsedHtml(item.since) : "";
+  return `<article class="card tone-${escapeHtml(job.state)}" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-deps="${escapeHtml(deps)}">
+<button type="button" class="card-open">
+<p class="kicker"><span class="repo">${escapeHtml(job.repo || "job")}</span> <span class="badge">${escapeHtml(job.workflow || "job")}</span> <span class="chip state-${escapeHtml(job.state)}">${escapeHtml(job.state)}</span></p>
+<h2>${escapeHtml(job.title || job.jobId)}</h2>
+<p class="reason">${escapeHtml(item.reason)}</p>
+${stepStrip(job.steps)}
+${time}
+</button>
+${inlineActions(item)}
+</article>`;
+}
+
+function renderDrawer(item: AttentionItem): string {
   const job = item.job;
   const question = gateBody(job);
   const findings = item.findings
@@ -216,11 +461,14 @@ function renderNeeds(item: AttentionItem): string {
     ? `<h3>Diff</h3><pre class="excerpt">${escapeHtml(job.diffSummary)}</pre>`
     : "";
   const tail = item.errorTail ? `<pre class="tail">${escapeHtml(item.errorTail)}</pre>` : "";
-  const pr = job.prUrl && (job.state === "in-review" || job.state === "failed") ? renderPr(job.prUrl) : "";
-  return `<article class="card tone-${escapeHtml(job.state)}" id="job-${escapeHtml(job.jobId)}">
+  const pr = job.prUrl ? renderPr(job.prUrl) : "";
+  return `<div class="drawer-panel" data-job="${escapeHtml(job.jobId)}" hidden>
+<p class="kicker"><span class="repo">${escapeHtml(job.repo || "job")}</span> <span class="badge">${escapeHtml(job.workflow || "job")}</span> <span class="chip state-${escapeHtml(job.state)}">${escapeHtml(job.state)}</span></p>
+<h2>${escapeHtml(job.title || job.jobId)}</h2>
+<p class="meta"><code>${escapeHtml(job.jobId)}</code></p>
 <p class="reason">${escapeHtml(item.reason)}</p>
-${heading(job)}
 ${stepStrip(job.steps)}
+${elapsedHtml(item.since)}
 ${question}
 ${findings}
 ${diff}
@@ -230,44 +478,24 @@ ${tail}
 ${pr}
 ${depends(job)}
 ${resourceLinks(job)}
+${logBlock(job)}
 ${actionForms(item)}
-</article>`;
+</div>`;
 }
 
-function renderFlight(item: AttentionItem): string {
-  const job = item.job;
-  const reasonClass = job.state === "blocked" ? "reason waiting" : "reason";
-  return `<article class="row" id="job-${escapeHtml(job.jobId)}">
-<div class="row-main">
-${heading(job)}
-<p class="${reasonClass}">${escapeHtml(item.reason)}</p>
-${depends(job)}
-${stepStrip(job.steps)}
-${resourceLinks(job)}
-</div>
-${elapsedHtml(item.since)}
-${logDetails(job)}
-</article>`;
-}
-
-function renderDone(item: AttentionItem): string {
-  const job = item.job;
-  const pr = job.prUrl ? renderPr(job.prUrl) : "";
-  return `<article class="row settled" id="job-${escapeHtml(job.jobId)}">
-<div class="row-main">
-${heading(job)}
-<p class="reason">${escapeHtml(item.reason)}</p>
-${pr}
-${resourceLinks(job)}
-</div>
-</article>`;
-}
-
-function heading(job: StatusJobView): string {
-  const stack = job.stack ? `<span class="chip">stacked</span>` : "";
-  return `<h2>${escapeHtml(job.title || job.jobId)}</h2>
-<p class="meta">${escapeHtml(job.repo)} · ${escapeHtml(job.workflow)} · <code>${escapeHtml(job.jobId)}</code></p>
-<p class="chips"><span class="chip state-${escapeHtml(job.state)}">${escapeHtml(job.state)}</span>${stack}</p>`;
+function inlineActions(item: AttentionItem): string {
+  const forms: string[] = [];
+  const id = encodeURIComponent(item.job.jobId);
+  if (item.job.canApprove) {
+    forms.push(
+      `<form method="post" action="/api/jobs/${id}/approve"><button class="approve" type="submit">Approve</button></form>`,
+    );
+  }
+  if (item.retry) {
+    forms.push(`<form method="post" action="/api/jobs/${id}/retry"><button class="retry" type="submit">Retry</button></form>`);
+  }
+  if (forms.length === 0) return "";
+  return `<div class="card-actions">${forms.join("")}</div>`;
 }
 
 function gateBody(job: StatusJobView): string {
@@ -319,10 +547,10 @@ function elapsedHtml(since: string | undefined): string {
   return `<time class="elapsed" datetime="${escapeHtml(since)}">${escapeHtml(formatElapsed(since))}</time>`;
 }
 
-function logDetails(job: StatusJobView): string {
+function logBlock(job: StatusJobView): string {
   if (!job.logTail && !job.logPath) return "";
   const body = job.logTail ? escapeHtml(job.logTail) : "No log yet.";
-  return `<details class="log"><summary>Log</summary><pre id="log-${escapeHtml(job.jobId)}">${body}</pre></details>`;
+  return `<h3>Log</h3><pre class="log" id="log-${escapeHtml(job.jobId)}">${body}</pre>`;
 }
 
 function renderPr(url: string): string {
@@ -380,20 +608,20 @@ function renderGraph(attention: AttentionView): string {
         : `M ${x1} ${y1} C ${x1 + GAP_X / 2} ${y1}, ${x2 - GAP_X / 2} ${y2}, ${x2} ${y2}`;
       const marker = edge.stack ? "url(#arrow-stack)" : "url(#arrow)";
       const cls = edge.stack ? "edge stack" : "edge";
-      return `<path class="${cls}" d="${d}" marker-end="${marker}"/>`;
+      return `<path class="${cls}" data-from="${escapeHtml(edge.from)}" data-to="${escapeHtml(edge.to)}" d="${d}" marker-end="${marker}"/>`;
     })
     .join("");
   const nodes = graph.nodes
     .map((node) => {
       const at = placed.pos.get(node.jobId);
       if (!at) return "";
-      const color = STATE_COLOR[node.state] ?? "#8d8175";
+      const color = STATE_COLOR[node.state] ?? "#94a3b8";
       const title = clip(node.title || node.jobId, 22);
       const sub = clip(node.repo ? `${node.repo} · ${node.state}` : node.state, 26);
-      return `<a href="#job-${encodeURIComponent(node.jobId)}">
+      return `<a class="node-link" data-job="${escapeHtml(node.jobId)}" href="#job-${encodeURIComponent(node.jobId)}">
 <g class="node">
 <rect x="${at.x}" y="${at.y}" width="${NODE_W}" height="${NODE_H}" rx="8"/>
-<rect x="${at.x}" y="${at.y}" width="6" height="${NODE_H}" rx="3" fill="${color}"/>
+<rect class="bar" x="${at.x}" y="${at.y}" width="6" height="${NODE_H}" rx="3" fill="${color}"/>
 <text class="node-title" x="${at.x + 16}" y="${at.y + 24}">${escapeHtml(title)}</text>
 <text class="node-sub" x="${at.x + 16}" y="${at.y + 42}">${escapeHtml(sub)}</text>
 </g>
@@ -404,7 +632,7 @@ function renderGraph(attention: AttentionView): string {
   const legend = states
     .map(
       (state) =>
-        `<li><span class="swatch" style="background:${STATE_COLOR[state] ?? "#8d8175"}"></span>${escapeHtml(state)}</li>`,
+        `<li><span class="swatch" style="background:${STATE_COLOR[state] ?? "#94a3b8"}"></span>${escapeHtml(state)}</li>`,
     )
     .join("");
   const stackNote = graph.edges.some((edge) => edge.stack)
@@ -414,10 +642,10 @@ function renderGraph(attention: AttentionView): string {
 <svg viewBox="0 0 ${placed.width} ${placed.height}" width="${placed.width}" height="${placed.height}" role="img" aria-label="Job dependencies">
 <defs>
 <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-<path d="M 0 1 L 9 5 L 0 9 z" fill="#8a7968"/>
+<path d="M 0 1 L 9 5 L 0 9 z" fill="#94a3b8"/>
 </marker>
 <marker id="arrow-stack" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-<path d="M 0 1 L 9 5 L 0 9 z" fill="#c2410c"/>
+<path d="M 0 1 L 9 5 L 0 9 z" fill="#fbbf24"/>
 </marker>
 </defs>
 ${edges}

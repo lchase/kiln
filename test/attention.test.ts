@@ -202,11 +202,37 @@ describe("attention view", () => {
 
     const html = renderConsole("/* kiln-serve */", attention);
     assert.match(html, /\(5\) Kiln/);
+    assert.match(html, /id="graph-panel" hidden/);
     assert.match(html, /class="edge stack"/);
     assert.match(html, /marker-end="url\(#arrow-stack\)"/);
     assert.match(html, /marker-end="url\(#arrow\)"/);
-    assert.match(html, /<details class="done-recent">/);
-    assert.doesNotMatch(html, /<details class="done-recent" open/);
+    const between = (start: string, end: string) => html.slice(html.indexOf(start), html.indexOf(end));
+    const needs = between('id="needs-you"', 'id="running"');
+    assert.match(needs, /id="job-human"/);
+    assert.match(needs, /id="job-dead"/);
+    assert.match(needs, /id="job-failed"/);
+    assert.match(needs, /id="job-invalid"/);
+    assert.match(needs, /action="\/api\/jobs\/human\/approve"/);
+    assert.match(needs, /action="\/api\/jobs\/failed\/retry"/);
+    assert.doesNotMatch(needs, /id="job-review"/);
+    const runningCol = between('id="running"', 'id="up-next"');
+    assert.match(runningCol, /id="job-running"/);
+    assert.match(runningCol, /id="job-approved"/);
+    assert.match(runningCol, /class="current">build</);
+    assert.doesNotMatch(runningCol, /id="job-queued"/);
+    const upNext = between('id="up-next"', 'id="in-review"');
+    assert.match(upNext, /id="job-queued"/);
+    assert.match(upNext, /id="job-down"/);
+    assert.match(upNext, /id="job-stacked"/);
+    assert.match(upNext, /waiting for PR #3 to merge/);
+    assert.match(upNext, /data-job="stacked" data-deps="running"/);
+    const review = between('id="in-review"', 'id="done"');
+    assert.match(review, /id="job-review"/);
+    assert.match(review, /Pull request #12 is open/);
+    const done = between('id="done"', 'id="graph-panel"');
+    assert.match(done, /id="job-done-new"/);
+    assert.match(done, /id="job-rejected"/);
+    assert.doesNotMatch(done, /<details class="done-more"/);
   });
 
   it("derives a stacked wait and a step strip from the same status view the CLI prints", () => {
