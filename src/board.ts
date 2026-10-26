@@ -13,8 +13,8 @@ export interface BoardStage {
   id: string;
   label: string;
   who: string;
-  /** Column title color. Empty means the default ink. */
-  tone?: "human" | "merged";
+  /** Column title color. Empty means the default ink. `queued` is dimmer, not a new hue. */
+  tone?: "human" | "merged" | "queued";
 }
 
 export interface BoardReviewRound {
@@ -42,6 +42,7 @@ export interface StageJob {
 const FEATURE_STAGES = ["spec", "build", "review", "approve", "land", "pr-review"] as const;
 
 const CATALOG: BoardStage[] = [
+  { id: "queued", label: "Queued", who: "waiting · deps", tone: "queued" },
   { id: "spec", label: "Spec", who: "spec-writer · opus" },
   { id: "build", label: "Build", who: "builder · opus" },
   { id: "review", label: "Review", who: "sec · ux · ui · code" },
@@ -75,14 +76,12 @@ export function stageOf(job: StageJob): string {
   if (job.state === "in-review") return "pr-review";
   if (job.state === "done") return "merged";
   const current = job.steps.find((step) => step.phase === "current" || step.phase === "failed");
+  if (job.state === "queued" || job.state === "blocked") return "queued";
   if (job.state === "approved") {
     if (current && current.id !== "land" && current.id !== "approve" && STEP_STAGE[current.id]) return STEP_STAGE[current.id];
     return "land";
   }
-  if (!current || job.state === "queued" || job.state === "blocked") {
-    return job.workflow === "investigation" ? "explore" : "spec";
-  }
-  if (STEP_STAGE[current.id]) return STEP_STAGE[current.id];
+  if (current && STEP_STAGE[current.id]) return STEP_STAGE[current.id];
   return job.workflow === "investigation" ? "explore" : "spec";
 }
 
@@ -94,6 +93,7 @@ export function stagesFor(jobs: StageJob[]): BoardStage[] {
     for (const id of FEATURE_STAGES) wanted.add(id);
   }
   if (workflows.has("investigation")) wanted.add("explore");
+  wanted.add("queued");
   wanted.add("merged");
   wanted.add("needs-human");
   for (const job of jobs) wanted.add(stageOf(job));

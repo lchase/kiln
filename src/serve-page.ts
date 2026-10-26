@@ -119,6 +119,7 @@ function card(item: AttentionItem, stage: string): string {
   const classes = ["card"];
   if (stage === "needs-human") classes.push("human");
   if (stage === "merged") classes.push("merged");
+  if (stage === "queued") classes.push("queued");
   const deps = job.dependsOn.map((dep) => dep.jobId).join(" ");
   const pulse = job.state === "running" ? '<span class="pulse" aria-label="running"></span>' : "";
   const flag = stage === "needs-human" ? '<span class="flag">your call</span>' : "";

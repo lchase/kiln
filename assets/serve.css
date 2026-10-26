@@ -128,6 +128,9 @@ h1 { margin: 0; font-size: 18px; line-height: 24px; font-weight: 500; }
 .col-head .count { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--muted); }
 .col.human h2 { color: var(--human); }
 .col.merged h2 { color: var(--merged); }
+.col.queued h2 { color: var(--muted); }
+.col.queued .who,
+.col.queued .count { color: var(--faint); }
 .col:not(.slim) .slim-face { display: none; }
 .col.slim {
   align-self: stretch;
@@ -172,6 +175,13 @@ h1 { margin: 0; font-size: 18px; line-height: 24px; font-weight: 500; }
 .card.human { border: 2px solid var(--human); padding: 11px; }
 .card.merged { background: var(--bg); border-color: var(--line); }
 .card.merged .title { color: var(--muted); }
+.card.queued { background: var(--bg); border-color: var(--line); }
+.card.queued .title { color: var(--muted); font-weight: 400; }
+.card.queued .num,
+.card.queued .branch,
+.card.queued .note,
+.card.queued .deps { color: var(--faint); }
+.card.queued:hover { border-color: var(--line-strong); }
 .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .num {
   font-family: var(--mono);

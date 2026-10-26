@@ -24,9 +24,15 @@ describe("board stages", () => {
     assert.equal(stageOf(stage({ state: "rejected" })), "needs-human");
     assert.equal(stageOf(stage({ state: "in-review" })), "pr-review");
     assert.equal(stageOf(stage({ state: "done" })), "merged");
-    assert.equal(stageOf(stage({ state: "queued" })), "spec");
-    assert.equal(stageOf(stage({ state: "blocked" })), "spec");
-    assert.equal(stageOf(stage({ state: "queued", workflow: "investigation" })), "explore");
+    assert.equal(stageOf(stage({ state: "queued" })), "queued");
+    assert.equal(stageOf(stage({ state: "blocked" })), "queued");
+    assert.equal(stageOf(stage({ state: "queued", workflow: "investigation" })), "queued");
+    assert.equal(stageOf(stage({ state: "blocked", workflow: "investigation" })), "queued");
+    assert.equal(stageOf(stage({ state: "running", steps: [{ id: "spec", phase: "current" }] })), "spec");
+    assert.equal(
+      stageOf(stage({ state: "running", workflow: "investigation", steps: [{ id: "explore", phase: "current" }] })),
+      "explore",
+    );
     assert.equal(
       stageOf(stage({ state: "running", steps: [{ id: "spec", phase: "done" }, { id: "build", phase: "current" }] })),
       "build",
@@ -43,8 +49,9 @@ describe("board stages", () => {
     );
 
     const empty = stagesFor([]).map((item) => item.id);
-    assert.deepEqual(empty, ["spec", "build", "review", "approve", "land", "pr-review", "merged", "needs-human"]);
+    assert.deepEqual(empty, ["queued", "spec", "build", "review", "approve", "land", "pr-review", "merged", "needs-human"]);
     const probe = stagesFor([stage({ state: "queued", workflow: "investigation" })]).map((item) => item.id);
+    assert.equal(probe[0], "queued");
     assert.ok(probe.includes("explore"));
     assert.ok(!probe.includes("spec"));
     assert.equal(probe.at(-1), "needs-human");

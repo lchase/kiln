@@ -57,7 +57,7 @@ function usage(): never {
       "open its pull request is delivered again instead.",
       "",
       "serve listens on 127.0.0.1. The page is a board of workflow stages:",
-      "spec, build, review, approve, land, PR review, merged, and needs human.",
+      "queued, spec, build, review, approve, land, PR review, merged, and needs human.",
       "Empty stages collapse. Approve, reject, and retry call the same",
       "functions as the CLI. POST from another origin is rejected. A tick",
       "runs every 30 seconds unless --no-tick is set, using the tick lock.",

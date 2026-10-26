@@ -253,6 +253,41 @@ describe("serve pages", () => {
     assert.doesNotMatch(settled, /Show more/);
   });
 
+  it("puts queued and blocked jobs in Queued, and does not format the clock as UTC", () => {
+    const html = page([
+      viewJob({ jobId: "q", state: "queued", title: "Wait", logTail: "started 2026-10-26T05:01:22.000Z" }),
+      viewJob({
+        jobId: "b",
+        state: "blocked",
+        title: "Hold",
+        dependsOn: [{ jobId: "q", state: "queued" }],
+      }),
+      viewJob({
+        jobId: "spec-run",
+        state: "running",
+        title: "Writing the spec",
+        steps: [{ id: "spec", phase: "current" }],
+      }),
+    ]);
+    const between = (id: string, next: string) => html.slice(html.indexOf(`id="col-${id}"`), html.indexOf(`id="col-${next}"`));
+    const queued = between("queued", "spec");
+    assert.match(queued, /id="job-q"/);
+    assert.match(queued, /id="job-b"/);
+    assert.match(queued, /depends on/);
+    assert.match(queued, /href="#job-q"/);
+    assert.match(queued, /waiting · deps/);
+    const spec = between("spec", "build");
+    assert.match(spec, /id="job-spec-run"/);
+    assert.doesNotMatch(spec, /id="job-q"/);
+    assert.doesNotMatch(spec, /id="job-b"/);
+    assert.match(html, /2026-10-26T05:01:22\.000Z/);
+    assert.match(html, /toLocaleTimeString\(\)/);
+    assert.match(html, /toLocaleString\(\)/);
+    assert.doesNotMatch(html, /timeZone/);
+    assert.doesNotMatch(html, /toUTCString/);
+    assert.doesNotMatch(html, /toISOString\(/);
+  });
+
   it("keeps every settled job on the board and does not render a graph", () => {
     const jobs = Array.from({ length: 5 }, (_, index) =>
       viewJob({
@@ -420,8 +455,12 @@ describe("kiln serve", () => {
       const board = await text(`${server.url}/board`);
       assert.equal(board.status, 200);
       assert.match(board.body, /Needs human/);
-      assert.match(board.body, /Spec/);
+      assert.match(board.body, /Queued/);
       assert.match(board.body, /id="drawer"/);
+      const queuedCol = board.body.slice(board.body.indexOf('id="col-queued"'), board.body.indexOf('id="col-spec"'));
+      assert.match(queuedCol, new RegExp(`id="job-${downstream}"`));
+      const specCol = board.body.slice(board.body.indexOf('id="col-spec"'), board.body.indexOf('id="col-build"'));
+      assert.doesNotMatch(specCol, new RegExp(`id="job-${downstream}"`));
       assert.doesNotMatch(board.body, /id="graph-panel"/);
       assert.match(board.body, new RegExp(`id="job-${downstream}"`));
       assert.match(board.body, new RegExp(`href="#job-${upstream}"`));

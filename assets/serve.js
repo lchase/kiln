@@ -182,7 +182,27 @@
     var view = sheet.querySelector("[data-view]");
     if (!view) return;
     var text = src ? src.textContent || "" : "";
-    view.innerHTML = text ? markdown(text) : '<p class="empty">Nothing written yet.</p>';
+    view.innerHTML = text ? markdown(localizeIso(text)) : '<p class="empty">Nothing written yet.</p>';
+  }
+
+  function localTime(iso, withDate) {
+    var date = new Date(iso);
+    if (!isFinite(date.getTime())) return iso;
+    return withDate ? date.toLocaleString() : date.toLocaleTimeString();
+  }
+
+  function localizeIso(text) {
+    return String(text).replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})/g, function (iso) {
+      return localTime(iso, true);
+    });
+  }
+
+  function localizeTimes(root) {
+    var nodes = (root || document).querySelectorAll("time[datetime]");
+    for (var i = 0; i < nodes.length; i++) {
+      var iso = nodes[i].getAttribute("datetime");
+      if (iso) nodes[i].textContent = localTime(iso, true);
+    }
   }
 
   function openJob(id) {
@@ -306,6 +326,7 @@
     el.className = "status";
     var jobs = document.querySelectorAll(".board .card").length;
     el.textContent = jobs + (jobs === 1 ? " job · " : " jobs · ") + new Date().toLocaleTimeString();
+    localizeTimes(document);
   }
 
   function poll() {
