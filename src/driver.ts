@@ -50,6 +50,7 @@ import {
 } from "./reconcile.js";
 import {
   fileMtimeMs,
+  isPidAlive,
   readAttemptLedger,
   recoverRuns,
   resetAttemptLedger,
@@ -1206,13 +1207,7 @@ function releaseLock(lockPath: string): void {
 }
 
 function pidAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return isErrno(error, "EPERM");
-  }
+  return isPidAlive(pid);
 }
 
 function isErrno(error: unknown, code: string): boolean {

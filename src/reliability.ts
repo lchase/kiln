@@ -4,6 +4,7 @@ import {
   appendFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   statSync,
@@ -161,7 +162,7 @@ function pendingFailure(job: ObservedJob, config: LoadedKilnConfig, options: Rec
   if (job.run?.status === "failed" && job.run.finishedReason === "cancelled") return undefined;
 
   const now = options.now.getTime();
-  const launchingLive = job.launching && job.launchPid !== undefined && pidAlive(job.launchPid);
+  const launchingLive = job.launching && job.launchPid !== undefined && isPidAlive(job.launchPid);
   if (launchingLive && job.launchPid !== undefined && isStalled(job.launchActivityMs, now, config.stallTimeoutMs)) {
     return {
       reason: "stalled",
@@ -173,7 +174,7 @@ function pendingFailure(job: ObservedJob, config: LoadedKilnConfig, options: Rec
   if (launchingLive) return undefined;
 
   const run = job.run;
-  const runLive = run?.status === "alive" && run.gateDecision !== "approve" && run.pid !== undefined && pidAlive(run.pid);
+  const runLive = run?.status === "alive" && run.gateDecision !== "approve" && run.pid !== undefined && isPidAlive(run.pid);
   if (runLive && run?.pid !== undefined && isStalled(run.activityMs, now, config.stallTimeoutMs)) {
     return {
       reason: "stalled",
@@ -185,7 +186,7 @@ function pendingFailure(job: ObservedJob, config: LoadedKilnConfig, options: Rec
   }
   if (runLive) return undefined;
 
-  if (run && (run.status === "dead" || (run.status === "alive" && run.pid !== undefined && !pidAlive(run.pid)))) {
+  if (run && (run.status === "dead" || (run.status === "alive" && run.pid !== undefined && !isPidAlive(run.pid)))) {
     return options.startup
       ? { reason: "orphaned", runId: run.runId, pid: run.pid, detail: "process gone at startup" }
       : { reason: "crashed", runId: run.runId, pid: run.pid, detail: "process exited" };
@@ -338,10 +339,27 @@ function git(cwd: string, args: string[]): { status: number; stdout: string } {
 }
 
 const PROTECTED = new Set([process.pid, process.ppid].filter((pid) => Number.isInteger(pid) && pid > 1));
+const KILL_WAIT_MS = 2_000;
+const KILL_POLL_MS = 20;
 
-/** Kill `pid` and its children. Returns true when the pid is gone or a zombie. */
+/**
+ * Kill `pid` and its children. Returns true once the pid is gone or a zombie.
+ * SIGKILL is not instant: a single check can still see the old state, and a
+ * zombie answers `kill(pid, 0)` until it is reaped, so this polls.
+ */
 export function killTree(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 1 || PROTECTED.has(pid)) return false;
+  const deadline = Date.now() + KILL_WAIT_MS;
+  do {
+    signalTree(pid);
+    if (!isPidAlive(pid)) return true;
+    sleepMs(KILL_POLL_MS);
+  } while (Date.now() < deadline);
+  signalTree(pid);
+  return !isPidAlive(pid);
+}
+
+function signalTree(pid: number): void {
   const victims = new Set<number>();
   const stack = [pid];
   while (stack.length > 0) {
@@ -353,20 +371,38 @@ export function killTree(pid: number): boolean {
   const group = processGroup(pid);
   if (group === pid && !PROTECTED.has(group)) signal(-pid, "SIGKILL");
   for (const victim of victims) signal(victim, "SIGKILL");
-  return pidGone(pid);
 }
 
 function childPids(pid: number): number[] {
   try {
     const text = readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim();
-    if (!text) return [];
-    return text
-      .split(/\s+/)
-      .map((part) => Number(part))
-      .filter((child) => Number.isInteger(child) && child > 1);
+    if (text) {
+      return text
+        .split(/\s+/)
+        .map((part) => Number(part))
+        .filter((child) => Number.isInteger(child) && child > 1);
+    }
+  } catch {
+    // Fall through to a PPid scan. Some kernels leave `children` empty.
+  }
+  return childrenByPpid(pid);
+}
+
+function childrenByPpid(parent: number): number[] {
+  let entries: string[];
+  try {
+    entries = readdirSync("/proc");
   } catch {
     return [];
   }
+  const found: number[] = [];
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const child = Number(entry);
+    if (child <= 1 || child === parent) continue;
+    if (Number(statusValue(child, "PPid")) === parent) found.push(child);
+  }
+  return found;
 }
 
 function processGroup(pid: number): number | undefined {
@@ -376,7 +412,17 @@ function processGroup(pid: number): number | undefined {
 }
 
 function procState(pid: number): string | undefined {
-  return procFields(pid)?.[0];
+  return procFields(pid)?.[0] ?? statusValue(pid, "State")?.slice(0, 1);
+}
+
+function statusValue(pid: number, key: string): string | undefined {
+  try {
+    const text = readFileSync(`/proc/${pid}/status`, "utf8");
+    const line = text.split("\n").find((entry) => entry.startsWith(`${key}:`));
+    return line?.slice(key.length + 1).trim();
+  } catch {
+    return undefined;
+  }
 }
 
 /** Fields of `/proc/pid/stat` after the comm, starting at `state`. */
@@ -399,20 +445,24 @@ function signal(pid: number, sig: NodeJS.Signals): void {
   }
 }
 
-function pidAlive(pid: number): boolean {
+/**
+ * True when `pid` is still running. A zombie is not alive: `kill(pid, 0)`
+ * succeeds until the parent reaps it, which would keep a killed run in flight.
+ * EPERM means the pid exists and we cannot inspect it, so it still counts.
+ */
+export function isPidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
-    return true;
   } catch (error) {
     return isErrno(error, "EPERM");
   }
+  const state = procState(pid);
+  return state !== "Z" && state !== "X";
 }
 
-function pidGone(pid: number): boolean {
-  if (!pidAlive(pid)) return true;
-  const state = procState(pid);
-  return state === "Z" || state === "X";
+function sleepMs(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 function isErrno(error: unknown, code: string): boolean {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -9,7 +9,7 @@ import { readStatus, runStatus, runTick, startupRecovery } from "../src/driver.j
 import { KilnConfigError } from "../src/errors.js";
 import { writeJob } from "../src/jobs.js";
 import { packageRoot } from "../src/paths.js";
-import { isStalled, readAttemptLedger, RETRY_BASE_MS, retryDelayMs, MAX_RETRY_BACKOFF_MS } from "../src/reliability.js";
+import { isPidAlive, isStalled, readAttemptLedger, RETRY_BASE_MS, retryDelayMs, MAX_RETRY_BACKOFF_MS } from "../src/reliability.js";
 import { DEFAULT_MAX_ATTEMPTS, DEFAULT_STALL_TIMEOUT_MS } from "../src/schemas.js";
 
 const root = packageRoot();
@@ -77,6 +77,16 @@ function journal(checkout: string, runId: string, lines: unknown[]): void {
   const dir = join(checkout, ".runs", runId);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "journal.jsonl"), `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+}
+
+function pidNote(pid: number): string {
+  let stat = "missing";
+  try {
+    stat = readFileSync(`/proc/${pid}/stat`, "utf8").trim();
+  } catch (error) {
+    stat = error instanceof Error ? error.message : String(error);
+  }
+  return `pid ${pid} stat=${stat}`;
 }
 
 function killGroup(pid: number | undefined): void {
@@ -192,9 +202,16 @@ describe("run reliability", () => {
       { t: "run.started", at: stale, runId, tag: `kiln:${id}`, pid: tree.parentPid },
       { t: "step.started", at: stale, stepId: "build", pid: tree.parentPid },
     ]);
+    const journalPath = join(checkout, ".runs", runId, "journal.jsonl");
+    const staleDate = new Date(stale);
+    utimesSync(journalPath, staleDate, staleDate);
     const now = new Date();
     const first = runTick(config, undefined, { startup: true, now });
-    assert.match(first, new RegExp(`stall ${id}  stalled  attempt 1`));
+    assert.match(
+      first,
+      new RegExp(`stall ${id}  stalled  attempt 1`),
+      `${first}\nalive=${isPidAlive(tree.parentPid)} eventStale=${isStalled(Date.parse(stale), now.getTime(), 1000)}\n${pidNote(tree.parentPid)}\n${readFileSync(journalPath, "utf8")}`,
+    );
     assert.doesNotMatch(first, new RegExp(`retry ${id}`));
     await waitForExit(tree.parent);
     assert.equal(existsSync(`/proc/${tree.childPid}`), false);
