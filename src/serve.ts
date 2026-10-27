@@ -1,14 +1,19 @@
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
-import type { LoadedKilnConfig } from "./config.js";
+import { loadKilnConfig, type LoadedKilnConfig } from "./config.js";
 import { answerJob, readStatus, retryJob, runTick, startupRecovery } from "./driver.js";
+import { browse } from "./fs-browse.js";
 import { defaultHost } from "./host.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
+import { intakeJobs } from "./intake-http.js";
 import { packageRoot } from "./paths.js";
 import { SANDBOX_PREFLIGHT_PREFIX } from "./sandbox.js";
 import type { StatusJobView } from "./report.js";
-import { renderConsole, renderMessagePage, renderTextPage } from "./serve-page.js";
+import { renderConsole, type ServePageOptions, renderMessagePage, renderTextPage } from "./serve-page.js";
+import { listWorkflowNames } from "./workflow.js";
 
 export interface ServeOptions {
   config: LoadedKilnConfig;
@@ -22,6 +27,20 @@ const BODY_LIMIT = 65_536;
 const TEXT_LIMIT = 100_000;
 const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+interface LiveConfig {
+  config: LoadedKilnConfig;
+  secrets: string[];
+  /** Set while the file on disk fails to load. The last good config stays in `config`. */
+  configError?: string;
+  mtimeMs: number;
+  size: number;
+}
+
+interface ServeRepo {
+  name: string;
+  path: string;
+}
+
 /**
  * Local UI over the same derived job view as `kiln status`.
  * Listens on 127.0.0.1 only. Resolves when the process is signalled.
@@ -29,15 +48,16 @@ const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 export function startServe(options: ServeOptions): Promise<void> {
   startupRecovery(options.config);
   const css = loadServeCss();
-  const secrets = secretValues(options.config);
+  const csrf = randomBytes(32).toString("hex");
+  const state = openLiveConfig(options.config);
   let port = options.port;
 
   return new Promise((resolvePromise, reject) => {
     const server = createServer((req, res) => {
-      void handle(req, res, options.config, () => port, css, secrets).catch((error: unknown) => {
+      void handle(req, res, state, () => port, css, csrf).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         const status = statusCode(error) ?? 500;
-        sendJson(res, status, { error: redact(message, secrets) }, secrets);
+        sendJson(res, status, { error: redact(message, state.secrets) }, state.secrets);
       });
     });
 
@@ -69,7 +89,8 @@ export function startServe(options: ServeOptions): Promise<void> {
       if (options.tickSeconds === undefined) return;
       const tick = (): void => {
         if (stopped) return;
-        safeTick(options.config, secrets, false);
+        refreshLiveConfig(state);
+        safeTick(state.config, state.secrets, false);
       };
       firstTick = setTimeout(tick, 0);
       timer = setInterval(tick, options.tickSeconds * 1000);
@@ -102,11 +123,14 @@ function safeTick(config: LoadedKilnConfig, secrets: string[], startup: boolean)
 async function handle(
   req: IncomingMessage,
   res: ServerResponse,
-  config: LoadedKilnConfig,
+  state: LiveConfig,
   boundPort: () => number,
   css: string,
-  secrets: string[],
+  csrf: string,
 ): Promise<void> {
+  refreshLiveConfig(state);
+  const config = state.config;
+  const secrets = state.secrets;
   const method = req.method ?? "GET";
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const path = url.pathname;
@@ -117,10 +141,32 @@ async function handle(
     return;
   }
 
-  if (method === "POST") {
-    await drain(req);
+  if (method === "GET" && path === "/api/fs") {
     if (!originAllowed(req, boundPort())) {
       sendJson(res, 403, { error: "Cross-origin request rejected." }, secrets);
+      return;
+    }
+    try {
+      sendJson(res, 200, browse(homedir(), url.searchParams.get("path") ?? undefined), secrets);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(res, statusCode(error) ?? 500, { error: message }, secrets);
+    }
+    return;
+  }
+
+  if (method === "POST") {
+    const raw = await readBody(req);
+    if (!originAllowed(req, boundPort())) {
+      sendJson(res, 403, { error: "Cross-origin request rejected." }, secrets);
+      return;
+    }
+    if (!csrfOk(csrf, req, raw)) {
+      sendJson(res, 403, { error: "CSRF token rejected." }, secrets);
+      return;
+    }
+    if (path === "/api/jobs") {
+      await createJob(req, res, state, raw);
       return;
     }
     const action = /^\/api\/jobs\/([^/]+)\/(approve|reject|retry)$/.exec(path);
@@ -147,11 +193,11 @@ async function handle(
   }
 
   if (path === "/" || path === "" || path === "/board") {
-    sendHtml(res, 200, renderConsole(css, readStatus(config).attention), secrets);
+    sendHtml(res, 200, renderConsole(css, readStatus(config).attention, pageOptions(state, csrf)), secrets);
     return;
   }
-  if (path === "/api/jobs") {
-    sendJson(res, 200, readStatus(config), secrets);
+  if (path === "/api/jobs" || path === "/api/status") {
+    sendJson(res, 200, statusDocument(state), secrets);
     return;
   }
 
@@ -283,18 +329,27 @@ function findJob(config: LoadedKilnConfig, jobId: string): StatusJobView | undef
 }
 
 /**
+ * Host must be localhost or 127.0.0.1 on the bound port.
  * Browsers send Origin on POST. A cross-site page cannot use this server:
- * the header has to be exactly `http://127.0.0.1:<bound port>`.
+ * Origin, when present, has to be `http://127.0.0.1:<port>` or `http://localhost:<port>`.
  * Curl and other non-browser clients omit Origin and are allowed.
  * `Sec-Fetch-Site: cross-site` is rejected even when Origin is absent.
  */
 export function originAllowed(req: IncomingMessage, port: number): boolean {
+  if (!hostAllowed(req, port)) return false;
   const fetchSite = req.headers["sec-fetch-site"];
   if (fetchSite === "cross-site") return false;
   const origin = req.headers.origin;
   if (Array.isArray(origin)) return false;
   if (origin === undefined) return true;
-  return origin === `http://127.0.0.1:${port}`;
+  return origin === `http://127.0.0.1:${port}` || origin === `http://localhost:${port}`;
+}
+
+function hostAllowed(req: IncomingMessage, port: number): boolean {
+  const host = req.headers.host;
+  if (typeof host !== "string") return false;
+  const value = host.trim().toLowerCase();
+  return value === `127.0.0.1:${port}` || value === `localhost:${port}`;
 }
 
 function redirectTarget(req: IncomingMessage): string {
@@ -352,16 +407,153 @@ function readInside(kilnDir: string, target: string): string | undefined {
   return `showing the last ${TEXT_LIMIT} characters\n\n${text.slice(text.length - TEXT_LIMIT)}`;
 }
 
-async function drain(req: IncomingMessage): Promise<void> {
+async function readBody(req: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
-    size += chunk.length;
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buf.length;
     if (size > BODY_LIMIT) {
       const error = new Error("Request body is too large.");
       (error as { statusCode?: number }).statusCode = 413;
       throw error;
     }
+    chunks.push(buf);
   }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function csrfOk(expected: string, req: IncomingMessage, body: string): boolean {
+  const header = req.headers["x-kiln-csrf"];
+  const fromHeader = typeof header === "string" ? header : undefined;
+  let fromForm: string | undefined;
+  if (headerValue(req.headers["content-type"]).includes("application/x-www-form-urlencoded")) {
+    fromForm = new URLSearchParams(body).get("csrf") ?? undefined;
+  }
+  const provided = fromHeader || fromForm;
+  if (!provided) return false;
+  const left = Buffer.from(expected);
+  const right = Buffer.from(provided);
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
+
+async function createJob(req: IncomingMessage, res: ServerResponse, state: LiveConfig, raw: string): Promise<void> {
+  const secrets = state.secrets;
+  if (!headerValue(req.headers["content-type"]).includes("application/json")) {
+    sendJson(res, 400, { error: "Content-Type must be application/json." }, secrets);
+    return;
+  }
+  let parsed: unknown;
+  if (!raw.trim()) {
+    sendJson(res, 400, { error: "Request body must be a JSON object." }, secrets);
+    return;
+  }
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    sendJson(res, 400, { error: "Request body is not JSON." }, secrets);
+    return;
+  }
+  try {
+    const result = await intakeJobs(state.config, parsed);
+    sendJson(res, 200, result, state.secrets);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendJson(res, statusCode(error) ?? 400, { error: message }, state.secrets);
+  }
+}
+
+function openLiveConfig(config: LoadedKilnConfig): LiveConfig {
+  const file = fileStamp(config.configPath);
+  return {
+    config,
+    secrets: secretValues(config),
+    mtimeMs: file?.mtimeMs ?? 0,
+    size: file?.size ?? -1,
+  };
+}
+
+/**
+ * Re-read the kiln config when the file's mtime or size changed.
+ * A file that does not parse keeps the last good config and records `configError`.
+ * The failed stamp is not stored, so the next request tries again.
+ */
+function refreshLiveConfig(state: LiveConfig): void {
+  const path = state.config.configPath;
+  const file = fileStamp(path);
+  if (!file) {
+    state.configError = redact(
+      `Could not read kiln config ${path}: the file is missing.`,
+      redactSecrets(state, path),
+    );
+    return;
+  }
+  if (file.mtimeMs === state.mtimeMs && file.size === state.size) return;
+  try {
+    const next = loadKilnConfig(path);
+    state.config = next;
+    state.secrets = secretValues(next);
+    state.configError = undefined;
+    state.mtimeMs = file.mtimeMs;
+    state.size = file.size;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const named = message.includes(path) ? message : `${path}: ${message}`;
+    state.configError = redact(named, redactSecrets(state, path));
+  }
+}
+
+function fileStamp(path: string): { mtimeMs: number; size: number } | undefined {
+  try {
+    const stat = statSync(path);
+    return { mtimeMs: stat.mtimeMs, size: stat.size };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Last good secrets, plus a token sitting in a file that failed to load. */
+function redactSecrets(state: LiveConfig, configPath: string): string[] {
+  const secrets = [...state.secrets];
+  const disk = tokenFromDisk(configPath);
+  if (disk && !secrets.includes(disk)) secrets.push(disk);
+  return secrets;
+}
+
+function tokenFromDisk(configPath: string): string | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, "utf8")) as { jira?: { apiToken?: unknown } };
+    const token = parsed.jira?.apiToken;
+    if (typeof token !== "string") return undefined;
+    const trimmed = token.trim();
+    return trimmed.length >= 8 ? trimmed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function repoList(config: LoadedKilnConfig): ServeRepo[] {
+  return Object.entries(config.repos)
+    .map(([name, repo]) => ({ name, path: repo.path }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function pageOptions(state: LiveConfig, csrf: string): ServePageOptions {
+  return {
+    csrf,
+    repos: repoList(state.config),
+    workflows: listWorkflowNames(),
+    ...(state.configError ? { configError: state.configError } : {}),
+  };
+}
+
+function statusDocument(state: LiveConfig): unknown {
+  return {
+    ...readStatus(state.config),
+    repos: repoList(state.config),
+    configError: state.configError ?? null,
+  };
 }
 
 function statusCode(error: unknown): number | undefined {

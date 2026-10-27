@@ -48,9 +48,22 @@ interface ImportRow {
   jobId?: string;
 }
 
+export interface ImportTicketRow {
+  status: "new" | "unchanged";
+  label: string;
+  title: string;
+  workflow: string;
+  /** Ticket labels this row waits on, in file order. */
+  dependsOn: string[];
+  jobId?: string;
+}
+
 export interface ImportTicketsResult {
   report: string;
   warnings: string[];
+  /** Ids written by this call. Empty on dry-run. Unchanged jobs are omitted. */
+  ids: string[];
+  jobs: ImportTicketRow[];
 }
 
 /**
@@ -185,9 +198,19 @@ export function importTickets(config: LoadedKilnConfig, input: ImportTicketsInpu
     }
   }
 
+  const jobs: ImportTicketRow[] = rows.map((row) => ({
+    status: row.status,
+    label: row.label,
+    title: row.title,
+    workflow: row.workflow,
+    dependsOn: row.depLabels,
+    ...(row.jobId ? { jobId: row.jobId } : {}),
+  }));
   return {
     report: renderImport(dirAbs, input.repo, rows, input.dryRun),
     warnings,
+    ids: input.dryRun ? [] : writes.map((write) => write.id),
+    jobs,
   };
 }
 

@@ -6,6 +6,19 @@ import { feedbackRoundLabel } from "./feedback.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import { packageRoot } from "./paths.js";
 import type { StatusJobView } from "./report.js";
+import { listWorkflowNames } from "./workflow.js";
+
+export interface ServeRepoOption {
+  name: string;
+  path: string;
+}
+
+export interface ServePageOptions {
+  csrf: string;
+  repos: ServeRepoOption[];
+  workflows: string[];
+  configError?: string;
+}
 
 const REVIEWERS = [
   ["security", "sec"],
@@ -27,7 +40,8 @@ function kilnVersion(): string {
 
 const VERSION = kilnVersion();
 
-export function renderConsole(css: string, attention: AttentionView): string {
+export function renderConsole(css: string, attention: AttentionView, page?: ServePageOptions): string {
+  const intake = page ?? { csrf: "", repos: [], workflows: listWorkflowNames() };
   const items = [...attention.needsYou, ...attention.inFlight, ...attention.doneRecently];
   const stages = stagesFor(items.map((item) => item.job));
   const grouped = new Map<string, AttentionItem[]>();
@@ -51,11 +65,13 @@ export function renderConsole(css: string, attention: AttentionView): string {
 <div class="brand"><span class="logo" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12V6l5-3 5 3v6l-5 3-5-3z"/><path d="M3 6l5 3 5-3M8 9v6"/></svg></span><h1>Kiln</h1>${version}</div>
 <div class="status" id="status">${items.length === 1 ? "1 job" : `${items.length} jobs`}</div>
 </header>
+<p class="meta config-error" id="config-error" role="status"${intake.configError ? "" : " hidden"}>${escapeHtml(intake.configError ?? "")}</p>
 <nav class="repos" aria-label="Filter by repo">${chips}</nav>
 <main class="board" id="board" style="--cols: ${tracks}">
 ${columns}
 </main>
 <nav class="toolbar" aria-label="Kiln commands">
+<button class="tool" type="button" id="add-job" data-tip="Add job" aria-label="Add job"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
 <button class="tool" type="button" data-act="approve" data-tip="Approve" aria-label="Approve"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></button>
 <button class="tool" type="button" data-act="retry" data-tip="Retry" aria-label="Retry"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></svg></button>
 <button class="tool" type="button" data-act="pr" data-tip="Open pull request" aria-label="Open pull request"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5v7M18 15.5V10a3 3 0 0 0-3-3h-3"/></svg></button>
@@ -65,13 +81,15 @@ ${columns}
 </nav>
 <div class="scrim" data-close></div>
 <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Job">
-${items.map((item) => sheet(item)).join("\n")}
+${intakeSheet(intake, items)}
+${items.map((item) => sheet(item, intake.csrf)).join("\n")}
 </aside>`;
   return document({
     css,
     title: `(${attention.needsYouCount}) Kiln`,
     needsYou: attention.needsYouCount,
     revision: attention.revision,
+    csrf: intake.csrf,
     live: true,
     body,
   });
@@ -141,7 +159,67 @@ ${dependsHtml(job)}
 </div>`;
 }
 
-function sheet(item: AttentionItem): string {
+function intakeSheet(intake: ServePageOptions, items: AttentionItem[]): string {
+  return `<section class="sheet intake" id="intake" aria-label="Add job" hidden>
+<div class="d-head">
+<div class="num">kiln add</div>
+<h3>Add job</h3>
+<button type="button" class="close" data-close aria-label="Close">×</button>
+</div>
+<form id="add-form" class="intake-form">
+<div class="field"><span class="k">Repo</span><div class="picks" id="repo-pick">${repoButtons(intake.repos)}</div></div>
+<label class="field"><span class="k">Workflow</span><select id="workflow" name="workflow">${workflowOptions(intake.workflows)}</select></label>
+<div class="seg" role="tablist" aria-label="Source">
+<button type="button" data-source="prompt" aria-pressed="true">Prompt</button>
+<button type="button" data-source="spec" aria-pressed="false">Spec file</button>
+<button type="button" data-source="tickets" aria-pressed="false">Tickets folder</button>
+<button type="button" data-source="jira" aria-pressed="false">Jira</button>
+</div>
+<div data-pane="prompt"><label class="field"><span class="k">Prompt</span><textarea id="prompt-text" rows="4" placeholder="What should this job do?"></textarea></label></div>
+<div id="browser-field" hidden>
+<div class="k" id="browser-label">Spec file</div>
+<div class="fs" id="browser"></div>
+<p class="meta" id="picked"></p>
+</div>
+<div data-pane="jira" hidden><label class="field"><span class="k">Jira key</span><input id="jira-key" type="text" placeholder="PROJ-123" autocomplete="off" spellcheck="false"></label></div>
+<label class="field" id="title-field"><span class="k">Title</span><input id="job-title" type="text" autocomplete="off"></label>
+<fieldset class="field" id="after-field"><legend class="k">After</legend><div id="after-list">${afterOptions(items)}</div></fieldset>
+<pre class="text preview" id="intake-preview" hidden></pre>
+<p class="form-error" id="intake-error" role="alert" hidden></p>
+<div class="d-actions"><button type="button" id="preview-job" hidden>Preview</button><button type="submit">Add</button></div>
+</form>
+</section>`;
+}
+
+function repoButtons(repos: ServeRepoOption[]): string {
+  if (repos.length === 0) return `<p class="empty">No repos are registered.</p>`;
+  return repos
+    .map(
+      (repo, index) =>
+        `<button type="button" class="pick" data-repo="${escapeHtml(repo.name)}" data-path="${escapeHtml(repo.path)}" aria-pressed="${index === 0 ? "true" : "false"}">${escapeHtml(repo.name)}</button>`,
+    )
+    .join("");
+}
+
+function workflowOptions(names: string[]): string {
+  if (names.length === 0) return `<option value="">none</option>`;
+  return names
+    .map((name) => `<option value="${escapeHtml(name)}"${name === "feature" ? " selected" : ""}>${escapeHtml(name)}</option>`)
+    .join("");
+}
+
+function afterOptions(items: AttentionItem[]): string {
+  const open = items.filter((item) => item.job.state !== "done");
+  if (open.length === 0) return `<p class="empty">No open jobs.</p>`;
+  return open
+    .map((item) => {
+      const job = item.job;
+      return `<label class="after"><input type="checkbox" name="after" value="${escapeHtml(job.jobId)}"><span class="num">${escapeHtml(job.jobId)}</span><span>${escapeHtml(job.title || job.jobId)}</span></label>`;
+    })
+    .join("");
+}
+
+function sheet(item: AttentionItem, csrf: string): string {
   const job = item.job;
   const files = displayFiles(job);
   const round = lastRound(job);
@@ -155,7 +233,7 @@ function sheet(item: AttentionItem): string {
 ${branch ? `<div class="branch">${escapeHtml(branch)}</div>` : ""}
 ${sandboxHtml(job)}
 ${prLink(job)}
-${actionsHtml(item)}
+${actionsHtml(item, csrf)}
 <button type="button" class="close" data-close aria-label="Close">×</button>
 </div>
 <div class="d-body">${filesNav(files, job)}</div>
@@ -189,17 +267,18 @@ function routeLinks(job: StatusJobView): string {
   return `<div class="group">Open</div>${links.join("")}`;
 }
 
-function actionsHtml(item: AttentionItem): string {
+function actionsHtml(item: AttentionItem, csrf: string): string {
   const id = encodeURIComponent(item.job.jobId);
+  const token = `<input type="hidden" name="csrf" value="${escapeHtml(csrf)}">`;
   const forms: string[] = [];
   if (item.job.canApprove) {
-    forms.push(`<form method="post" action="/api/jobs/${id}/approve" class="act approve"><button type="submit">Approve</button></form>`);
+    forms.push(`<form method="post" action="/api/jobs/${id}/approve" class="act approve">${token}<button type="submit">Approve</button></form>`);
   }
   if (item.job.canReject) {
-    forms.push(`<form method="post" action="/api/jobs/${id}/reject" class="act reject"><button type="submit">Reject</button></form>`);
+    forms.push(`<form method="post" action="/api/jobs/${id}/reject" class="act reject">${token}<button type="submit">Reject</button></form>`);
   }
   if (item.retry) {
-    forms.push(`<form method="post" action="/api/jobs/${id}/retry" class="act retry"><button type="submit">Retry</button></form>`);
+    forms.push(`<form method="post" action="/api/jobs/${id}/retry" class="act retry">${token}<button type="submit">Retry</button></form>`);
   }
   if (forms.length === 0) return "";
   return `<div class="d-actions">${forms.join("")}</div>`;
@@ -346,6 +425,7 @@ function document(options: {
   title: string;
   needsYou: number;
   revision: string;
+  csrf?: string;
   live: boolean;
   body: string;
 }): string {
@@ -360,7 +440,7 @@ function document(options: {
 ${options.css}
 </style>
 </head>
-<body data-needs-you="${options.needsYou}" data-revision="${escapeHtml(options.revision)}">
+<body data-needs-you="${options.needsYou}" data-revision="${escapeHtml(options.revision)}" data-csrf="${escapeHtml(options.csrf ?? "")}">
 ${options.body}
 ${options.live ? `<script>\n${LIVE_SCRIPT}\n</script>` : ""}
 </body>

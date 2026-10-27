@@ -188,6 +188,12 @@ async function text(url: string, init?: RequestInit): Promise<{ status: number; 
   return { status: response.status, body: await response.text() };
 }
 
+function csrfFrom(html: string): string {
+  const match = html.match(/data-csrf="([a-f0-9]+)"/);
+  assert.ok(match?.[1], "page is missing a csrf token");
+  return match[1];
+}
+
 function viewJob(overrides: Partial<StatusJobView> & Pick<StatusJobView, "jobId" | "state">): StatusJobView {
   return {
     title: overrides.jobId,
@@ -478,9 +484,17 @@ describe("kiln serve", () => {
       assert.equal(retryDenied.status, 403);
       assert.match(retryDenied.body, /Cross-origin request rejected/);
 
-      const missing = await text(`${server.url}/api/jobs/job-1/approve`, {
+      const csrf = csrfFrom(homePage.body);
+      const noToken = await text(`${server.url}/api/jobs/job-1/approve`, {
         method: "POST",
         headers: { Origin: server.url, Accept: "application/json" },
+      });
+      assert.equal(noToken.status, 403);
+      assert.match(noToken.body, /CSRF token rejected/);
+
+      const missing = await text(`${server.url}/api/jobs/job-1/approve`, {
+        method: "POST",
+        headers: { Origin: server.url, Accept: "application/json", "X-Kiln-CSRF": csrf },
       });
       assert.equal(missing.status, 404);
     } finally {
@@ -569,7 +583,7 @@ describe("kiln serve", () => {
 
       const approved = await text(`${server.url}/api/jobs/${upstream}/approve`, {
         method: "POST",
-        headers: { Origin: server.url, Accept: "application/json" },
+        headers: { Origin: server.url, Accept: "application/json", "X-Kiln-CSRF": csrfFrom(inbox.body) },
       });
       assert.equal(approved.status, 200, approved.body);
       const body = JSON.parse(approved.body) as { ok: boolean; job: { state: string } };
@@ -588,6 +602,7 @@ describe("kiln serve", () => {
         method: "POST",
         redirect: "manual",
         headers: { Origin: server.url, "Content-Type": "application/x-www-form-urlencoded" },
+        body: `csrf=${encodeURIComponent(csrfFrom(inbox.body))}`,
       });
       assert.equal(again.status, 409);
       assert.match(again.body, /<!DOCTYPE html>/);
@@ -725,7 +740,7 @@ describe("kiln serve", () => {
 
         const retried = await text(`${server.url}/api/jobs/${id}/retry`, {
           method: "POST",
-          headers: { Origin: server.url, Accept: "application/json" },
+          headers: { Origin: server.url, Accept: "application/json", "X-Kiln-CSRF": csrfFrom(html.body) },
         });
         assert.equal(retried.status, 200, retried.body);
         const start = Date.now();

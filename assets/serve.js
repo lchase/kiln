@@ -248,9 +248,304 @@
     }
   }
 
+  var titleDirty = false;
+  var sourceKind = "prompt";
+  var specPath = "";
+  var ticketsDir = "";
+  var fsPath = "";
+  var sending = false;
+  var FS_KEY = "kiln-fs-dir";
+
+  function selectedRepo() {
+    var pressed = document.querySelector("#repo-pick .pick[aria-pressed='true']");
+    return pressed ? pressed.getAttribute("data-repo") || "" : "";
+  }
+
+  function intakeRepoPath() {
+    var pressed = document.querySelector("#repo-pick .pick[aria-pressed='true']");
+    return pressed ? pressed.getAttribute("data-path") || "" : "";
+  }
+
+  function showIntakeError(message) {
+    var el = document.getElementById("intake-error");
+    if (!el) return;
+    el.hidden = !message;
+    el.textContent = message || "";
+  }
+
+  function titleFromPrompt(text) {
+    var lines = String(text).split(/\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line) continue;
+      if (line.length <= 80) return line;
+      return line.slice(0, 77) + "...";
+    }
+    return "";
+  }
+
+  function titleFromMarkdown(text) {
+    var lines = String(text).split(/\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var match = /^#\s+(.+?)\s*$/.exec(lines[i]);
+      if (match) return match[1];
+    }
+    return "";
+  }
+
+  function setPicked(text) {
+    var el = document.getElementById("picked");
+    if (el) el.textContent = text || "";
+  }
+
+  function renderListing(data) {
+    fsPath = data.path || "";
+    try { localStorage.setItem(FS_KEY, fsPath); } catch (err) { /* private mode */ }
+    var host = document.getElementById("browser");
+    if (!host) return;
+    var html = '<div class="branch">' + esc(fsPath) + "</div>";
+    if (data.parent) html += '<button type="button" class="fs-up" data-path="' + esc(data.parent) + '">Up</button>';
+    var entries = data.entries || [];
+    html += '<div class="fs-list">';
+    if (!entries.length) html += '<div class="empty">Nothing here.</div>';
+    for (var i = 0; i < entries.length; i++) {
+      var entry = entries[i];
+      html += '<button type="button" class="fs-item" data-kind="' + esc(entry.kind) + '" data-path="' + esc(entry.path) + '">' + esc(entry.name) + "</button>";
+    }
+    html += "</div>";
+    if (sourceKind === "tickets") html += '<button type="button" class="fs-use" data-path="' + esc(fsPath) + '">Use this folder</button>';
+    host.innerHTML = html;
+    if (sourceKind === "tickets") setPicked(fsPath);
+  }
+
+  function chooseSpec(data) {
+    specPath = data.path || "";
+    setPicked(specPath);
+    if (!titleDirty) {
+      var heading = titleFromMarkdown(data.preview || "");
+      var input = document.getElementById("job-title");
+      if (input && heading) input.value = heading;
+    }
+  }
+
+  function loadFs(path, fallback) {
+    var query = path ? "?path=" + encodeURIComponent(path) : "";
+    fetch("/api/fs" + query, { cache: "no-store", headers: { Accept: "application/json" } })
+      .then(function (response) {
+        return response.json().then(function (data) { return { ok: response.ok, data: data }; });
+      })
+      .then(function (result) {
+        if (!result.ok) {
+          if (fallback && path) {
+            loadFs("", false);
+            return;
+          }
+          showIntakeError((result.data && result.data.error) || "Could not list that directory.");
+          return;
+        }
+        showIntakeError("");
+        if (result.data.kind === "file") chooseSpec(result.data);
+        else renderListing(result.data);
+      })
+      .catch(function () { showIntakeError("Could not list that directory."); });
+  }
+
+  function openBrowser() {
+    var start = "";
+    try { start = localStorage.getItem(FS_KEY) || ""; } catch (err) { start = ""; }
+    if (!start) start = intakeRepoPath();
+    loadFs(start, true);
+  }
+
+  function setSource(kind) {
+    sourceKind = kind || "prompt";
+    var buttons = document.querySelectorAll("#add-form [data-source]");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].setAttribute("aria-pressed", buttons[i].getAttribute("data-source") === sourceKind ? "true" : "false");
+    }
+    var panes = document.querySelectorAll("#add-form [data-pane]");
+    for (var j = 0; j < panes.length; j++) panes[j].hidden = panes[j].getAttribute("data-pane") !== sourceKind;
+    var browserField = document.getElementById("browser-field");
+    if (browserField) browserField.hidden = sourceKind !== "spec" && sourceKind !== "tickets";
+    var label = document.getElementById("browser-label");
+    if (label) label.textContent = sourceKind === "tickets" ? "Tickets folder" : "Spec file";
+    var titleField = document.getElementById("title-field");
+    var afterField = document.getElementById("after-field");
+    var preview = document.getElementById("preview-job");
+    if (titleField) titleField.hidden = sourceKind === "tickets";
+    if (afterField) afterField.hidden = sourceKind === "tickets";
+    if (preview) preview.hidden = sourceKind !== "tickets";
+    var pre = document.getElementById("intake-preview");
+    if (pre) { pre.hidden = true; pre.textContent = ""; }
+    showIntakeError("");
+    if (sourceKind === "prompt" && !titleDirty) {
+      var promptBox = document.getElementById("prompt-text");
+      var title = document.getElementById("job-title");
+      if (promptBox && title) title.value = titleFromPrompt(promptBox.value);
+    }
+    if (sourceKind === "spec" || sourceKind === "tickets") openBrowser();
+  }
+
+  function openIntake() {
+    var sheets = document.querySelectorAll(".sheet");
+    for (var i = 0; i < sheets.length; i++) sheets[i].hidden = sheets[i].id !== "intake";
+    body.classList.add("open");
+    try { localStorage.removeItem("kiln-drawer"); } catch (err) { /* private mode */ }
+    setSource(sourceKind || "prompt");
+  }
+
+  function sourceBody() {
+    if (sourceKind === "prompt") {
+      var promptBox = document.getElementById("prompt-text");
+      return { kind: "prompt", text: promptBox ? promptBox.value : "" };
+    }
+    if (sourceKind === "spec") return { kind: "spec", path: specPath };
+    if (sourceKind === "tickets") return { kind: "tickets", dir: ticketsDir || fsPath };
+    var key = document.getElementById("jira-key");
+    return { kind: "jira", key: key ? key.value.trim() : "" };
+  }
+
+  function submitIntake(dryRun) {
+    if (sending) return;
+    var repo = selectedRepo();
+    var workflow = document.getElementById("workflow");
+    var source = sourceBody();
+    if (!repo) { showIntakeError("Name a repo."); return; }
+    if (source.kind === "prompt" && !String(source.text || "").trim()) { showIntakeError("Prompt is empty."); return; }
+    if (source.kind === "spec" && !source.path) { showIntakeError("Choose a spec file."); return; }
+    if (source.kind === "tickets" && !source.dir) { showIntakeError("Choose a tickets folder."); return; }
+    if (source.kind === "jira" && !source.key) { showIntakeError("Enter a Jira key."); return; }
+    var payload = { repo: repo, workflow: workflow ? workflow.value : "", source: source };
+    if (dryRun) payload.dryRun = true;
+    if (sourceKind !== "tickets") {
+      var title = document.getElementById("job-title");
+      if (title && titleDirty) payload.title = title.value;
+      var checked = document.querySelectorAll("#after-list input:checked");
+      if (checked.length) {
+        payload.after = [];
+        for (var i = 0; i < checked.length; i++) payload.after.push(checked[i].value);
+      }
+    }
+    sending = true;
+    showIntakeError("");
+    fetch("/api/jobs", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Kiln-CSRF": body.getAttribute("data-csrf") || "",
+      },
+      body: JSON.stringify(payload),
+    })
+      .then(function (response) {
+        return response.json().then(function (data) { return { ok: response.ok, data: data }; });
+      })
+      .then(function (result) {
+        sending = false;
+        if (!result.ok) {
+          showIntakeError((result.data && result.data.error) || "Could not add the job.");
+          return;
+        }
+        if (dryRun) {
+          var pre = document.getElementById("intake-preview");
+          if (pre) {
+            pre.hidden = false;
+            pre.textContent = (result.data && result.data.report) || "";
+          }
+          return;
+        }
+        var ids = (result.data && result.data.ids) || [];
+        try { sessionStorage.setItem("kiln-fresh", JSON.stringify(ids)); } catch (err) { /* private mode */ }
+        closeDrawer();
+        location.reload();
+      })
+      .catch(function () {
+        sending = false;
+        showIntakeError("Could not add the job.");
+      });
+  }
+
+  function applyLiveConfig(data) {
+    var el = document.getElementById("config-error");
+    if (el) {
+      if (data && data.configError) {
+        el.hidden = false;
+        el.textContent = data.configError;
+      } else {
+        el.hidden = true;
+        el.textContent = "";
+      }
+    }
+    if (!data || !Array.isArray(data.repos)) return;
+    var box = document.getElementById("repo-pick");
+    if (!box) return;
+    var current = selectedRepo();
+    var still = false;
+    var html = "";
+    if (!data.repos.length) html = '<p class="empty">No repos are registered.</p>';
+    for (var i = 0; i < data.repos.length; i++) {
+      var repo = data.repos[i];
+      if (!repo || !repo.name) continue;
+      if (repo.name === current) still = true;
+    }
+    if (data.repos.length) {
+      html = "";
+      for (var j = 0; j < data.repos.length; j++) {
+        var item = data.repos[j];
+        var pressed = still ? item.name === current : j === 0;
+        html += '<button type="button" class="pick" data-repo="' + esc(item.name) + '" data-path="' + esc(item.path || "") + '" aria-pressed="' + (pressed ? "true" : "false") + '">' + esc(item.name) + "</button>";
+      }
+    }
+    if (box.getAttribute("data-repos") === html) return;
+    box.setAttribute("data-repos", html);
+    box.innerHTML = html;
+  }
+
+  function showFresh() {
+    var raw = null;
+    try { raw = sessionStorage.getItem("kiln-fresh"); } catch (err) { raw = null; }
+    if (!raw) return;
+    try { sessionStorage.removeItem("kiln-fresh"); } catch (err) { /* private mode */ }
+    var ids = [];
+    try { ids = JSON.parse(raw); } catch (err) { return; }
+    if (!ids || !ids.length) return;
+    for (var i = 0; i < ids.length; i++) {
+      var card = document.getElementById("job-" + ids[i]);
+      if (!card) continue;
+      card.classList.add("fresh");
+      if (i === 0 && card.scrollIntoView) card.scrollIntoView({ block: "nearest", inline: "center" });
+    }
+  }
+
   document.addEventListener("click", function (event) {
     var target = event.target;
     if (!target || !target.closest) return;
+    if (target.closest("#add-job")) {
+      openIntake();
+      return;
+    }
+    var sourceBtn = target.closest("#add-form [data-source]");
+    if (sourceBtn) {
+      setSource(sourceBtn.getAttribute("data-source") || "prompt");
+      return;
+    }
+    var pick = target.closest("#repo-pick .pick");
+    if (pick) {
+      var picks = document.querySelectorAll("#repo-pick .pick");
+      for (var p = 0; p < picks.length; p++) picks[p].setAttribute("aria-pressed", picks[p] === pick ? "true" : "false");
+      return;
+    }
+    var fsButton = target.closest(".fs-item, .fs-up, .fs-use");
+    if (fsButton) {
+      var next = fsButton.getAttribute("data-path") || "";
+      if (fsButton.classList.contains("fs-use")) {
+        ticketsDir = next;
+        setPicked(next);
+        return;
+      }
+      loadFs(next, false);
+      return;
+    }
     if (target.closest("#compact")) {
       compact = !compact;
       try { localStorage.setItem("kiln-compact", compact ? "on" : "off"); } catch (err) { /* private mode */ }
@@ -337,6 +632,7 @@
         return response.json();
       })
       .then(function (data) {
+        applyLiveConfig(data);
         var rev = data && data.attention && data.attention.revision;
         var current = body.getAttribute("data-revision");
         if (rev && current && rev !== current) {
@@ -348,6 +644,24 @@
       .catch(function () { stamp(false); });
   }
 
+  var promptBox = document.getElementById("prompt-text");
+  if (promptBox) {
+    promptBox.addEventListener("input", function () {
+      if (titleDirty || sourceKind !== "prompt") return;
+      var input = document.getElementById("job-title");
+      if (input) input.value = titleFromPrompt(promptBox.value);
+    });
+  }
+  var titleInput = document.getElementById("job-title");
+  if (titleInput) titleInput.addEventListener("input", function () { titleDirty = true; });
+  var addForm = document.getElementById("add-form");
+  if (addForm) addForm.addEventListener("submit", function (event) {
+    event.preventDefault();
+    submitIntake(false);
+  });
+  var previewBtn = document.getElementById("preview-job");
+  if (previewBtn) previewBtn.addEventListener("click", function () { submitIntake(true); });
+  showFresh();
   renderCompact();
   notifyLabel();
   applyRepo();
