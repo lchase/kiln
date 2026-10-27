@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/lchase/kiln/compare/kiln-v0.6.0...kiln-v0.6.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* bump @lchase/yak to 0.8.0 so sandbox allowlists reach the proxy ([#27](https://github.com/lchase/kiln/issues/27)) ([14522b3](https://github.com/lchase/kiln/commit/14522b396b94fd2ade01e4ce935774c87f01f992))
+
 ## [0.6.0](https://github.com/lchase/kiln/compare/kiln-v0.5.0...kiln-v0.6.0) (2026-10-27)
 
 
