@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/lchase/kiln/compare/kiln-v0.5.0...kiln-v0.6.0) (2026-10-27)
+
+
+### Features
+
+* run opted-in agent steps in yak's Docker sandbox ([#25](https://github.com/lchase/kiln/issues/25)) ([2049c1a](https://github.com/lchase/kiln/commit/2049c1ab4d0828539364e154744e656f98989a31))
+
 ## [0.5.0](https://github.com/lchase/kiln/compare/kiln-v0.4.0...kiln-v0.5.0) (2026-10-27)
 
 
