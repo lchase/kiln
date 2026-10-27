@@ -8,6 +8,7 @@ import { buildAttention } from "../src/attention.js";
 import { packageRoot } from "../src/paths.js";
 import type { StatusJobView } from "../src/report.js";
 import { renderConsole } from "../src/serve-page.js";
+import { reapLaunches } from "./reap.js";
 
 const root = packageRoot();
 const keep: string[] = [];
@@ -212,10 +213,23 @@ function page(jobs: StatusJobView[]): string {
   return renderConsole("/* kiln-serve */", buildAttention(jobs));
 }
 
-after(() => {
+function exited(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => child.kill("SIGKILL"), 2_000);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+after(async () => {
   for (const child of children) {
-    if (child.exitCode === null) child.kill("SIGKILL");
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
   }
+  await Promise.all(children.map((child) => exited(child)));
+  for (const dir of keep) await reapLaunches(dir);
   for (const dir of keep) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -581,6 +595,7 @@ describe("kiln serve", () => {
       assert.doesNotMatch(again.body, new RegExp(TOKEN));
     } finally {
       await stop(server.child);
+      await reapLaunches(cwd);
     }
   },
   );
@@ -729,6 +744,7 @@ describe("kiln serve", () => {
         assert.match(cli.stderr, /not failed or dead/);
       } finally {
         await stop(server.child);
+        await reapLaunches(cwd);
       }
     },
   );
@@ -764,7 +780,31 @@ describe("kiln serve", () => {
         assert.doesNotMatch(server.output.stderr, /tick: .*Error/);
       } finally {
         await stop(server.child);
+        await reapLaunches(cwd);
       }
     },
   );
+});
+
+describe("reap launches", () => {
+  it("kills a detached writer before the temp dir is removed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiln-reap-"));
+    keep.push(dir);
+    const runDir = join(dir, ".runs", "2026-10-27T00-00-00Z-reap");
+    mkdirSync(runDir, { recursive: true });
+    const child = spawn("bash", ["-c", "while true; do mkdir -p .yak/nested; echo x > .yak/nested/note; done"], {
+      cwd: dir,
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    const pid = child.pid;
+    assert.ok(pid && pid > 1);
+    writeFileSync(join(runDir, "journal.jsonl"), `${JSON.stringify({ t: "run.started", pid })}\n`);
+    await delay(30);
+    await reapLaunches(dir);
+    await exited(child);
+    assert.throws(() => process.kill(pid, 0));
+    rmSync(dir, { recursive: true, force: true });
+  });
 });

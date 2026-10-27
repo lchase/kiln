@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/lchase/kiln/compare/kiln-v0.3.0...kiln-v0.4.0) (2026-10-27)
+
+
+### Features
+
+* factory-style operator board for kiln serve ([#19](https://github.com/lchase/kiln/issues/19)) ([bbb271e](https://github.com/lchase/kiln/commit/bbb271e0738d392dbc9e92d84026634796591de2))
+* retry stalled, crashed, and orphaned kiln runs ([#20](https://github.com/lchase/kiln/issues/20)) ([c5d4f5b](https://github.com/lchase/kiln/commit/c5d4f5b6307ba60046b5120592ace374d102f1cb))
+
 ## [0.3.0](https://github.com/lchase/kiln/compare/kiln-v0.2.0...kiln-v0.3.0) (2026-10-25)
 
 
