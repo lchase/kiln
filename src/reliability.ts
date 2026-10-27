@@ -125,6 +125,10 @@ export function recoverRuns(
     if (job.error) continue;
     const existing = readAttemptLedger(config.kilnDir, job.jobId);
     if (existing === "corrupt") continue;
+    if (job.run?.sandboxError && job.run.status !== "alive") {
+      suppressAutomaticRetry(config.kilnDir, job.jobId);
+      continue;
+    }
     const pending = pendingFailure(job, config, options);
     if (!pending) continue;
     if (pending.killPid !== undefined && !killTree(pending.killPid)) continue;
@@ -153,6 +157,18 @@ interface PendingFailure {
   detail: string;
   /** Set only when this pass must kill a live process (stall). */
   killPid?: number;
+}
+
+/** Drop a scheduled retry so a sandbox failure stays in Needs human. */
+function suppressAutomaticRetry(kilnDir: string, jobId: string): void {
+  const existing = readAttemptLedger(kilnDir, jobId);
+  if (!existing || existing === "corrupt" || !existing.nextRetryAt) return;
+  const written: AttemptLedger = {
+    jobId: existing.jobId,
+    attempts: existing.attempts,
+    ...(existing.ignoredRunIds && existing.ignoredRunIds.length > 0 ? { ignoredRunIds: existing.ignoredRunIds } : {}),
+  };
+  writeLedger(kilnDir, written);
 }
 
 function pendingFailure(job: ObservedJob, config: LoadedKilnConfig, options: RecoverOptions): PendingFailure | undefined {

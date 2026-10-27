@@ -72,11 +72,25 @@ import {
   renderTick,
   statusView,
   yakCliPath,
+  sandboxFailureDetail,
   type DeliverReport,
   type FindingsReport,
   type LaunchReport,
   type StepEvent,
 } from "./report.js";
+import {
+  AGENT_SANDBOX_IMAGE,
+  injectAgentSandbox,
+  jobIsSandboxed,
+  probeSandboxEnvironment,
+  PROXY_SANDBOX_IMAGE,
+  requiredSandboxImages,
+  resolveSandbox,
+  sandboxIsEnabled,
+  sandboxPreflight,
+  sandboxPreflightFor,
+  type SandboxFacts,
+} from "./sandbox.js";
 import { JobSchema, type Job } from "./schemas.js";
 import { leafStepIds, materializeWorkflow, workflowInputs, workflowNeedsTestCommand, workflowStepPlan } from "./workflow.js";
 
@@ -132,6 +146,8 @@ export interface TickOptions {
   startup?: boolean;
   /** Clock for stall detection and retry backoff. Defaults to the current time. */
   now?: Date;
+  /** Docker, image, yak, and credential facts. Tests pass this; tick probes otherwise. */
+  sandboxFacts?: SandboxFacts;
 }
 
 export function runStatus(config: LoadedKilnConfig, jobId?: string, host: KilnHost = defaultHost()): string {
@@ -147,13 +163,18 @@ export function runTick(
   const now = options.now ?? new Date();
   return withTickLock(config.kilnDir, () => {
     const notes = recoverRuns(config, observe(config, host).observation.jobs, { startup, now });
+    const facts = sandboxIsEnabled(config)
+      ? (options.sandboxFacts ?? probeSandboxEnvironment(process.env, requiredSandboxImages(config)))
+      : undefined;
     const midway = observe(config, host);
     bindOpenFixRuns(config, midway);
     const published = publishReadyFixes(config, host, midway);
     const world = observe(config, host);
     const feedbackNotes = watchPullRequests(config, world, host);
     const actions = decide(world.observation, now);
-    return apply(config, world, actions, host, notes, now, [...published, ...feedbackNotes]);
+    const body = apply(config, world, actions, host, notes, now, [...published, ...feedbackNotes], facts);
+    const problem = facts ? sandboxPreflight(config, facts) : undefined;
+    return problem ? `${problem}\n${body}` : body;
   });
 }
 
@@ -365,6 +386,7 @@ function observe(config: LoadedKilnConfig, host: KilnHost): World {
       ...(exhausted ? { retriesExhausted: true } : {}),
       ...(picked.retired ? { runRetired: true } : {}),
       ...(ledgerResult === "corrupt" ? { ledgerError: "attempt ledger is unreadable" } : {}),
+      ...(entry.job ? { sandboxed: jobIsSandboxed(config, entry.job.id, entry.job.workflow) } : {}),
       ...(feedback?.rounds.length ? { feedbackRounds: feedback.rounds } : {}),
       ...(feedback?.exhausted ? { feedbackExhausted: true } : {}),
       ...(feedback?.ambiguous ? { feedbackAmbiguous: true } : {}),
@@ -396,6 +418,7 @@ function apply(
   notes: ReliabilityNote[] = [],
   now = new Date(),
   feedbackNotes: string[] = [],
+  sandboxFacts?: SandboxFacts,
 ): string {
   const launches: LaunchReport[] = [];
   const delivers: DeliverReport[] = [];
@@ -424,7 +447,12 @@ function apply(
       if (!job) {
         throw new Error(`Tick planned a fix for ${action.jobId}, which is not in the observed jobs.`);
       }
-      const report = startFix(config, world, job, host, now);
+      const blocked = sandboxBlock(config, "fix", sandboxFacts);
+      if (blocked) {
+        feedbackNotes.push(`fix ${action.jobId} not started\n${blocked}`);
+        continue;
+      }
+      const report = startFix(config, world, job, host, now, sandboxFacts);
       launches.push({ ...report, kind: "fix" });
       continue;
     }
@@ -432,7 +460,7 @@ function apply(
     if (!job) {
       throw new Error(`Tick planned a launch for ${action.jobId}, which is not in the observed jobs.`);
     }
-    const report = launchJob(config, world, job, host);
+    const report = launchJob(config, world, job, host, sandboxFacts);
     launches.push(action.type === "retry" ? { ...report, retry: true } : report);
   }
   return renderTick(world.observation, actions, launches, delivers, findings, notes, feedbackNotes);
@@ -762,6 +790,7 @@ function startFix(
   job: Job,
   host: KilnHost,
   now: Date,
+  sandboxFacts?: SandboxFacts,
 ): LaunchReport {
   const observed = world.observation.jobs.find((candidate) => candidate.jobId === job.id);
   const plan = observed?.feedbackPlan;
@@ -801,7 +830,7 @@ function startFix(
     writeBreadcrumb(breadcrumbPath(config.kilnDir, job.id), { jobId: job.id, pid: 0, logPath });
     return { jobId: job.id, repo: job.repo, kind: "fix", output: message };
   }
-  const report = launchFixRun(config, job, host, repo.path, headSha, specText);
+  const report = launchFixRun(config, job, host, repo.path, headSha, specText, sandboxFacts);
   return { ...report, output: `round ${round}\n${report.output}` };
 }
 
@@ -813,6 +842,7 @@ function launchOpenFix(
   host: KilnHost,
   checkout: string,
   open: FeedbackLedger["rounds"][number],
+  sandboxFacts?: SandboxFacts,
 ): LaunchReport {
   let specText: string;
   let headSha: string;
@@ -829,7 +859,7 @@ function launchOpenFix(
     writeBreadcrumb(breadcrumbPath(config.kilnDir, job.id), { jobId: job.id, pid: 0, logPath });
     return { jobId: job.id, repo: job.repo, kind: "fix", output: message };
   }
-  return launchFixRun(config, job, host, checkout, headSha, specText);
+  return launchFixRun(config, job, host, checkout, headSha, specText, sandboxFacts);
 }
 
 function resolveCommit(host: KilnHost, checkout: string, sha: string): string {
@@ -849,12 +879,15 @@ function launchFixRun(
   checkout: string,
   headSha: string,
   specText: string,
+  sandboxFacts?: SandboxFacts,
 ): LaunchReport {
   const sourceWorkflow = readFileSync(join(packageRoot(), "workflows", "fix.yaml"), "utf8");
   const workflow = materializeWorkflow(config.kilnDir, job.id, "fix");
   const repo = config.repos[job.repo];
   const logPath = join(config.kilnDir, "logs", `${jobBasename(job.id)}.log`);
   mkdirSync(dirname(logPath), { recursive: true });
+  const blocked = commitAgentSandbox(config, job.id, "fix", workflow, logPath, sandboxFacts);
+  if (blocked) return { jobId: job.id, repo: job.repo, kind: "fix", output: blocked };
   ensureCheckoutExcludes(checkout);
   const input = workflowInputs(sourceWorkflow, {
     title: job.title,
@@ -878,6 +911,45 @@ function launchFixRun(
     env,
     logPath,
   });
+}
+
+/**
+ * Names why a sandboxed workflow cannot launch. Does not write a round or a
+ * breadcrumb. `undefined` when this workflow stays on the host or the checks pass.
+ */
+function sandboxBlock(
+  config: LoadedKilnConfig,
+  workflowName: string,
+  sandboxFacts?: SandboxFacts,
+): string | undefined {
+  const sandbox = resolveSandbox(config.sandbox, config.workflowSandbox[workflowName]);
+  if (sandbox.mode !== "docker") return undefined;
+  const checked =
+    sandboxFacts ??
+    probeSandboxEnvironment(process.env, [PROXY_SANDBOX_IMAGE, sandbox.image ?? AGENT_SANDBOX_IMAGE]);
+  return sandboxPreflightFor(sandbox, config.adapter, checked);
+}
+
+/**
+ * Inject `sandbox: docker` into a materialized workflow and refuse the launch
+ * when preflight fails. The refusal is a launch error with no yak process.
+ */
+function commitAgentSandbox(
+  config: LoadedKilnConfig,
+  jobId: string,
+  workflowName: string,
+  workflowPath: string,
+  logPath: string,
+  sandboxFacts?: SandboxFacts,
+): string | undefined {
+  const sandbox = resolveSandbox(config.sandbox, config.workflowSandbox[workflowName]);
+  if (sandbox.mode !== "docker") return undefined;
+  writeFileSync(workflowPath, injectAgentSandbox(readFileSync(workflowPath, "utf8"), sandbox));
+  const problem = sandboxBlock(config, workflowName, sandboxFacts);
+  if (!problem) return undefined;
+  writeLaunchError(config.kilnDir, jobId, problem);
+  writeFileSync(logPath, `${problem}\n`);
+  return problem;
 }
 
 function agentArgs(
@@ -957,14 +1029,20 @@ function spawnAgent(host: KilnHost, spec: AgentStart): { pid: number } {
   return { pid: child.pid ?? 0 };
 }
 
-function launchJob(config: LoadedKilnConfig, world: World, job: Job, host: KilnHost): LaunchReport {
+function launchJob(
+  config: LoadedKilnConfig,
+  world: World,
+  job: Job,
+  host: KilnHost,
+  sandboxFacts?: SandboxFacts,
+): LaunchReport {
   const repo = config.repos[job.repo];
   if (!repo) {
     throw new Error(`Repo ${job.repo} is not registered. Run kiln repo add ${job.repo} <path>.`);
   }
   const feedback = readFeedbackLedger(config.kilnDir, job.id);
   const open = feedback && feedback !== "corrupt" ? openFeedbackRound(feedback) : undefined;
-  if (open) return launchOpenFix(config, world, job, host, repo.path, open);
+  if (open) return launchOpenFix(config, world, job, host, repo.path, open, sandboxFacts);
   const sourceWorkflow = readFileSync(join(packageRoot(), "workflows", `${job.workflow}.yaml`), "utf8");
   const testCommand = repo.test;
   if (workflowNeedsTestCommand(sourceWorkflow) && !testCommand?.trim()) {
@@ -981,6 +1059,8 @@ function launchJob(config: LoadedKilnConfig, world: World, job: Job, host: KilnH
   let specText: string;
   try {
     clearLaunchError(config.kilnDir, job.id);
+    const blocked = commitAgentSandbox(config, job.id, job.workflow, workflow, logPath, sandboxFacts);
+    if (blocked) return { jobId: job.id, repo: job.repo, output: blocked };
     assertStackTarget(world, job);
     baseSha = resolveLaunchBase({
       checkout: repo.path,
@@ -1068,6 +1148,7 @@ function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun[]> {
       const finished = [...events].reverse().find((event) => event.t === "run.finished");
       const stepPlan = readRunStepPlan(runDir);
       const stepEvents = stepEventsFrom(events);
+      const sandboxError = sandboxFailureDetail(stepEvents);
       const pid = livePid(events);
       const activityMs = eventActivityMs(events) ?? fileMtimeMs(join(runDir, "journal.jsonl"));
       const finishedReason =
@@ -1086,6 +1167,7 @@ function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun[]> {
         ...(pid !== undefined ? { pid } : {}),
         ...(activityMs !== undefined ? { activityMs } : {}),
         ...(finishedReason ? { finishedReason } : {}),
+        ...(sandboxError ? { sandboxError } : {}),
       };
       const list = byTag.get(started.tag) ?? [];
       list.push(run);
@@ -1100,22 +1182,27 @@ function stepEventsFrom(events: JournalEvent[]): StepEvent[] {
   for (const event of events) {
     if (event.t !== "step.started" && event.t !== "step.completed" && event.t !== "step.failed") continue;
     if (!event.stepId) continue;
-    const detail = event.t === "step.failed" ? formatFailure(event.failure) : undefined;
+    const failure = event.t === "step.failed" ? formatFailure(event.failure) : undefined;
     found.push({
       t: event.t,
       stepId: event.stepId,
-      ...(detail ? { detail } : {}),
+      ...(failure?.detail ? { detail: failure.detail } : {}),
+      ...(failure?.reason ? { failureReason: failure.reason } : {}),
     });
   }
   return found;
 }
 
-function formatFailure(failure: JournalEvent["failure"]): string | undefined {
+function formatFailure(failure: JournalEvent["failure"]): { detail?: string; reason?: string } | undefined {
   if (!failure) return undefined;
   const detail = typeof failure.detail === "string" ? failure.detail.trim() : "";
   const reason = typeof failure.reason === "string" ? failure.reason.trim() : "";
   const text = detail && reason ? `${detail} (${reason})` : detail || reason;
-  return text || undefined;
+  if (!text && !reason) return undefined;
+  return {
+    ...(text ? { detail: text } : {}),
+    ...(reason ? { reason } : {}),
+  };
 }
 
 function readRunStepPlan(runDir: string): string[] {

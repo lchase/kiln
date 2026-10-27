@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import type { StatusJobView, StatusState, StatusView } from "./report.js";
+import { SANDBOX_PREFLIGHT_PREFIX } from "./sandbox.js";
 
 /**
  * Attention order for `kiln serve`. Built from the same derived jobs as
@@ -163,9 +164,10 @@ export function attentionReason(job: StatusJobView, tail = errorTail(job)): stri
       return question ? `Gate: ${oneLine(question)}` : "Waiting on a person";
     }
     case "dead":
-      return "Run died before it finished";
+      return job.sandboxError ? `Sandbox: ${oneLine(job.sandboxError)}` : "Run died before it finished";
     case "failed": {
-      const why = firstLine(job.launchError) || firstLine(job.deliveryError) || firstLine(job.failureDetail) || firstLine(tail) || "Run failed";
+      if (job.sandboxError) return `Sandbox: ${oneLine(job.sandboxError)}`;
+      const why = failureLine(job.launchError) || firstLine(job.deliveryError) || firstLine(job.failureDetail) || firstLine(tail) || "Run failed";
       return `Failed: ${oneLine(why)}`;
     }
     case "in-review":
@@ -294,6 +296,7 @@ function attentionRevision(
       item.job.lastFailureReason ?? "",
       item.job.nextRetryAt ?? "",
       feedbackStamp(item.job),
+      item.job.sandboxed ? "sandbox" : "",
     ]),
     inFlight: inFlight.map((item) => [
       item.job.jobId,
@@ -304,6 +307,7 @@ function attentionRevision(
       item.job.lastFailureReason ?? "",
       item.job.nextRetryAt ?? "",
       feedbackStamp(item.job),
+      item.job.sandboxed ? "sandbox" : "",
     ]),
     doneRecently: doneRecently.map((item) => [item.job.jobId, item.job.state]),
     edges: graph.edges.map((edge) => [edge.from, edge.to, edge.stack]),
@@ -328,4 +332,15 @@ function firstLine(text: string | undefined): string | undefined {
   if (!text) return undefined;
   const line = text.split("\n").find((candidate) => candidate.trim().length > 0);
   return line?.trim();
+}
+
+/** The preflight header names the policy. The card should name the missing piece. */
+function failureLine(text: string | undefined): string | undefined {
+  const line = firstLine(text);
+  if (!line?.startsWith(SANDBOX_PREFLIGHT_PREFIX)) return line;
+  const bullet = text
+    ?.split("\n")
+    .map((candidate) => candidate.trim())
+    .find((candidate) => candidate.startsWith("- "));
+  return bullet ? bullet.slice(2) : line;
 }

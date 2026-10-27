@@ -10,6 +10,7 @@ import { KilnConfigError } from "../src/errors.js";
 import { writeJob } from "../src/jobs.js";
 import { packageRoot } from "../src/paths.js";
 import { isPidAlive, isStalled, readAttemptLedger, RETRY_BASE_MS, retryDelayMs, MAX_RETRY_BACKOFF_MS } from "../src/reliability.js";
+import { scheduledRetry } from "../src/attention.js";
 import { DEFAULT_MAX_ATTEMPTS, DEFAULT_STALL_TIMEOUT_MS } from "../src/schemas.js";
 
 const root = packageRoot();
@@ -618,6 +619,79 @@ describe("run reliability", () => {
     const outputs = [left, right].map((result) => `${result.status}\n${result.stdout}\n${result.stderr}`).join("\n---\n");
     const orphans = [left, right].filter((result) => result.status === 0 && result.stdout.includes(`orphan ${id}`));
     assert.equal(orphans.length, 1, outputs);
+  });
+
+  it("does not retry a run that failed with sandbox-error", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiln-rel-sandbox-"));
+    keep.push(dir);
+    const checkout = join(dir, "web");
+    initRepo(checkout);
+    const config = load(dir, checkout, { maxAttempts: 3, stallTimeoutMs: 60_000 });
+    const id = add(config, "Sandbox stopped the container");
+    const runId = "2000-09-01T00-00-00Z-sandbox";
+    const detail = 'docker run exited 125 for command "npm test" (image "node:22") — the container never started';
+    journal(checkout, runId, [
+      { t: "run.started", at: "2020-01-01T00:00:00.000Z", runId, tag: `kiln:${id}`, pid: 2_147_483_646 },
+      { t: "step.started", at: "2020-01-01T00:00:01.000Z", stepId: "verify" },
+      {
+        t: "step.failed",
+        at: "2020-01-01T00:00:02.000Z",
+        stepId: "verify",
+        failure: { reason: "sandbox-error", detail, recoverable: false },
+      },
+      { t: "run.finished", at: "2020-01-01T00:00:03.000Z", status: "failed", runId },
+    ]);
+    const output = runTick(config, undefined, { startup: false, now: new Date("2026-05-01T00:00:00.000Z") });
+    assert.doesNotMatch(output, new RegExp(`retry ${id}`));
+    assert.doesNotMatch(output, new RegExp(`fail ${id}`));
+    assert.equal(readAttemptLedger(config.kilnDir, id), undefined);
+    const status = readStatus(config, id);
+    const job = status.jobs[0];
+    assert.equal(job?.state, "failed");
+    assert.equal(job?.nextRetryAt, undefined);
+    assert.match(job?.sandboxError ?? "", /container never started/);
+    assert.equal(job?.attemptCount, 0);
+    const item = status.attention.needsYou.find((entry) => entry.job.jobId === id);
+    assert.match(item?.reason ?? "", /^Sandbox: docker run exited 125/);
+  });
+
+  it("clears a scheduled retry when the current run failed in the sandbox", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiln-rel-sandbox-hold-"));
+    keep.push(dir);
+    const checkout = join(dir, "web");
+    initRepo(checkout);
+    const config = load(dir, checkout, { maxAttempts: 3 });
+    const id = add(config, "Do not retry the sandbox");
+    const runId = "2000-09-02T00-00-00Z-sandbox";
+    mkdirSync(join(config.kilnDir, "attempts"), { recursive: true });
+    writeFileSync(
+      join(config.kilnDir, "attempts", `${id}.json`),
+      `${JSON.stringify({
+        jobId: id,
+        attempts: [{ n: 1, at: "2026-05-01T00:00:00.000Z", reason: "crashed", detail: "process exited" }],
+        nextRetryAt: "2020-01-01T00:00:00.000Z",
+      })}\n`,
+    );
+    journal(checkout, runId, [
+      { t: "run.started", at: "2020-01-01T00:00:00.000Z", runId, tag: `kiln:${id}`, pid: 2_147_483_646 },
+      {
+        t: "step.failed",
+        at: "2020-01-01T00:00:02.000Z",
+        stepId: "spec",
+        failure: { reason: "sandbox-error", detail: "proxy image missing", recoverable: false },
+      },
+      { t: "run.finished", at: "2020-01-01T00:00:03.000Z", status: "failed", runId },
+    ]);
+    const output = runTick(config, undefined, { startup: false, now: new Date("2026-06-01T00:00:00.000Z") });
+    assert.doesNotMatch(output, new RegExp(`retry ${id}`));
+    const ledger = readAttemptLedger(config.kilnDir, id);
+    assert.notEqual(ledger, undefined);
+    assert.notEqual(ledger, "corrupt");
+    if (ledger && ledger !== "corrupt") assert.equal(ledger.nextRetryAt, undefined);
+    const job = readStatus(config, id).jobs[0];
+    assert.equal(job?.state, "failed");
+    assert.equal(job?.nextRetryAt, undefined);
+    assert.equal(scheduledRetry(job ?? { state: "failed" }), false);
   });
 });
 

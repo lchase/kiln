@@ -1,5 +1,10 @@
 # One Kiln job, run by yak (@lchase/yak).
 #
+# Sandbox (kiln config `sandbox.mode: docker`, off by default): tick injects
+# `sandbox: docker` under each agent step (spec, build, security, ux, ui,
+# code, approver). verify, the approve gate, and land stay on the host.
+# Pull request open and `gh pr view` run in the kiln process.
+#
 # Faithful to Lawrence Chase's factory plugin v0.7.0 (MIT):
 # https://github.com/lchase/coding-agent-plugins/tree/4c84a2ce7fbde5ac298c0de9f0b90141eac4ed98/plugins/factory
 #   skills/factory/SKILL.md          (the loop: spec, build, 4 reviews, approver)

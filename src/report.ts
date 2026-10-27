@@ -92,6 +92,8 @@ export interface StepEvent {
   t: "step.started" | "step.completed" | "step.failed";
   stepId: string;
   detail?: string;
+  /** Yak `step.failed` `failure.reason`, when the event had one. */
+  failureReason?: string;
 }
 
 /**
@@ -130,6 +132,26 @@ export function latestStepFailure(events: StepEvent[]): string | undefined {
       continue;
     }
     if (event.t === "step.failed" && !settled.has(event.stepId) && event.detail) return event.detail;
+  }
+  return undefined;
+}
+
+/**
+ * Detail of the latest unresolved step whose yak reason is `sandbox-error`.
+ * The `(sandbox-error)` suffix formatFailure adds is stripped.
+ */
+export function sandboxFailureDetail(events: StepEvent[]): string | undefined {
+  const settled = new Set<string>();
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!event) continue;
+    if (event.t === "step.started" || event.t === "step.completed") {
+      settled.add(event.stepId);
+      continue;
+    }
+    if (event.t !== "step.failed" || settled.has(event.stepId) || event.failureReason !== "sandbox-error") continue;
+    const text = (event.detail ?? "").replace(/\s*\(sandbox-error\)\s*$/, "").trim();
+    return text || "The sandbox could not run this step.";
   }
   return undefined;
 }
@@ -215,6 +237,10 @@ export interface StatusJobView {
   diffSummary?: string;
   /** Latest open step failure, from a `step.failed` event. */
   failureDetail?: string;
+  /** Set when an unresolved step failed with yak reason `sandbox-error`. */
+  sandboxError?: string;
+  /** This job's agent steps run in the Docker sandbox. */
+  sandboxed?: boolean;
   /** One row per review iteration. Unsuffixed `security.json` is round 1. */
   rounds?: BoardReviewRound[];
   /** Pull request feedback rounds. Separate from the factory reviewer rounds. */
@@ -270,6 +296,10 @@ export function statusDetails(job: StatusJobView): string[] {
   }
   if (job.state === "failed" && job.launchFailed && job.logPath) lines.push(`log ${job.logPath}`);
   if (job.state === "failed" && job.launchError) lines.push(job.launchError);
+  if (job.sandboxError && (job.state === "failed" || job.state === "dead" || job.state === "needs-human")) {
+    lines.push(`sandbox ${job.sandboxError}`);
+  }
+  if (job.sandboxed) lines.push("sandbox docker");
   if (job.ledgerError) lines.push(job.ledgerError);
   if (job.feedbackLedgerError) lines.push(job.feedbackLedgerError);
   if ((job.feedbackRounds?.length ?? 0) > 0) lines.push(`feedback ${job.feedbackRounds?.length}`);
@@ -394,6 +424,8 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     ...(job.logTail ? { logTail: job.logTail } : {}),
     ...(job.diffSummary ? { diffSummary: job.diffSummary } : {}),
     ...(failureDetail ? { failureDetail } : {}),
+    ...(job.run?.sandboxError ? { sandboxError: job.run.sandboxError } : {}),
+    ...(job.sandboxed ? { sandboxed: true } : {}),
     ...boardFields(job),
   };
 }

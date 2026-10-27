@@ -82,6 +82,11 @@ export interface ObservedRun {
   activityMs?: number;
   /** `run.finished` reason. `cancelled` is not an automatic retry. */
   finishedReason?: string;
+  /**
+   * Detail of an unresolved `step.failed` whose reason is `sandbox-error`.
+   * That run is not an automatic retry.
+   */
+  sandboxError?: string;
 }
 
 export interface ObservedJob {
@@ -173,6 +178,8 @@ export interface ObservedJob {
   fixAwaitingPublish?: boolean;
   /** Set by tick after it reads GitHub. `readStatus` leaves this unset. */
   feedbackPlan?: FeedbackPlan;
+  /** Agent steps for this job run inside yak's Docker sandbox. */
+  sandboxed?: boolean;
   /** The job file could not be used. Decide skips it. */
   error?: string;
 }

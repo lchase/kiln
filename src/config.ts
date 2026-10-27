@@ -9,6 +9,7 @@ import {
   KilnConfigFileSchema,
   type JiraConfig,
   type RepoEntry,
+  type SandboxSettings,
 } from "./schemas.js";
 
 export interface LoadedKilnConfig {
@@ -41,6 +42,10 @@ export interface LoadedKilnConfig {
   maxFixRounds: number;
   /** Passed to `yak run --adapter`. Default `claude-code`. */
   adapter: "mock" | "claude-code";
+  /** Global sandbox settings. Every field is optional; omitted mode is off. */
+  sandbox: SandboxSettings;
+  /** Per-workflow sandbox overrides, keyed by workflow name. */
+  workflowSandbox: Record<string, SandboxSettings>;
   /**
    * Jira Cloud credentials from the config file, with empty strings removed.
    * Environment variables override these at intake time. Absent when unset.
@@ -114,6 +119,8 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
     maxAttempts: parsed.data.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
     maxFixRounds: parsed.data.maxFixRounds ?? DEFAULT_MAX_FIX_ROUNDS,
     adapter: parsed.data.adapter ?? "claude-code",
+    sandbox: parsed.data.sandbox ?? {},
+    workflowSandbox: workflowSandboxFrom(parsed.data.workflows),
     ...(jira ? { jira } : {}),
   };
 }
@@ -315,6 +322,17 @@ function pathToStore(userPath: string, cwd: string, home: string): string {
   if (userPath === "~" || userPath.startsWith("~/")) return userPath;
   if (isAbsolute(userPath)) return userPath;
   return resolve(cwd, userPath);
+}
+
+function workflowSandboxFrom(
+  workflows: Record<string, { sandbox?: SandboxSettings }> | undefined,
+): Record<string, SandboxSettings> {
+  if (!workflows) return {};
+  const out: Record<string, SandboxSettings> = {};
+  for (const [name, entry] of Object.entries(workflows)) {
+    if (entry.sandbox) out[name] = entry.sandbox;
+  }
+  return out;
 }
 
 function jiraFromFile(jira: JiraConfig | undefined): JiraConfig | undefined {
