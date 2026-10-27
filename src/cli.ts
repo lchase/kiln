@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { addRepo, renderRepoList, resolveKilnConfig } from "./config.js";
+import { renderSandboxStatus, runSandboxBuild } from "./sandbox.js";
 import { answerJob, retryJob, runStatus, runTick } from "./driver.js";
 import { startServe } from "./serve.js";
 import { addFromFile } from "./intake/file.js";
@@ -20,6 +21,7 @@ function usage(): never {
       "       kiln approve <jobId> [--config <file>]",
       "       kiln reject <jobId> [--config <file>]",
       "       kiln retry <jobId> [--config <file>]",
+      "       kiln sandbox [build] [--config <file>]",
       "       kiln serve [--port 4100] [--tick <seconds>|--no-tick] [--config <file>]",
       "",
       "repo add registers a checkout. A relative path is stored absolute, resolved",
@@ -71,6 +73,11 @@ function usage(): never {
       "Empty stages collapse. Approve, reject, and retry call the same",
       "functions as the CLI. POST from another origin is rejected. A tick",
       "runs every 30 seconds unless --no-tick is set, using the tick lock.",
+      "",
+      "sandbox prints the resolved mode, allowlist, and anything missing before a",
+      "sandboxed run can start. sandbox build builds the yak agent and proxy images",
+      "and installs git into the agent image. Sandbox mode stays off until the kiln",
+      "config sets it. A run that fails with yak reason sandbox-error is not retried.",
     ].join("\n"),
   );
   process.exit(2);
@@ -329,6 +336,22 @@ function importCommand(argv: string[]): void {
   if (result.warnings.length > 0) process.stderr.write(`${result.warnings.join("\n")}\n`);
 }
 
+function sandboxCommand(argv: string[]): void {
+  const build = argv[0] === "build";
+  const flags = parseFlags(build ? argv.slice(1) : argv);
+  rejectServeFlags(flags);
+  if (flags.positionals.length !== 0 || flags.test || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.stack) {
+    usage();
+  }
+  if (build) {
+    runSandboxBuild();
+    process.stdout.write("built yak-agent-sandbox:latest and yak-agent-sandbox-proxy:latest\n");
+    return;
+  }
+  const config = resolveKilnConfig({ configPath: flags.configPath });
+  process.stdout.write(renderSandboxStatus(config));
+}
+
 function tickCommand(argv: string[]): void {
   const flags = parseFlags(argv);
   rejectServeFlags(flags);
@@ -443,6 +466,10 @@ async function main(): Promise<void> {
   }
   if (command === "retry") {
     retryCommand(argv.slice(1));
+    return;
+  }
+  if (command === "sandbox") {
+    sandboxCommand(argv.slice(1));
     return;
   }
   if (command === "serve") {

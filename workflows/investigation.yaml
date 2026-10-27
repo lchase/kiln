@@ -1,5 +1,8 @@
 # One Kiln investigation, run by yak (@lchase/yak).
 #
+# Sandbox (kiln config `sandbox.mode: docker`, off by default): tick injects
+# `sandbox: docker` under the explore agent. The approve gate stays on the host.
+#
 # A spike, probe, or research ticket. The agent explores the worktree and
 # returns a findings document. A person approves or rejects it. There is no
 # build, review, verify, or land step, and Kiln does not open a pull request

@@ -132,6 +132,7 @@ function card(item: AttentionItem, stage: string): string {
 <div class="branch repo">${escapeHtml(job.repo)}</div>
 <p class="title">${escapeHtml(job.title || job.jobId)}</p>
 ${branch ? `<div class="branch">${escapeHtml(branch)}</div>` : ""}
+${sandboxHtml(job)}
 ${prLink(job)}
 ${roundsHtml(job, stage)}
 ${attemptHtml(job, stage)}
@@ -152,6 +153,7 @@ function sheet(item: AttentionItem): string {
 <div class="num">${escapeHtml(num)}</div>
 <h3>${escapeHtml(job.title || job.jobId)}</h3>
 ${branch ? `<div class="branch">${escapeHtml(branch)}</div>` : ""}
+${sandboxHtml(job)}
 ${prLink(job)}
 ${actionsHtml(item)}
 <button type="button" class="close" data-close aria-label="Close">×</button>
@@ -201,6 +203,11 @@ function actionsHtml(item: AttentionItem): string {
   }
   if (forms.length === 0) return "";
   return `<div class="d-actions">${forms.join("")}</div>`;
+}
+
+function sandboxHtml(job: StatusJobView): string {
+  if (!job.sandboxed) return "";
+  return `<div class="meta">sandbox · docker</div>`;
 }
 
 function roundsHtml(job: StatusJobView, stage: string): string {

@@ -31,6 +31,25 @@ export const JiraConfigSchema = z.object({
 });
 export type JiraConfig = z.infer<typeof JiraConfigSchema>;
 
+/**
+ * Opt-in Docker sandbox. Omitted mode means off at that layer.
+ * `image` overrides yak's `yak-agent-sandbox:latest`.
+ * `allowDomains` replaces the built-in host list when set.
+ */
+const HOSTNAME = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
+export const SandboxSettingsSchema = z.object({
+  mode: z.enum(["off", "docker"]).optional(),
+  image: z
+    .string()
+    .min(1)
+    .regex(/^\S+$/, "image must not contain whitespace")
+    .optional(),
+  allowDomains: z.array(z.string().regex(HOSTNAME, "must be a hostname")).min(1).optional(),
+});
+export type SandboxSettings = z.infer<typeof SandboxSettingsSchema>;
+
+const WORKFLOW_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
 /** No yak event and no log output for this long stalls a running job. `<= 0` disables it. */
 export const DEFAULT_STALL_TIMEOUT_MS = 15 * 60 * 1000;
 /** Transient failures retry until this many attempts, then the job is dead. */
@@ -54,6 +73,9 @@ export const KilnConfigFileSchema = z.object({
    */
   maxFixRounds: z.number().int().min(1).optional(),
   adapter: z.enum(["mock", "claude-code"]).optional(),
+  sandbox: SandboxSettingsSchema.optional(),
+  /** Per-workflow sandbox override. A set field replaces the global one; an omitted field inherits. */
+  workflows: z.record(z.string().regex(WORKFLOW_KEY), z.object({ sandbox: SandboxSettingsSchema.optional() })).optional(),
   repos: z.record(z.string(), RepoEntrySchema),
   jira: JiraConfigSchema.optional(),
 });

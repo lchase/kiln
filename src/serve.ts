@@ -6,6 +6,7 @@ import { answerJob, readStatus, retryJob, runTick, startupRecovery } from "./dri
 import { defaultHost } from "./host.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import { packageRoot } from "./paths.js";
+import { SANDBOX_PREFLIGHT_PREFIX } from "./sandbox.js";
 import type { StatusJobView } from "./report.js";
 import { renderConsole, renderMessagePage, renderTextPage } from "./serve-page.js";
 
@@ -86,7 +87,12 @@ export function loadServeCss(): string {
 
 function safeTick(config: LoadedKilnConfig, secrets: string[], startup: boolean): void {
   try {
-    runTick(config, defaultHost(), { startup });
+    const report = runTick(config, defaultHost(), { startup });
+    if (report.startsWith(SANDBOX_PREFLIGHT_PREFIX)) {
+      const tickAt = report.indexOf("\ntick ");
+      const head = tickAt === -1 ? report : report.slice(0, tickAt);
+      process.stderr.write(`${redact(head.trimEnd(), secrets)}\n`);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`tick: ${redact(message, secrets)}\n`);
