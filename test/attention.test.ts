@@ -243,8 +243,12 @@ describe("attention view", () => {
     assert.match(review, /PR review/);
     const merged = column("merged");
     assert.match(merged, /id="job-done-new"/);
-    assert.match(merged, /merged via PR/);
+    assert.match(merged, /merged · PR/);
+    assert.doesNotMatch(merged, /id="job-done-old"/);
     assert.doesNotMatch(merged, /id="job-rejected"/);
+    const done = column("done");
+    assert.match(done, /id="job-done-old"/);
+    assert.match(done, /landed locally/);
     assert.doesNotMatch(html, /Show more/);
   });
 

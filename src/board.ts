@@ -42,6 +42,8 @@ export interface StageJob {
   maxAttempts?: number;
   lastFailureReason?: string;
   nextRetryAt?: string;
+  prUrl?: string;
+  prNumber?: number;
 }
 
 const FEATURE_STAGES = ["spec", "build", "review", "approve", "land", "pr-review"] as const;
@@ -55,7 +57,8 @@ const CATALOG: BoardStage[] = [
   { id: "explore", label: "Explore", who: "investigator · opus" },
   { id: "land", label: "Land", who: "git commit" },
   { id: "pr-review", label: "PR review", who: "pr-sync" },
-  { id: "merged", label: "Merged", who: "main", tone: "merged" },
+  { id: "done", label: "Done", who: "local", tone: "merged" },
+  { id: "merged", label: "Merged", who: "pr", tone: "merged" },
   { id: "needs-human", label: "Needs human", who: "approve · retry", tone: "human" },
 ];
 
@@ -84,7 +87,7 @@ export function stageOf(job: StageJob): string {
   if (scheduledRetry(job)) return runStage(job);
   if (HUMAN_STATES.has(job.state)) return "needs-human";
   if (job.state === "in-review") return "pr-review";
-  if (job.state === "done") return "merged";
+  if (job.state === "done") return job.prUrl || job.prNumber ? "merged" : "done";
   const current = job.steps.find((step) => step.phase === "current" || step.phase === "failed");
   if (job.state === "queued" || job.state === "blocked") return "queued";
   if (job.state === "approved") {
@@ -124,9 +127,11 @@ export function stagesFor(jobs: StageJob[]): BoardStage[] {
   }
   if (workflows.has("investigation")) wanted.add("explore");
   wanted.add("queued");
-  wanted.add("merged");
   wanted.add("needs-human");
-  for (const job of jobs) wanted.add(stageOf(job));
+  const reached = new Set(jobs.map((job) => stageOf(job)));
+  if (reached.has("done") || !reached.has("merged")) wanted.add("done");
+  if (reached.has("merged")) wanted.add("merged");
+  for (const id of reached) wanted.add(id);
   return CATALOG.filter((stage) => wanted.has(stage.id));
 }
 

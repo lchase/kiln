@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realPullRequestFeedback, type PullRequestFeedbackSource } from "./feedback.js";
+import { isPublishableBranch } from "./pr-names.js";
 
 /**
  * Git remote and GitHub CLI, behind one seam so tests can fake `gh` and point
@@ -54,8 +55,9 @@ export interface GitRemote {
   pushBranch(checkout: string, branch: string, baseBranch: string): void;
   /**
    * Fast-forward `refs/heads/<target>` on origin to `refs/heads/<source>`.
-   * Refuses the base branch, a branch that is not `yak/<run-id>`, and any
-   * force update. A non-fast-forward is left for git to reject.
+   * `source` must be `yak/<run-id>`. `target` is that name or the readable
+   * remote branch. Refuses the base branch and any force update. A
+   * non-fast-forward is left for git to reject.
    */
   publishBranch(checkout: string, source: string, target: string, baseBranch: string): void;
   /** True when `ancestor` is an ancestor of `descendant` (or they are equal). */
@@ -161,9 +163,14 @@ export const realGitRemote: GitRemote = {
 
   publishBranch(checkout, source, target, baseBranch) {
     assertYakBranch(source, baseBranch);
-    assertYakBranch(target, baseBranch);
+    if (target === baseBranch || target === `refs/heads/${baseBranch}`) {
+      throw new HostError(`Refusing to push ${target}: that is the base branch.`);
+    }
     if (source.includes("+") || target.includes("+")) {
       throw new HostError(`Refusing to push ${target}: kiln does not force-push.`);
+    }
+    if (!isPublishableBranch(target)) {
+      throw new HostError(`Refusing to push ${target}: that branch name is not safe.`);
     }
     const result = gitResult(checkout, ["push", "origin", `refs/heads/${source}:refs/heads/${target}`]);
     if (result.status !== 0) {

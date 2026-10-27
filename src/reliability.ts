@@ -2,16 +2,20 @@ import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   renameSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { z } from "zod";
+import { authenticationFailureLine } from "./auth.js";
 import type { LoadedKilnConfig } from "./config.js";
 import { jobBasename } from "./paths.js";
 import type { FailureReason, ObservedJob } from "./reconcile.js";
@@ -203,21 +207,69 @@ function pendingFailure(job: ObservedJob, config: LoadedKilnConfig, options: Rec
   if (runLive) return undefined;
 
   if (run && (run.status === "dead" || (run.status === "alive" && run.pid !== undefined && !isPidAlive(run.pid)))) {
-    return options.startup
+    return classifyAuth(job, options.startup
       ? { reason: "orphaned", runId: run.runId, pid: run.pid, detail: "process gone at startup" }
-      : { reason: "crashed", runId: run.runId, pid: run.pid, detail: "process exited" };
+      : { reason: "crashed", runId: run.runId, pid: run.pid, detail: "process exited" });
   }
   if (run?.status === "failed") {
-    return { reason: "failed", runId: run.runId, pid: run.pid, detail: "non-zero exit" };
+    return classifyAuth(job, { reason: "failed", runId: run.runId, pid: run.pid, detail: "non-zero exit" });
   }
   if (job.launchFailed) {
-    return {
+    return classifyAuth(job, {
       reason: "crashed",
       ...(job.launchPid !== undefined ? { pid: job.launchPid } : {}),
       detail: "launch exited before a journal",
-    };
+    });
   }
   return undefined;
+}
+
+/** A rejected Claude login is recorded once and is not scheduled for retry. */
+function classifyAuth(job: ObservedJob, pending: PendingFailure): PendingFailure {
+  const line = authenticationFailureLine(authTexts(job));
+  if (!line) return pending;
+  return {
+    reason: "auth-failed",
+    ...(pending.runId ? { runId: pending.runId } : {}),
+    ...(pending.pid !== undefined ? { pid: pending.pid } : {}),
+    detail: line,
+  };
+}
+
+function authTexts(job: ObservedJob): string[] {
+  const texts: string[] = [];
+  for (const event of job.run?.stepEvents ?? []) {
+    if (event.detail) texts.push(event.detail);
+  }
+  if (job.logTail) texts.push(job.logTail);
+  const log = readAuthLog(job.logPath);
+  if (log) texts.push(log);
+  return texts;
+}
+
+/** Tail of the kiln log. Yak prints the Claude stderr line here, past the 40-line status tail. */
+function readAuthLog(logPath: string | undefined): string | undefined {
+  if (!logPath) return undefined;
+  let size: number;
+  try {
+    size = statSync(logPath).size;
+  } catch {
+    return undefined;
+  }
+  if (size <= 0) return undefined;
+  const take = Math.min(size, 256 * 1024);
+  let fd: number | undefined;
+  try {
+    fd = openSync(logPath, "r");
+    const buffer = Buffer.alloc(take);
+    readSync(fd, buffer, 0, take, size - take);
+    const text = buffer.toString("utf8").trim();
+    return text || undefined;
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 function recordFailure(
@@ -238,7 +290,7 @@ function recordFailure(
     detail: pending.detail,
   };
   const attempts = [...ledger.attempts, attempt];
-  const exhausted = attempts.length >= config.maxAttempts;
+  const exhausted = attempts.length >= config.maxAttempts || pending.reason === "auth-failed";
   const next = exhausted ? undefined : new Date(now.getTime() + retryDelayMs(attempts.length)).toISOString();
   const written: AttemptLedger = {
     jobId,

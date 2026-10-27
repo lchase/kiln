@@ -2,8 +2,11 @@ import type { FeedbackPlan, FeedbackRound } from "./feedback.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import type { JobSource, JobState } from "./schemas.js";
 
-/** Why a transient attempt failed. Written under `<kilnDir>/attempts`, not on the job. */
-export const FAILURE_REASONS = ["stalled", "orphaned", "crashed", "failed"] as const;
+/**
+ * Why an attempt failed. Written under `<kilnDir>/attempts`, not on the job.
+ * `auth-failed` is not an automatic retry: the job stays in Needs human.
+ */
+export const FAILURE_REASONS = ["stalled", "orphaned", "crashed", "failed", "auth-failed"] as const;
 export type FailureReason = (typeof FAILURE_REASONS)[number];
 
 /**

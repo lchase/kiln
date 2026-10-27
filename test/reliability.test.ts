@@ -4,8 +4,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
+import { AUTH_FAILED_LINE } from "../src/auth.js";
 import { loadKilnConfig } from "../src/config.js";
 import { readStatus, runStatus, runTick, startupRecovery } from "../src/driver.js";
+import { defaultHost } from "../src/host.js";
 import { KilnConfigError } from "../src/errors.js";
 import { writeJob } from "../src/jobs.js";
 import { packageRoot } from "../src/paths.js";
@@ -692,6 +694,138 @@ describe("run reliability", () => {
     assert.equal(job?.state, "failed");
     assert.equal(job?.nextRetryAt, undefined);
     assert.equal(scheduledRetry(job ?? { state: "failed" }), false);
+  });
+
+  it("records an authentication failure from the log and does not retry it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiln-rel-auth-"));
+    keep.push(dir);
+    const checkout = join(dir, "web");
+    initRepo(checkout);
+    const config = load(dir, checkout, { maxAttempts: 3, adapter: "claude-code" });
+    const id = add(config, "Reject a bad login");
+    const runId = "2000-10-01T00-00-00Z-auth";
+    const token = "not-a-token-value";
+    journal(checkout, runId, [
+      { t: "run.started", at: "2020-01-01T00:00:00.000Z", runId, tag: `kiln:${id}`, pid: 2_147_483_646 },
+      {
+        t: "step.failed",
+        at: "2020-01-01T00:00:02.000Z",
+        stepId: "spec",
+        failure: { reason: "adapter-error", detail: "Claude Code process exited with code 1", recoverable: true },
+      },
+      { t: "run.finished", at: "2020-01-01T00:00:03.000Z", status: "failed", runId },
+    ]);
+    mkdirSync(join(config.kilnDir, "logs"), { recursive: true });
+    writeFileSync(join(config.kilnDir, "logs", `${id}.log`), `yak: Invalid bearer token\n${token}\n`);
+    const output = runTick(config, undefined, { startup: false, now: new Date("2026-07-01T00:00:00.000Z") });
+    assert.doesNotMatch(output, new RegExp(`retry ${id}`));
+    assert.match(output, new RegExp(`fail ${id}  auth-failed  attempt 1`));
+    assert.doesNotMatch(output, /dead/);
+    const ledger = readAttemptLedger(config.kilnDir, id);
+    assert.notEqual(ledger, undefined);
+    assert.notEqual(ledger, "corrupt");
+    if (ledger && ledger !== "corrupt") {
+      assert.equal(ledger.attempts.length, 1);
+      assert.equal(ledger.attempts[0]?.reason, "auth-failed");
+      assert.equal(ledger.nextRetryAt, undefined);
+    }
+    const status = readStatus(config, id);
+    const job = status.jobs[0];
+    assert.equal(job?.state, "failed");
+    assert.equal(job?.attemptCount, 1);
+    assert.equal(job?.lastFailureReason, "auth-failed");
+    assert.equal(job?.nextRetryAt, undefined);
+    assert.equal(scheduledRetry(job ?? { state: "failed" }), false);
+    const item = status.attention.needsYou.find((entry) => entry.job.jobId === id);
+    assert.equal(item?.reason, AUTH_FAILED_LINE);
+    assert.match(runStatus(config, id), new RegExp(AUTH_FAILED_LINE.replace(/[()]/g, "\\$&")));
+  });
+
+  it("classifies a 401 in the yak failure detail the same way", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiln-rel-auth-detail-"));
+    keep.push(dir);
+    const checkout = join(dir, "web");
+    initRepo(checkout);
+    const config = load(dir, checkout, { maxAttempts: 3 });
+    const id = add(config, "Reject a 401");
+    const runId = "2000-10-02T00-00-00Z-auth";
+    journal(checkout, runId, [
+      { t: "run.started", at: "2020-01-01T00:00:00.000Z", runId, tag: `kiln:${id}`, pid: 2_147_483_646 },
+      {
+        t: "step.failed",
+        at: "2020-01-01T00:00:02.000Z",
+        stepId: "spec",
+        failure: {
+          reason: "adapter-error",
+          detail: "Claude Code process exited with code 1. stderr: Failed to authenticate (401)",
+          recoverable: true,
+        },
+      },
+      { t: "run.finished", at: "2020-01-01T00:00:03.000Z", status: "failed", runId },
+    ]);
+    runTick(config, undefined, { startup: false, now: new Date("2026-07-02T00:00:00.000Z") });
+    const ledger = readAttemptLedger(config.kilnDir, id);
+    assert.notEqual(ledger, undefined);
+    assert.notEqual(ledger, "corrupt");
+    if (ledger && ledger !== "corrupt") {
+      assert.equal(ledger.attempts[0]?.reason, "auth-failed");
+      assert.equal(ledger.nextRetryAt, undefined);
+    }
+    const again = runTick(config, undefined, { startup: false, now: new Date("2026-07-02T00:10:00.000Z") });
+    assert.doesNotMatch(again, new RegExp(`retry ${id}|launch ${id}`));
+    const still = readAttemptLedger(config.kilnDir, id);
+    assert.notEqual(still, undefined);
+    assert.notEqual(still, "corrupt");
+    if (still && still !== "corrupt") assert.equal(still.attempts.length, 1);
+  });
+
+  it("refuses to launch when a Claude token is set but unusable, and allows an unset token", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiln-rel-auth-preflight-"));
+    keep.push(dir);
+    const checkout = join(dir, "web");
+    initRepo(checkout);
+    const config = load(dir, checkout, { adapter: "claude-code" });
+    const id = add(config, "Do not launch");
+    const token = "short-bad";
+    const previousOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    const previousKey = process.env.ANTHROPIC_API_KEY;
+    const starts: string[] = [];
+    const child = spawn("sleep", ["30"], { stdio: "ignore" });
+    stray.push(child.pid ?? 0);
+    const host = {
+      ...defaultHost(),
+      startAgent() {
+        starts.push("started");
+        return { pid: child.pid ?? 0 };
+      },
+    };
+    try {
+      process.env.CLAUDE_CODE_OAUTH_TOKEN = token;
+      const output = runTick(config, host, { startup: false, now: new Date("2026-07-03T00:00:00.000Z") });
+      assert.match(output, /CLAUDE_CODE_OAUTH_TOKEN/);
+      assert.match(output, /sk-ant-oat/);
+      assert.doesNotMatch(output, new RegExp(token));
+      assert.equal(starts.length, 0);
+      assert.equal(readStatus(config, id).jobs[0]?.state, "queued");
+      assert.equal(readAttemptLedger(config.kilnDir, id), undefined);
+
+      delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      process.env.ANTHROPIC_API_KEY = "   ";
+      const emptyKey = runTick(config, host, { startup: false, now: new Date("2026-07-03T00:01:00.000Z") });
+      assert.match(emptyKey, /ANTHROPIC_API_KEY is set but empty/);
+      assert.equal(starts.length, 0);
+
+      delete process.env.ANTHROPIC_API_KEY;
+      const launched = runTick(config, host, { startup: false, now: new Date("2026-07-03T00:02:00.000Z") });
+      assert.doesNotMatch(launched, /Claude credentials are not usable/);
+      assert.equal(starts.length, 1);
+      child.kill("SIGTERM");
+    } finally {
+      if (previousOauth === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      else process.env.CLAUDE_CODE_OAUTH_TOKEN = previousOauth;
+      if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previousKey;
+    }
   });
 });
 

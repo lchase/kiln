@@ -65,7 +65,9 @@ describe("board stages", () => {
     assert.equal(stageOf(stage({ state: "invalid" })), "needs-human");
     assert.equal(stageOf(stage({ state: "rejected" })), "needs-human");
     assert.equal(stageOf(stage({ state: "in-review" })), "pr-review");
-    assert.equal(stageOf(stage({ state: "done" })), "merged");
+    assert.equal(stageOf(stage({ state: "done" })), "done");
+    assert.equal(stageOf(stage({ state: "done", prUrl: "https://example.com/pull/9" })), "merged");
+    assert.equal(stageOf(stage({ state: "done", prNumber: 9 })), "merged");
     assert.equal(stageOf(stage({ state: "queued" })), "queued");
     assert.equal(stageOf(stage({ state: "blocked" })), "queued");
     assert.equal(stageOf(stage({ state: "queued", workflow: "investigation" })), "queued");
@@ -91,7 +93,7 @@ describe("board stages", () => {
     );
 
     const empty = stagesFor([]).map((item) => item.id);
-    assert.deepEqual(empty, ["queued", "spec", "build", "review", "approve", "land", "pr-review", "merged", "needs-human"]);
+    assert.deepEqual(empty, ["queued", "spec", "build", "review", "approve", "land", "pr-review", "done", "needs-human"]);
     const probe = stagesFor([stage({ state: "queued", workflow: "investigation" })]).map((item) => item.id);
     assert.equal(probe[0], "queued");
     assert.ok(probe.includes("explore"));
@@ -103,7 +105,15 @@ describe("board stages", () => {
     ]).map((item) => item.id);
     assert.ok(mixed.includes("spec"));
     assert.ok(mixed.includes("explore"));
-    assert.ok(mixed.indexOf("needs-human") > mixed.indexOf("merged"));
+    assert.ok(mixed.includes("done"));
+    assert.ok(!mixed.includes("merged"));
+    assert.ok(mixed.indexOf("needs-human") > mixed.indexOf("done"));
+    const both = stagesFor([
+      stage({ state: "done" }),
+      stage({ state: "done", prNumber: 4 }),
+    ]).map((item) => item.id);
+    assert.ok(both.indexOf("merged") > both.indexOf("done"));
+    assert.ok(both.indexOf("needs-human") > both.indexOf("merged"));
   });
 
   it("reads every review iteration and the drawer files", () => {
