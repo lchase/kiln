@@ -49,6 +49,15 @@ import {
   type RunStatus,
 } from "./reconcile.js";
 import {
+  fileMtimeMs,
+  isPidAlive,
+  readAttemptLedger,
+  recoverRuns,
+  resetAttemptLedger,
+  type AttemptLedger,
+  type ReliabilityNote,
+} from "./reliability.js";
+import {
   gateAnswerCommand,
   renderStatus,
   renderTick,
@@ -69,6 +78,7 @@ interface JournalEvent {
   status?: string;
   stepId?: string;
   pid?: number;
+  reason?: string;
   failure?: { detail?: unknown; reason?: unknown };
 }
 
@@ -103,15 +113,41 @@ export function readStatus(config: LoadedKilnConfig, jobId?: string, host: KilnH
   return { ...view, attention: buildAttention(view.jobs) };
 }
 
+export interface TickOptions {
+  /**
+   * Process start (`kiln tick`, or `kiln serve` before it listens).
+   * A run that still looks in progress but whose process is gone is `orphaned`.
+   * Later ticks in the same serve process pass false so a crash stays `crashed`.
+   * Default true.
+   */
+  startup?: boolean;
+  /** Clock for stall detection and retry backoff. Defaults to the current time. */
+  now?: Date;
+}
+
 export function runStatus(config: LoadedKilnConfig, jobId?: string, host: KilnHost = defaultHost()): string {
   return renderStatus(readStatus(config, jobId, host));
 }
 
-export function runTick(config: LoadedKilnConfig, host: KilnHost = defaultHost()): string {
+export function runTick(
+  config: LoadedKilnConfig,
+  host: KilnHost = defaultHost(),
+  options: TickOptions = {},
+): string {
+  const startup = options.startup ?? true;
+  const now = options.now ?? new Date();
   return withTickLock(config.kilnDir, () => {
+    const notes = recoverRuns(config, observe(config, host).observation.jobs, { startup, now });
     const world = observe(config, host);
-    const actions = decide(world.observation);
-    return apply(config, world, actions, host);
+    const actions = decide(world.observation, now);
+    return apply(config, world, actions, host, notes);
+  });
+}
+
+/** Startup pass shared by `kiln tick` (via `runTick`) and `kiln serve`. Idempotent. */
+export function startupRecovery(config: LoadedKilnConfig, host: KilnHost = defaultHost(), now = new Date()): void {
+  withTickLock(config.kilnDir, () => {
+    recoverRuns(config, observe(config, host).observation.jobs, { startup: true, now });
   });
 }
 
@@ -150,11 +186,13 @@ export function answerJob(
 }
 
 /**
- * Run a failed or dead job again.
+ * Run a failed or dead job again. The board Retry button and `kiln retry`
+ * both call this.
  * A landed job whose only failure is opening the pull request is handed to
  * the same deliver path tick uses. Everything else is a new `yak run`, the
- * same launch tick uses. Yak run ids sort by time, so the new journal
- * supersedes the old one. A dead journal is cancelled first.
+ * same launch tick uses. The attempt ledger is cleared either way, and the
+ * current run id is ignored so a dead job is not stuck on the old journal.
+ * A dead journal is cancelled first.
  */
 export function retryJob(config: LoadedKilnConfig, jobId: string, host: KilnHost = defaultHost()): string {
   return withTickLock(config.kilnDir, () => {
@@ -172,11 +210,17 @@ export function retryJob(config: LoadedKilnConfig, jobId: string, host: KilnHost
     if (crumb && pidAlive(crumb.pid)) {
       throw new Error(`Job ${jobId} is already launching.`);
     }
+    const cleared = observed.attemptCount ?? 0;
+    resetAttemptLedger(config.kilnDir, jobId, observed.run?.runId);
+    rmSync(breadcrumbPath(config.kilnDir, jobId), { force: true });
+    clearLaunchError(config.kilnDir, jobId);
+    const noun = cleared === 1 ? "attempt" : "attempts";
+    const clearedLine = `cleared ${cleared} ${noun}\n`;
     if (shouldRedeliver(observed)) {
       const report = deliverObserved(config, world, jobId, host);
       if (!report.ok) throw new Error(report.detail);
       const detail = report.detail.endsWith("\n") || report.detail.length === 0 ? report.detail : `${report.detail}\n`;
-      return `retry ${jobId}  ${job.repo}\n${detail}`;
+      return `retry ${jobId}  ${job.repo}\n${clearedLine}${detail}`;
     }
     if (state === "dead" && observed.run) {
       try {
@@ -193,7 +237,7 @@ export function retryJob(config: LoadedKilnConfig, jobId: string, host: KilnHost
     if (existsSync(logPath)) writeFileSync(logPath, "");
     const report = launchJob(config, world, job, host);
     const output = report.output.endsWith("\n") || report.output.length === 0 ? report.output : `${report.output}\n`;
-    return `retry ${report.jobId}  ${report.repo}\n${output}`;
+    return `retry ${report.jobId}  ${report.repo}\n${clearedLine}${output}`;
   });
 }
 
@@ -227,10 +271,15 @@ function observe(config: LoadedKilnConfig, host: KilnHost): World {
   for (const entry of ordered) {
     if (entry.job) records.set(entry.job.id, entry.job);
     const tag = jobTag(entry.meta.jobId);
-    const run = runs.get(tag);
+    const ledgerResult = readAttemptLedger(config.kilnDir, entry.meta.jobId);
+    const ledger = ledgerResult && ledgerResult !== "corrupt" ? ledgerResult : undefined;
+    const picked = selectRun(runs.get(tag) ?? [], ledger);
+    const run = picked.run;
     const crumb = breadcrumbs.find((candidate) => candidate.jobId === entry.meta.jobId);
-    if (crumb && run) breadcrumbsToClear.push({ path: crumb.path });
+    if (crumb && run && !picked.retired) breadcrumbsToClear.push({ path: crumb.path });
     const childAlive = crumb ? pidAlive(crumb.pid) : false;
+    const launching = Boolean(crumb) && childAlive && (!run || picked.retired);
+    const launchFailed = Boolean(crumb) && !childAlive && (!run || picked.retired);
     const repoKnown = entry.job ? Boolean(config.repos[entry.job.repo]) : false;
     const repoError =
       entry.job && !repoKnown ? `Repo ${entry.job.repo} is not registered.` : undefined;
@@ -246,6 +295,15 @@ function observe(config: LoadedKilnConfig, host: KilnHost): World {
         ? "stack needs exactly one dependency."
         : undefined;
     const logPath = crumb?.logPath || existingLog(config.kilnDir, entry.meta.jobId);
+    if (run && logPath) run.activityMs = later(run.activityMs, fileMtimeMs(logPath));
+    const launchActivityMs = later(crumb ? fileMtimeMs(crumb.path) : undefined, logPath ? fileMtimeMs(logPath) : undefined);
+    const attemptCount = ledger?.attempts.length ?? 0;
+    const lastFailure = ledger?.attempts.at(-1);
+    const exhausted =
+      attemptCount >= config.maxAttempts &&
+      attemptCount > 0 &&
+      !launching &&
+      (picked.retired || !run || run.status === "dead" || run.status === "failed");
     const specPath = entry.job ? resolveJobSpec(config.kilnDir, entry.job.spec) : undefined;
     const findingsPath =
       entry.job?.workflow === INVESTIGATION_WORKFLOW
@@ -271,15 +329,23 @@ function observe(config: LoadedKilnConfig, host: KilnHost): World {
       ...(entry.job?.stack ? { stack: true } : {}),
       ...(delivery ? { delivery } : {}),
       ...(findingsPath ? { findingsPath } : {}),
-      launching: Boolean(crumb) && !run && childAlive,
-      launchFailed: Boolean(crumb) && !run && !childAlive,
+      launching,
+      launchFailed,
       ...(launchError ? { launchError } : {}),
+      ...(crumb ? { launchPid: crumb.pid } : {}),
+      ...(launchActivityMs !== undefined ? { launchActivityMs } : {}),
       ...(logPath ? { logPath } : {}),
       ...(entry.job?.createdAt ? { createdAt: entry.job.createdAt } : {}),
       ...(logTail ? { logTail } : {}),
       ...(diffSummary ? { diffSummary } : {}),
       ...(stepPlan && stepPlan.length > 0 ? { stepPlan } : {}),
       ...(run ? { run } : {}),
+      attemptCount,
+      ...(lastFailure ? { lastFailureReason: lastFailure.reason } : {}),
+      ...(ledger?.nextRetryAt && !exhausted ? { nextRetryAt: ledger.nextRetryAt } : {}),
+      ...(exhausted ? { retriesExhausted: true } : {}),
+      ...(picked.retired ? { runRetired: true } : {}),
+      ...(ledgerResult === "corrupt" ? { ledgerError: "attempt ledger is unreadable" } : {}),
       ...(entry.meta.error || repoError || stackError
         ? { error: entry.meta.error ?? repoError ?? stackError }
         : {}),
@@ -289,6 +355,7 @@ function observe(config: LoadedKilnConfig, host: KilnHost): World {
   return {
     observation: {
       maxConcurrent: config.maxConcurrent,
+      maxAttempts: config.maxAttempts,
       jobs,
       breadcrumbsToClear,
     },
@@ -301,6 +368,7 @@ function apply(
   world: World,
   actions: ReturnType<typeof decide>,
   host: KilnHost,
+  notes: ReliabilityNote[] = [],
 ): string {
   const launches: LaunchReport[] = [];
   const delivers: DeliverReport[] = [];
@@ -323,9 +391,10 @@ function apply(
     if (!job) {
       throw new Error(`Tick planned a launch for ${action.jobId}, which is not in the observed jobs.`);
     }
-    launches.push(launchJob(config, world, job, host));
+    const report = launchJob(config, world, job, host);
+    launches.push(action.type === "retry" ? { ...report, retry: true } : report);
   }
-  return renderTick(world.observation, actions, launches, delivers, findings);
+  return renderTick(world.observation, actions, launches, delivers, findings, notes);
 }
 
 /**
@@ -607,8 +676,8 @@ function loadJobFile(file: string): LoadedJob {
   return { meta: { jobId: job.id }, job };
 }
 
-function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun> {
-  const byTag = new Map<string, ObservedRun>();
+function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun[]> {
+  const byTag = new Map<string, ObservedRun[]>();
   for (const repo of Object.values(config.repos)) {
     for (const runDir of listRunDirs(repo.path)) {
       const events = readJournal(runDir);
@@ -621,6 +690,10 @@ function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun> {
       const finished = [...events].reverse().find((event) => event.t === "run.finished");
       const stepPlan = readRunStepPlan(runDir);
       const stepEvents = stepEventsFrom(events);
+      const pid = livePid(events);
+      const activityMs = eventActivityMs(events) ?? fileMtimeMs(join(runDir, "journal.jsonl"));
+      const finishedReason =
+        finished && typeof finished.reason === "string" ? finished.reason : undefined;
       const run: ObservedRun = {
         runId,
         checkout: repo.path,
@@ -632,9 +705,13 @@ function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun> {
         ...(typeof finished?.at === "string" ? { finishedAt: finished.at } : {}),
         ...(stepPlan.length > 0 ? { stepPlan } : {}),
         ...(stepEvents.length > 0 ? { stepEvents } : {}),
+        ...(pid !== undefined ? { pid } : {}),
+        ...(activityMs !== undefined ? { activityMs } : {}),
+        ...(finishedReason ? { finishedReason } : {}),
       };
-      const previous = byTag.get(started.tag);
-      if (!previous || run.runId > previous.runId) byTag.set(started.tag, run);
+      const list = byTag.get(started.tag) ?? [];
+      list.push(run);
+      byTag.set(started.tag, list);
     }
   }
   return byTag;
@@ -740,6 +817,41 @@ function readLogTail(logPath: string | undefined): string | undefined {
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+/**
+ * Prefer a run that is not already a recorded failure, so a retry is visible
+ * even when its id does not sort after the failed one. Otherwise keep the
+ * latest id, which is what a single-run job has always shown.
+ */
+function selectRun(runs: ObservedRun[], ledger: AttemptLedger | undefined): { run?: ObservedRun; retired: boolean } {
+  const ignored = new Set(ledger?.ignoredRunIds ?? []);
+  const failed = new Set(
+    (ledger?.attempts ?? []).flatMap((attempt) => (attempt.runId ? [attempt.runId] : [])),
+  );
+  const visible = runs.filter((run) => !ignored.has(run.runId));
+  visible.sort((left, right) => (left.runId < right.runId ? 1 : left.runId > right.runId ? -1 : 0));
+  const fresh = visible.filter((run) => !failed.has(run.runId));
+  if (fresh[0]) return { run: fresh[0], retired: false };
+  if (visible[0]) return { run: visible[0], retired: true };
+  return { retired: false };
+}
+
+function later(left: number | undefined, right: number | undefined): number | undefined {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return Math.max(left, right);
+}
+
+function eventActivityMs(events: JournalEvent[]): number | undefined {
+  let latest: number | undefined;
+  for (const event of events) {
+    if (!event.at) continue;
+    const parsed = Date.parse(event.at);
+    if (!Number.isFinite(parsed)) continue;
+    if (latest === undefined || parsed > latest) latest = parsed;
+  }
+  return latest;
 }
 
 function listRunDirs(checkout: string): string[] {
@@ -1095,13 +1207,7 @@ function releaseLock(lockPath: string): void {
 }
 
 function pidAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return isErrno(error, "EPERM");
-  }
+  return isPidAlive(pid);
 }
 
 function isErrno(error: unknown, code: string): boolean {

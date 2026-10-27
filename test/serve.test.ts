@@ -195,6 +195,8 @@ function viewJob(overrides: Partial<StatusJobView> & Pick<StatusJobView, "jobId"
     dependsOn: [],
     stack: false,
     launchFailed: false,
+    attemptCount: 0,
+    maxAttempts: 3,
     prPending: false,
     prClosedUnmerged: false,
     noReadableApproval: false,
@@ -251,6 +253,63 @@ describe("serve pages", () => {
     assert.match(settled, /id="col-merged"/);
     assert.match(settled, /landed locally/);
     assert.doesNotMatch(settled, /Show more/);
+  });
+
+  it("shows attempt, reason, and next retry on a Needs human card for a dead job", () => {
+    const html = page([
+      viewJob({
+        jobId: "dead-1",
+        state: "dead",
+        title: "Stalled build",
+        attemptCount: 3,
+        maxAttempts: 3,
+        lastFailureReason: "stalled",
+      }),
+      viewJob({
+        jobId: "fail-1",
+        state: "failed",
+        title: "Crashed build",
+        attemptCount: 1,
+        maxAttempts: 3,
+        lastFailureReason: "orphaned",
+        nextRetryAt: "2026-10-26T03:00:00.000Z",
+        steps: [
+          { id: "spec", phase: "done" },
+          { id: "build", phase: "current" },
+        ],
+      }),
+      viewJob({
+        jobId: "gate-1",
+        state: "needs-human",
+        title: "Waiting",
+        canApprove: true,
+      }),
+    ]);
+    const column = (id: string) => {
+      const start = html.indexOf(`id="col-${id}"`);
+      assert.ok(start >= 0, id);
+      const next = html.indexOf('<section class="col', start + 1);
+      return html.slice(start, next === -1 ? html.indexOf("</main>") : next);
+    };
+    const human = column("needs-human");
+    const build = column("build");
+    assert.match(html, /\(2\) Kiln/);
+    assert.match(human, /id="job-dead-1"/);
+    assert.match(human, /your call/);
+    assert.match(human, /attempt 3\/3 · stalled/);
+    assert.doesNotMatch(human, /id="job-fail-1"/);
+    assert.match(build, /id="job-fail-1"/);
+    assert.match(build, /class="card retrying"/);
+    assert.match(build, /retrying <time datetime="2026-10-26T03:00:00.000Z" data-time="clock">/);
+    assert.match(build, /attempt 1\/3 · orphaned/);
+    assert.doesNotMatch(build, /your call/);
+    assert.doesNotMatch(build, /next retry /);
+    const gateStart = html.indexOf('id="job-gate-1"');
+    const gateEnd = html.indexOf('id="job-', gateStart + 1);
+    const gate = html.slice(gateStart, gateEnd === -1 ? undefined : gateEnd);
+    assert.doesNotMatch(gate, /attempt /);
+    assert.match(gate, /your call/);
+    assert.match(html, /action="\/api\/jobs\/dead-1\/retry"/);
   });
 
   it("puts queued and blocked jobs in Queued, and does not format the clock as UTC", () => {
@@ -624,12 +683,21 @@ describe("kiln serve", () => {
       try {
         const html = await text(`${server.url}/`);
         assert.equal(html.status, 200);
-        assert.match(html.body, /\(1\) Kiln/);
-        assert.match(html.body, /Failed: builder exploded/);
+        assert.match(html.body, /\(0\) Kiln/);
         assert.match(html.body, /verify: expected 1 received 0/);
         assert.match(html.body, new RegExp(`action="/api/jobs/${id}/retry"`));
-        assert.match(html.body, /Needs human/);
-        assert.match(html.body, /id="col-needs-human"/);
+        const specStart = html.body.indexOf('id="col-spec"');
+        const specEnd = html.body.indexOf('<section class="col', specStart + 1);
+        const spec = html.body.slice(specStart, specEnd === -1 ? undefined : specEnd);
+        assert.match(spec, new RegExp(`id="job-${id}"`));
+        assert.match(spec, /class="card retrying"/);
+        assert.match(spec, /retrying <time /);
+        assert.match(spec, /attempt 1\/3 · failed/);
+        assert.doesNotMatch(spec, /your call/);
+        const humanStart = html.body.indexOf('id="col-needs-human"');
+        const humanEnd = html.body.indexOf("</main>");
+        const human = html.body.slice(humanStart, humanEnd === -1 ? undefined : humanEnd);
+        assert.doesNotMatch(human, new RegExp(`id="job-${id}"`));
 
         const denied = await text(`${server.url}/api/jobs/${id}/retry`, {
           method: "POST",

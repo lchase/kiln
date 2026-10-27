@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { buildAttention } from "../src/attention.js";
+import { buildAttention, scheduledRetry } from "../src/attention.js";
 import { packageRoot } from "../src/paths.js";
 import {
   latestStepFailure,
@@ -24,6 +24,8 @@ function job(overrides: Partial<StatusJobView> & Pick<StatusJobView, "jobId" | "
     dependsOn: [],
     stack: false,
     launchFailed: false,
+    attemptCount: 0,
+    maxAttempts: 3,
     prPending: false,
     prClosedUnmerged: false,
     noReadableApproval: false,
@@ -284,7 +286,7 @@ describe("attention view", () => {
       launchError: "origin fetch failed",
       logTail: "origin fetch failed\nexit 1",
     });
-    const view = statusView({ maxConcurrent: 2, jobs: [running, blocked, failed], breadcrumbsToClear: [] });
+    const view = statusView({ maxConcurrent: 2, maxAttempts: 3, jobs: [running, blocked, failed], breadcrumbsToClear: [] });
     assert.equal(view.jobs[0]?.state, "running");
     assert.deepEqual(
       view.jobs[0]?.steps.map((step) => [step.id, step.phase]),
@@ -372,6 +374,111 @@ describe("attention view", () => {
     assert.match(html, /findings\.md/);
     assert.doesNotMatch(html, /should not show for an investigation/);
   });
+
+  it("leaves a scheduled retry out of attention and keeps a dead job in it", () => {
+    const waiting = observed({
+      jobId: "again",
+      repo: "web",
+      title: "Stalled during build",
+      runRetired: true,
+      attemptCount: 1,
+      lastFailureReason: "stalled",
+      nextRetryAt: "2026-10-26T23:35:46.000Z",
+      run: {
+        runId: "run-again",
+        checkout: "/tmp/web",
+        status: "dead",
+        gates: [],
+        stepPlan: ["spec", "build", "verify"],
+        stepEvents: [
+          { t: "step.started", stepId: "spec" },
+          { t: "step.completed", stepId: "spec" },
+          { t: "step.started", stepId: "build" },
+        ],
+      },
+    });
+    const spent = observed({
+      jobId: "spent",
+      repo: "web",
+      title: "Dead after three crashes",
+      runRetired: true,
+      retriesExhausted: true,
+      attemptCount: 3,
+      lastFailureReason: "crashed",
+      run: {
+        runId: "run-spent",
+        checkout: "/tmp/web",
+        status: "dead",
+        gates: [],
+        stepPlan: ["spec", "build"],
+        stepEvents: [{ t: "step.started", stepId: "build" }],
+      },
+    });
+    const view = statusView(observation([waiting, spent]));
+    const again = view.jobs[0];
+    const dead = view.jobs[1];
+    assert.ok(again);
+    assert.ok(dead);
+    assert.equal(again.state, "failed");
+    assert.equal(scheduledRetry(again), true);
+    assert.equal(dead.state, "dead");
+    assert.equal(scheduledRetry(dead), false);
+
+    const attention = buildAttention(view.jobs);
+    assert.deepEqual(
+      attention.needsYou.map((item) => item.job.jobId),
+      ["spent"],
+    );
+    assert.deepEqual(
+      attention.inFlight.map((item) => item.job.jobId),
+      ["again"],
+    );
+    assert.equal(attention.needsYouCount, 1);
+
+    const html = renderConsole("", attention);
+    assert.match(html, /\(1\) Kiln/);
+    const column = (id: string) => {
+      const start = html.indexOf(`id="col-${id}"`);
+      assert.ok(start >= 0, id);
+      const next = html.indexOf('<section class="col', start + 1);
+      return html.slice(start, next === -1 ? html.indexOf("</main>") : next);
+    };
+    const build = column("build");
+    assert.match(build, /id="job-again"/);
+    assert.match(build, /class="card retrying"/);
+    assert.match(build, /retrying <time datetime="2026-10-26T23:35:46.000Z" data-time="clock">/);
+    assert.match(build, /attempt 1\/3 · stalled/);
+    assert.doesNotMatch(build, /your call/);
+    const human = column("needs-human");
+    assert.match(human, /id="job-spent"/);
+    assert.match(human, /your call/);
+    assert.match(human, /attempt 3\/3 · crashed/);
+    assert.doesNotMatch(human, /id="job-again"/);
+
+    const resumed = statusView(
+      observation([
+        observed({
+          jobId: "live",
+          repo: "web",
+          title: "Running again",
+          run: {
+            runId: "run-live",
+            checkout: "/tmp/web",
+            status: "alive",
+            gates: [],
+            stepPlan: ["spec", "build"],
+            stepEvents: [{ t: "step.started", stepId: "build" }],
+          },
+        }),
+      ]),
+    );
+    assert.equal(resumed.jobs[0]?.state, "running");
+    const live = renderConsole("", buildAttention(resumed.jobs));
+    assert.match(live, /id="col-build"[\s\S]*id="job-live"/);
+    assert.match(live, /class="card"/);
+    assert.doesNotMatch(live, /retrying/);
+    assert.match(live, /aria-label="running"/);
+  });
 });
 
 function observed(overrides: Partial<ObservedJob> & Pick<ObservedJob, "jobId" | "repo">): ObservedJob {
@@ -386,5 +493,5 @@ function observed(overrides: Partial<ObservedJob> & Pick<ObservedJob, "jobId" | 
 }
 
 function observation(jobs: ObservedJob[]): Observation {
-  return { maxConcurrent: 2, jobs, breadcrumbsToClear: [] };
+  return { maxConcurrent: 2, maxAttempts: 3, jobs, breadcrumbsToClear: [] };
 }

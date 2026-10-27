@@ -2,7 +2,13 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { KilnConfigError } from "./errors.js";
-import { KilnConfigFileSchema, type JiraConfig, type RepoEntry } from "./schemas.js";
+import {
+  DEFAULT_MAX_ATTEMPTS,
+  DEFAULT_STALL_TIMEOUT_MS,
+  KilnConfigFileSchema,
+  type JiraConfig,
+  type RepoEntry,
+} from "./schemas.js";
 
 export interface LoadedKilnConfig {
   configPath: string;
@@ -15,14 +21,21 @@ export interface LoadedKilnConfig {
    */
   repos: Record<string, { path: string; test?: string; deliver: "local" | "pr"; base?: string }>;
   /**
-   * Kiln home. Jobs, logs, deliveries, launching, launch-errors, and specs
-   * live here: the directory of the config file (`--config`'s directory,
+   * Kiln home. Jobs, logs, deliveries, launching, launch-errors, attempts, and
+   * specs live here: the directory of the config file (`--config`'s directory,
    * `$KILN_HOME`, or `~/.kiln`).
    */
   kilnDir: string;
   jobsDir: string;
   /** In-flight cap for `kiln tick`. Default 2. */
   maxConcurrent: number;
+  /**
+   * Quiet time before a running job is killed. Default 15 minutes.
+   * `<= 0` disables stall detection.
+   */
+  stallTimeoutMs: number;
+  /** Transient failures before the job is dead. Default 3. */
+  maxAttempts: number;
   /** Passed to `yak run --adapter`. Default `claude-code`. */
   adapter: "mock" | "claude-code";
   /**
@@ -94,6 +107,8 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
     kilnDir,
     jobsDir: join(kilnDir, "jobs"),
     maxConcurrent: parsed.data.maxConcurrent ?? 2,
+    stallTimeoutMs: parsed.data.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS,
+    maxAttempts: parsed.data.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
     adapter: parsed.data.adapter ?? "claude-code",
     ...(jira ? { jira } : {}),
   };

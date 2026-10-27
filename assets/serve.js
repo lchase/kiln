@@ -188,7 +188,8 @@
   function localTime(iso, withDate) {
     var date = new Date(iso);
     if (!isFinite(date.getTime())) return iso;
-    return withDate ? date.toLocaleString() : date.toLocaleTimeString();
+    if (!withDate) return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    return date.toLocaleString();
   }
 
   function localizeIso(text) {
@@ -200,8 +201,8 @@
   function localizeTimes(root) {
     var nodes = (root || document).querySelectorAll("time[datetime]");
     for (var i = 0; i < nodes.length; i++) {
-      var iso = nodes[i].getAttribute("datetime");
-      if (iso) nodes[i].textContent = localTime(iso, true);
+    var iso = nodes[i].getAttribute("datetime");
+    if (iso) nodes[i].textContent = localTime(iso, nodes[i].getAttribute("data-time") !== "clock");
     }
   }
 

@@ -1,6 +1,10 @@
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import type { JobSource, JobState } from "./schemas.js";
 
+/** Why a transient attempt failed. Written under `<kilnDir>/attempts`, not on the job. */
+export const FAILURE_REASONS = ["stalled", "orphaned", "crashed", "failed"] as const;
+export type FailureReason = (typeof FAILURE_REASONS)[number];
+
 /**
  * One tick's decisions. Pure: the same observation always yields the same
  * actions.
@@ -8,10 +12,11 @@ import type { JobSource, JobState } from "./schemas.js";
  * Observe reads job files and yak journals, decide chooses, apply performs.
  * A suspended or still-running job keeps its slot. At most one job is
  * launched per tick, and only when in-flight work is below maxConcurrent.
- * A job that already has a run is not launched again. A failed run stays
- * failed. A dead run, a rejected gate, an ok run with no readable approval,
- * and a launch that exited before writing a journal are terminal and do not
- * take a slot. `deliver=local` unblocks after-merged dependents on `done`
+ * A job that already has a run is not launched again, except a due retry of
+ * a transient failure recorded in the attempt ledger. A rejected gate, an
+ * ok run with no readable approval, and a cancelled run are not retried.
+ * A dead run, a failed run, and a launch that exited before a journal do
+ * not take a slot. `deliver=local` unblocks after-merged dependents on `done`
  * (run finished ok, gate decision approve). `deliver=pr` unblocks them when
  * that landed run's pull request has merged. An investigation unblocks them
  * when its gate says approve: that job is `done` and is not delivered.
@@ -67,6 +72,15 @@ export interface ObservedRun {
   stepPlan?: string[];
   /** Yak `step.started`, `step.completed`, and `step.failed` events, in order. */
   stepEvents?: { t: "step.started" | "step.completed" | "step.failed"; stepId: string; detail?: string }[];
+  /** Latest `run.resumed` pid, else `run.started`. */
+  pid?: number;
+  /**
+   * Latest journal event time (`at`), else the journal file mtime.
+   * Observe folds in the kiln log mtime before stall detection.
+   */
+  activityMs?: number;
+  /** `run.finished` reason. `cancelled` is not an automatic retry. */
+  finishedReason?: string;
 }
 
 export interface ObservedJob {
@@ -106,10 +120,17 @@ export interface ObservedJob {
   findingsPath?: string;
   /** A launching breadcrumb exists, its child pid is alive, and no journal is visible yet. */
   launching: boolean;
-  /** The child pid is dead and no journal was written. Terminal: do not relaunch. */
+  /**
+   * The child pid is dead and no journal was written.
+   * A crash retry can launch again once `nextRetryAt` is due.
+   */
   launchFailed: boolean;
   /** Fetch or base selection failed. Status shows it. The next tick retries. */
   launchError?: string;
+  /** Pid from the launching breadcrumb, when that file exists. */
+  launchPid?: number;
+  /** Breadcrumb and log activity for a launch that has not journalled yet. */
+  launchActivityMs?: number;
   logPath?: string;
   /** Job file `createdAt`. Status does not print it. The console uses it as elapsed time before a run starts. */
   createdAt?: string;
@@ -123,12 +144,25 @@ export interface ObservedJob {
   /** Leaf steps from the packaged workflow, used when the job has no run yet. */
   stepPlan?: string[];
   run?: ObservedRun;
+  /** Failures recorded for this job. `0` when there is no attempt ledger. */
+  attemptCount?: number;
+  lastFailureReason?: FailureReason;
+  /** ISO time of the next automatic launch. Omitted once attempts are exhausted. */
+  nextRetryAt?: string;
+  /** `attemptCount` has reached `maxAttempts` and no newer run is in flight. */
+  retriesExhausted?: boolean;
+  /** The selected run is already in the attempt ledger. A newer launch may supersede it. */
+  runRetired?: boolean;
+  /** The attempt ledger could not be parsed. Automatic retry stays off. */
+  ledgerError?: string;
   /** The job file could not be used. Decide skips it. */
   error?: string;
 }
 
 export interface Observation {
   maxConcurrent: number;
+  /** Configured attempt budget. The console prints `attempt N/M`. */
+  maxAttempts: number;
   /** createdAt order, then id. decide() launches the first queued job. */
   jobs: ObservedJob[];
   /** Breadcrumbs whose journal has since appeared. Apply deletes the files. */
@@ -138,6 +172,7 @@ export interface Observation {
 export type Action =
   | { type: "clear-breadcrumb"; path: string }
   | { type: "launch"; jobId: string; repo: string }
+  | { type: "retry"; jobId: string; repo: string }
   | { type: "deliver"; jobId: string; repo: string }
   | { type: "record-findings"; jobId: string };
 
@@ -161,21 +196,30 @@ function inFlight(job: ObservedJob, observation: Observation): boolean {
  * An investigation is `done` on approve and never `in-review`.
  */
 export function jobState(job: ObservedJob, observation: Observation): JobState {
-  if (job.launchFailed && !job.run) return "failed";
-  if (job.run) {
-    if (isLanded(job)) return landedState(job);
-    if (job.run.status === "ok" && job.run.gateDecision === "reject") return "rejected";
-    if (job.run.status === "ok") return "failed";
-    if (job.run.status === "failed") return "failed";
-    if (job.run.status === "dead") return "dead";
-    if (job.run.status === "suspended") return "needs-human";
-    if (job.run.gateDecision === "approve") return "approved";
-    return "running";
-  }
+  if (job.launching && (!job.run || job.runRetired)) return "running";
+  if (job.run && !job.runRetired) return activeRunState(job);
+  if (job.run && isLanded(job)) return landedState(job);
+  if (job.run?.status === "ok" && job.run.gateDecision === "reject") return "rejected";
+  if (job.run?.status === "suspended") return "needs-human";
+  if (job.retriesExhausted) return "dead";
+  if (job.runRetired || job.run?.status === "failed" || job.run?.status === "dead") return "failed";
   if (job.launching) return "running";
   if (!dependenciesMet(job, observation)) return "blocked";
-  if (job.launchError) return "failed";
+  if (job.launchError || job.launchFailed) return "failed";
   return "queued";
+}
+
+/** State of the current run, before the attempt ledger retires it. */
+function activeRunState(job: ObservedJob): JobState {
+  if (!job.run) return "queued";
+  if (isLanded(job)) return landedState(job);
+  if (job.run.status === "ok" && job.run.gateDecision === "reject") return "rejected";
+  if (job.run.status === "ok") return "failed";
+  if (job.run.status === "failed") return "failed";
+  if (job.run.status === "dead") return "dead";
+  if (job.run.status === "suspended") return "needs-human";
+  if (job.run.gateDecision === "approve") return "approved";
+  return "running";
 }
 
 /**
@@ -234,7 +278,19 @@ function canLaunch(job: ObservedJob, observation: Observation): boolean {
   return dependenciesMet(job, observation);
 }
 
-export function decide(observation: Observation): Action[] {
+/** A recorded transient failure whose backoff has elapsed. One retry per tick, ahead of a new job. */
+function canRetry(job: ObservedJob, observation: Observation, now: Date): boolean {
+  if (job.error || job.launching || job.retriesExhausted || job.ledgerError) return false;
+  if (job.run && !job.runRetired) return false;
+  if (!job.nextRetryAt) return false;
+  const due = Date.parse(job.nextRetryAt);
+  if (!Number.isFinite(due) || due > now.getTime()) return false;
+  if (job.run?.gateDecision === "reject" || isLanded(job)) return false;
+  if (job.run?.status === "suspended") return false;
+  return dependenciesMet(job, observation);
+}
+
+export function decide(observation: Observation, now = new Date()): Action[] {
   const actions: Action[] = observation.breadcrumbsToClear.map((crumb) => ({
     type: "clear-breadcrumb",
     path: crumb.path,
@@ -252,6 +308,12 @@ export function decide(observation: Observation): Action[] {
   }
 
   if (inFlightCount(observation) >= observation.maxConcurrent) return actions;
+
+  const retry = observation.jobs.find((job) => canRetry(job, observation, now));
+  if (retry) {
+    actions.push({ type: "retry", jobId: retry.jobId, repo: retry.repo });
+    return actions;
+  }
 
   const ready = observation.jobs.filter((job) => canLaunch(job, observation));
   const healthy = ready.filter((job) => !job.launchError);

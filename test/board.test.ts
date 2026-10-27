@@ -19,6 +19,48 @@ describe("board stages", () => {
   it("maps kiln states and the current yak step onto factory columns", () => {
     assert.equal(stageOf(stage({ state: "needs-human" })), "needs-human");
     assert.equal(stageOf(stage({ state: "failed" })), "needs-human");
+    assert.equal(
+      stageOf(
+        stage({
+          state: "failed",
+          steps: [
+            { id: "spec", phase: "done" },
+            { id: "build", phase: "current" },
+          ],
+          attemptCount: 1,
+          maxAttempts: 3,
+          lastFailureReason: "stalled",
+          nextRetryAt: "2026-10-26T23:35:46.000Z",
+        }),
+      ),
+      "build",
+    );
+    assert.equal(
+      stageOf(
+        stage({
+          state: "failed",
+          steps: [{ id: "security", phase: "failed" }],
+          attemptCount: 2,
+          maxAttempts: 3,
+          lastFailureReason: "crashed",
+          nextRetryAt: "2026-10-26T23:35:46.000Z",
+        }),
+      ),
+      "review",
+    );
+    assert.equal(
+      stageOf(
+        stage({
+          state: "failed",
+          steps: [{ id: "build", phase: "current" }],
+          attemptCount: 3,
+          maxAttempts: 3,
+          lastFailureReason: "stalled",
+          nextRetryAt: "2026-10-26T23:35:46.000Z",
+        }),
+      ),
+      "needs-human",
+    );
     assert.equal(stageOf(stage({ state: "dead" })), "needs-human");
     assert.equal(stageOf(stage({ state: "invalid" })), "needs-human");
     assert.equal(stageOf(stage({ state: "rejected" })), "needs-human");

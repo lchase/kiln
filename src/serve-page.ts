@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AttentionItem, AttentionView } from "./attention.js";
+import { scheduledRetry, type AttentionItem, type AttentionView } from "./attention.js";
 import { readBoardFiles, stageOf, stagesFor, type BoardFile, type BoardReviewRound, type BoardStage } from "./board.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import { packageRoot } from "./paths.js";
@@ -116,13 +116,15 @@ ${cards || ""}<div class="empty"${items.length > 0 ? " hidden" : ""}>none</div><
 
 function card(item: AttentionItem, stage: string): string {
   const job = item.job;
+  const waiting = scheduledRetry(job);
   const classes = ["card"];
-  if (stage === "needs-human") classes.push("human");
+  if (waiting) classes.push("retrying");
+  else if (stage === "needs-human") classes.push("human");
   if (stage === "merged") classes.push("merged");
   if (stage === "queued") classes.push("queued");
   const deps = job.dependsOn.map((dep) => dep.jobId).join(" ");
   const pulse = job.state === "running" ? '<span class="pulse" aria-label="running"></span>' : "";
-  const flag = stage === "needs-human" ? '<span class="flag">your call</span>' : "";
+  const flag = stage === "needs-human" && !waiting ? '<span class="flag">your call</span>' : "";
   const branch = branchOf(job);
   return `<div role="button" tabindex="0" class="${classes.join(" ")}" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-deps="${escapeHtml(deps)}" data-repo="${escapeHtml(job.repo)}" data-stage="${escapeHtml(stage)}">
 <div class="card-top">${pulse}<span class="num">${escapeHtml(job.jobId)}</span>${flag}</div>
@@ -131,7 +133,8 @@ function card(item: AttentionItem, stage: string): string {
 ${branch ? `<div class="branch">${escapeHtml(branch)}</div>` : ""}
 ${prLink(job)}
 ${roundsHtml(job, stage)}
-${noteHtml(item)}
+${attemptHtml(job, stage)}
+${waiting ? "" : noteHtml(item)}
 ${dependsHtml(job)}
 </div>`;
 }
@@ -221,6 +224,28 @@ function roundRow(round: BoardReviewRound, waiting: boolean): string {
     return `<span class="chip${tone ? ` ${tone}` : ""}" title="${escapeHtml(`${key}: ${verdict || "pending"}`)}">${label}</span>`;
   }).join("");
   return `<div class="round"><span class="r">R${round.n}</span>${cells}</div>`;
+}
+
+/**
+ * A scheduled retry is one quiet line in the stage column.
+ * A dead or non-retryable failure in Needs human keeps the attempt budget.
+ */
+function attemptHtml(job: StatusJobView, stage: string): string {
+  if (scheduledRetry(job) && job.nextRetryAt) {
+    const detail = [`attempt ${job.attemptCount}/${job.maxAttempts}`];
+    if (job.lastFailureReason) detail.push(job.lastFailureReason);
+    return `<div class="meta">retrying <time datetime="${escapeHtml(job.nextRetryAt)}" data-time="clock">${escapeHtml(job.nextRetryAt)}</time> · ${escapeHtml(detail.join(" · "))}</div>`;
+  }
+  if (stage !== "needs-human" || (job.state !== "failed" && job.state !== "dead")) return "";
+  if (job.attemptCount <= 0 && !job.lastFailureReason && !job.nextRetryAt) return "";
+  const parts: string[] = [];
+  if (job.attemptCount > 0) parts.push(`attempt ${job.attemptCount}/${job.maxAttempts}`);
+  if (job.lastFailureReason) parts.push(job.lastFailureReason);
+  const line = parts.length > 0 ? `<div class="meta">${escapeHtml(parts.join(" · "))}</div>` : "";
+  const when = job.nextRetryAt
+    ? `<div class="meta">next retry <time datetime="${escapeHtml(job.nextRetryAt)}">${escapeHtml(job.nextRetryAt)}</time></div>`
+    : "";
+  return `${line}${when}`;
 }
 
 function noteHtml(item: AttentionItem): string {

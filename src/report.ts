@@ -9,16 +9,20 @@ import {
   isLanded,
   jobState,
   type Action,
+  type FailureReason,
   type Observation,
   type ObservedGate,
   type ObservedJob,
 } from "./reconcile.js";
+import type { ReliabilityNote } from "./reliability.js";
 import type { JobState } from "./schemas.js";
 
 export interface LaunchReport {
   jobId: string;
   repo: string;
   output: string;
+  /** Set when this launch is an automatic or manual retry of a recorded failure. */
+  retry?: boolean;
 }
 
 export interface DeliverReport {
@@ -174,6 +178,15 @@ export interface StatusJobView {
   findingsPath?: string;
   launchFailed: boolean;
   launchError?: string;
+  /** Recorded attempts. `0` when the job has no attempt ledger. */
+  attemptCount: number;
+  /** Configured budget. The board prints `attempt N/M`. */
+  maxAttempts: number;
+  lastFailureReason?: FailureReason;
+  /** ISO time the next automatic retry becomes due. */
+  nextRetryAt?: string;
+  /** Set when `<kilnDir>/attempts/<id>.json` cannot be parsed. Automatic retry stays off. */
+  ledgerError?: string;
   deliveryError?: string;
   viewError?: string;
   invalidReason?: string;
@@ -248,6 +261,11 @@ export function statusDetails(job: StatusJobView): string[] {
   }
   if (job.state === "failed" && job.launchFailed && job.logPath) lines.push(`log ${job.logPath}`);
   if (job.state === "failed" && job.launchError) lines.push(job.launchError);
+  if (job.ledgerError) lines.push(job.ledgerError);
+  if (job.attemptCount > 0) lines.push(`attempts ${job.attemptCount}`);
+  if (job.lastFailureReason) lines.push(`reason ${job.lastFailureReason}`);
+  if (job.nextRetryAt) lines.push(`next retry ${job.nextRetryAt}`);
+  if (job.state === "dead" && job.attemptCount > 0) lines.push(`retry: kiln retry ${job.jobId}`);
   if (job.noReadableApproval) lines.push("no readable approval decision");
   if (job.cancelCommand) lines.push(job.cancelCommand);
   if (job.state === "blocked") {
@@ -291,6 +309,10 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
       ...(job.logPath ? { logPath: job.logPath } : {}),
       ...(job.findingsPath ? { findingsPath: job.findingsPath } : {}),
       launchFailed: job.launchFailed,
+      attemptCount: job.attemptCount ?? 0,
+      maxAttempts: observation.maxAttempts,
+      ...(job.lastFailureReason ? { lastFailureReason: job.lastFailureReason } : {}),
+      ...(job.nextRetryAt ? { nextRetryAt: job.nextRetryAt } : {}),
       invalidReason: job.error,
       prPending: false,
       prClosedUnmerged: false,
@@ -328,13 +350,18 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     ...(job.specPath ? { specPath: job.specPath } : {}),
     ...(job.findingsPath ? { findingsPath: job.findingsPath } : {}),
     launchFailed: job.launchFailed,
+    attemptCount: job.attemptCount ?? 0,
+    maxAttempts: observation.maxAttempts,
+    ...(job.lastFailureReason ? { lastFailureReason: job.lastFailureReason } : {}),
+    ...(job.nextRetryAt && !job.retriesExhausted ? { nextRetryAt: job.nextRetryAt } : {}),
+    ...(job.ledgerError ? { ledgerError: job.ledgerError } : {}),
     ...(job.launchError ? { launchError: job.launchError } : {}),
     ...(job.delivery?.error ? { deliveryError: job.delivery.error } : {}),
     ...(job.delivery?.viewError ? { viewError: job.delivery.viewError } : {}),
     prPending: state === "in-review" && !prNumber,
     prClosedUnmerged: job.delivery?.prState === "CLOSED",
     noReadableApproval: state === "failed" && job.run?.status === "ok" && !job.run.gateDecision,
-    ...(state === "dead" && job.run
+    ...(job.run && (job.run.status === "dead" || state === "dead")
       ? { cancelCommand: `fix: cd ${shellQuote(job.run.checkout)} && ${yakInvocation("cancel", job.run.runId)}` }
       : {}),
     gates,
@@ -431,6 +458,7 @@ export function renderTick(
   launches: LaunchReport[],
   delivers: DeliverReport[] = [],
   findings: FindingsReport[] = [],
+  notes: ReliabilityNote[] = [],
 ): string {
   const lines = [`tick  inFlight=${inFlightCount(observation)}  maxConcurrent=${observation.maxConcurrent}`];
   for (const job of observation.jobs) {
@@ -453,14 +481,18 @@ export function renderTick(
         : `findings ${recorded.jobId}  missing`,
     );
   }
+  for (const note of notes) {
+    const next = note.nextRetryAt ? `  next ${note.nextRetryAt}` : "  dead";
+    lines.push(`${note.kind} ${note.jobId}  ${note.reason}  attempt ${note.attempt}${next}`);
+  }
   for (const launch of launches) {
-    lines.push(`launch ${launch.jobId}  ${launch.repo}`);
+    lines.push(`${launch.retry ? "retry" : "launch"} ${launch.jobId}  ${launch.repo}`);
     for (const line of launch.output.split("\n")) {
       if (line.trim()) lines.push(`  ${line}`);
     }
   }
   if (
-    !actions.some((action) => action.type === "launch") &&
+    !actions.some((action) => action.type === "launch" || action.type === "retry") &&
     launches.length === 0 &&
     delivers.length === 0 &&
     findings.length === 0
