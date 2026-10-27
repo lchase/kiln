@@ -11,11 +11,33 @@ import { z } from "zod";
  * `pr` pushes that branch and opens a draft pull request against `base`.
  * `base` defaults to origin's default branch, discovered with git, when omitted.
  */
+/** Jira-style issue keys (`ABC-123`). Stored and matched in uppercase. */
+export const ISSUE_KEY = /^[A-Z][A-Z0-9]+-\d+$/;
+
+export function parseIssueKey(raw: string): string {
+  const key = raw.trim().toUpperCase();
+  if (!ISSUE_KEY.test(key)) {
+    throw new Error(`Issue key ${JSON.stringify(raw)} must match KEY-123.`);
+  }
+  return key;
+}
+
 export const RepoEntrySchema = z.object({
   path: z.string().min(1),
   test: z.string().min(1).optional(),
   deliver: z.enum(["local", "pr"]).optional(),
   base: z.string().min(1).optional(),
+  /**
+   * Pull request title when the job has an `issue`. Placeholders `{issue}` and `{title}`.
+   * Default `[{issue}] {title}`. A job with no issue keeps its title and ignores this.
+   */
+  prTitle: z.string().min(1).optional(),
+  /**
+   * Remote branch for `deliver=pr`. Placeholders `{issue}`, `{slug}`, and `{jobId}`.
+   * Default `<issue>-<slug>`, or `kiln/<slug>-<short id>` when there is no issue.
+   * The local branch stays `yak/<run-id>`.
+   */
+  branch: z.string().min(1).optional(),
 });
 export type RepoEntry = z.infer<typeof RepoEntrySchema>;
 
@@ -114,6 +136,8 @@ export const JobSchema = z.object({
    * a branch.
    */
   stack: z.boolean().optional(),
+  /** Issue id such as `ABC-123`. Omitted when intake had no key. */
+  issue: z.string().regex(ISSUE_KEY).optional(),
   source: JobSourceSchema.optional(),
   createdAt: z.string().min(1),
 });

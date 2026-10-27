@@ -4,7 +4,7 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import type { LoadedKilnConfig } from "./config.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import { jobBasename } from "./paths.js";
-import { JobSchema, type Job, type JobSource } from "./schemas.js";
+import { JobSchema, parseIssueKey, type Job, type JobSource } from "./schemas.js";
 import { assertWorkflowName } from "./workflow.js";
 
 export function newJobId(now = new Date()): string {
@@ -52,6 +52,8 @@ export interface WriteJobInput {
   dependsOn: string[];
   /** True when this job stacks on its single upstream. Omitted means after-merged. */
   stack?: boolean;
+  /** Issue id such as `ABC-123`. Validated and stored uppercase. */
+  issue?: string;
   source: JobSource;
   now?: Date;
   /**
@@ -76,6 +78,7 @@ export function writeJob(config: LoadedKilnConfig, input: WriteJobInput): { job:
   if (!title) {
     throw new Error("Job title is empty. Pass --title.");
   }
+  const issue = input.issue !== undefined ? parseIssueKey(input.issue) : undefined;
 
   const now = input.now ?? new Date();
   const id = input.id ?? newJobId(now);
@@ -106,6 +109,7 @@ export function writeJob(config: LoadedKilnConfig, input: WriteJobInput): { job:
     title,
     ...(dependsOn.length > 0 ? { dependsOn } : {}),
     ...(input.stack ? { stack: true } : {}),
+    ...(issue ? { issue } : {}),
     source: input.source,
     createdAt: now.toISOString(),
   });
@@ -117,6 +121,7 @@ export function writeJob(config: LoadedKilnConfig, input: WriteJobInput): { job:
 
 export function renderAddedJob(job: Job, jsonPath: string): string {
   const lines = [`added ${job.id}`, `repo ${job.repo}`, `workflow ${job.workflow}`, `spec ${job.spec}`];
+  if (job.issue) lines.push(`issue ${job.issue}`);
   if (job.stack) lines.push("stack");
   if (job.source) lines.push(`source ${job.source.kind} ${job.source.ref}`);
   lines.push(`wrote ${jsonPath}`, "");

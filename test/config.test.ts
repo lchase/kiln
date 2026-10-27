@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { addRepo, loadKilnConfig, resolveKilnConfig } from "../src/config.js";
+import { addRepo, loadKilnConfig, renderRepoList, resolveKilnConfig } from "../src/config.js";
 import { KilnConfigError } from "../src/errors.js";
 import { writeJob } from "../src/jobs.js";
 import { jobBasename, packageRoot } from "../src/paths.js";
@@ -256,19 +256,32 @@ describe("kiln config", { concurrency: 1 }, () => {
     try {
       const first = addRepo({ cwd, home, name: "web", repoPath: "repos/web", test: "npm test" });
       assert.match(first, new RegExp(escapeRegExp(checkout)));
+      assert.match(first, /deliver local/);
+      assert.match(first, /Change delivery with: kiln repo add web repos\/web --deliver pr --base main/);
       const configPath = join(home, ".kiln", "kiln.config.json");
       const stored = JSON.parse(readFileSync(configPath, "utf8")) as {
-        repos: { web: { path: string; test?: string } };
+        repos: { web: { path: string; test?: string; deliver?: string; prTitle?: string; branch?: string } };
       };
       assert.equal(stored.repos.web.path, checkout);
       assert.equal(stored.repos.web.test, "npm test");
+      assert.equal(stored.repos.web.deliver, undefined);
       assert.equal(existsSync(join(cwd, ".kiln")), false);
-      addRepo({ cwd, home, name: "web", repoPath: checkout });
+      stored.repos.web.prTitle = "{issue} / {title}";
+      stored.repos.web.branch = "{issue}/{slug}";
+      writeFileSync(configPath, `${JSON.stringify(stored, null, 2)}\n`);
+      const switched = addRepo({ cwd, home, name: "web", repoPath: checkout, deliver: "pr", base: "main" });
+      assert.match(switched, /deliver pr/);
+      assert.match(switched, /Change delivery with: kiln repo add web .+ --deliver local/);
       const updated = JSON.parse(readFileSync(configPath, "utf8")) as {
-        repos: { web: { path: string; test?: string } };
+        repos: { web: { path: string; test?: string; deliver?: string; prTitle?: string; branch?: string } };
       };
       assert.equal(updated.repos.web.path, checkout);
       assert.equal(updated.repos.web.test, "npm test");
+      assert.equal(updated.repos.web.deliver, "pr");
+      assert.equal(updated.repos.web.prTitle, "{issue} / {title}");
+      assert.equal(updated.repos.web.branch, "{issue}/{slug}");
+      const loaded = resolveKilnConfig({ cwd, home });
+      assert.match(renderRepoList(loaded), /web {2}\S+ {2}test npm test {2}deliver pr {2}base main {2}prTitle \{issue\} \/ \{title\} {2}branch \{issue\}\/\{slug\}/);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

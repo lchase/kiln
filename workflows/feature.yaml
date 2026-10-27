@@ -125,10 +125,13 @@ steps:
 
         # Build and verify stay in order. These four do not need each other,
         # so concurrency 4 starts them together. They have no Write or Edit.
-        # Bash stays, because the factory prompts diff with git. Yak warns
-        # that concurrent Bash steps share one cwd. The preambles forbid
-        # re-running tests, builds, and any other write; git and file reads
-        # stay. input is inherited for baseRef; it is not in needs.
+        # Bash stays: the factory prompts run `git diff <main>...HEAD`. The
+        # kiln preambles allow read-only git and forbid re-running tests,
+        # builds, and writes. Yak 0.8.0 counts Bash as write-capable
+        # (WRITE_CAPABLE_TOOLS in src/ir/validate.ts) and has no read-only
+        # exemption, so tick prints a concurrency warning. Do not drop Bash
+        # or set concurrency to 1 to silence it. That needs a yak change.
+        # input is inherited for baseRef; it is not in needs.
         - id: security
           needs: [spec, build, verify]
           agent:

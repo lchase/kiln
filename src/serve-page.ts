@@ -121,7 +121,7 @@ function card(item: AttentionItem, stage: string): string {
   const classes = ["card"];
   if (waiting) classes.push("retrying");
   else if (stage === "needs-human") classes.push("human");
-  if (stage === "merged") classes.push("merged");
+  if (stage === "done" || stage === "merged") classes.push("merged");
   if (stage === "queued") classes.push("queued");
   const deps = job.dependsOn.map((dep) => dep.jobId).join(" ");
   const pulse = job.state === "running" ? '<span class="pulse" aria-label="running"></span>' : "";
@@ -129,7 +129,7 @@ function card(item: AttentionItem, stage: string): string {
   const branch = branchOf(job);
   return `<div role="button" tabindex="0" class="${classes.join(" ")}" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-deps="${escapeHtml(deps)}" data-repo="${escapeHtml(job.repo)}" data-stage="${escapeHtml(stage)}">
 <div class="card-top">${pulse}<span class="num">${escapeHtml(job.jobId)}</span>${flag}</div>
-<div class="branch repo">${escapeHtml(job.repo)}</div>
+<div class="branch repo">${escapeHtml(repoLabel(job))}</div>
 <p class="title">${escapeHtml(job.title || job.jobId)}</p>
 ${branch ? `<div class="branch">${escapeHtml(branch)}</div>` : ""}
 ${sandboxHtml(job)}
@@ -274,9 +274,19 @@ function noteHtml(item: AttentionItem): string {
   return `<div class="note">${lines.map((line) => escapeHtml(line)).join("<br>")}</div>`;
 }
 
+function repoLabel(job: StatusJobView): string {
+  if (job.deliver === "local" || job.deliver === "pr") return `${job.repo} · ${job.deliver}`;
+  return job.repo;
+}
+
 function noteText(item: AttentionItem): string {
   const job = item.job;
-  if (job.state === "done") return safeUrl(job.prUrl) ? "merged via PR" : "landed locally";
+  if (job.state === "done") {
+    if (job.prNumber) return `merged · PR #${job.prNumber}`;
+    if (safeUrl(job.prUrl)) return "merged · PR";
+    const branch = branchOf(job);
+    return branch ? `landed locally · ${branch}` : "landed locally";
+  }
   return item.reason;
 }
 

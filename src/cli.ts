@@ -14,7 +14,7 @@ function usage(): never {
     [
       "Usage: kiln repo add <name> <path> [--test <cmd>] [--deliver local|pr] [--base <branch>] [--config <file>]",
       "       kiln repo list [--config <file>]",
-      "       kiln add <workflow> --repo <name> (--spec <file.md> | --prompt <text> | --jira <KEY>) [--title <text>] [--after <jobId>]... [--stack] [--dry-run] [--config <file>]",
+      "       kiln add <workflow> --repo <name> (--spec <file.md> | --prompt <text> | --jira <KEY>) [--title <text>] [--issue <KEY>] [--after <jobId>]... [--stack] [--dry-run] [--config <file>]",
       "       kiln import <dir> --repo <name> [--workflow <name>] [--context <file.md>] [--stack] [--dry-run] [--config <file>]",
       "       kiln tick [--config <file>]",
       "       kiln status [jobId] [--config <file>]",
@@ -24,8 +24,10 @@ function usage(): never {
       "       kiln sandbox [build] [--config <file>]",
       "       kiln serve [--port 4100] [--tick <seconds>|--no-tick] [--config <file>]",
       "",
-      "repo add registers a checkout. A relative path is stored absolute, resolved",
-      "from the working directory. ~ is expanded from the home directory.",
+      "repo add registers a checkout and prints the deliver mode (default local)",
+      "and how to change it. Adding an existing name updates that repo in place.",
+      "A relative path is stored absolute, resolved from the working directory.",
+      "~ is expanded from the home directory.",
       "",
       "Config, jobs, logs, and deliveries live in one kiln home: --config <file>",
       "if given, otherwise $KILN_HOME/kiln.config.json when KILN_HOME is set,",
@@ -36,6 +38,8 @@ function usage(): never {
       "",
       "add writes one job from a spec file, from --prompt text (--prompt - reads stdin),",
       "or from a Jira Cloud issue (--jira PROJ-123). Pass one of those, not more.",
+      "--issue KEY stores an issue id (KEY-123). With deliver=pr the draft title",
+      "defaults to [KEY] title. A job with no issue keeps its title.",
       "The repo and the workflow (workflows/<name>.yaml) must already exist.",
       "--after names jobs that must be done before this one launches. --stack waits",
       "for one upstream to land and opens the pull request against that branch.",
@@ -61,6 +65,7 @@ function usage(): never {
       "15 minutes; 0 disables it) is killed and retried. A crash, a non-zero exit,",
       "or a process that is already gone when tick or serve starts (orphaned) retries",
       "after 10s, 20s, 40s, and so on, capped at 5 minutes, up to maxAttempts",
+      "A rejected Claude login (401 or an invalid bearer token) is auth-failed and is not retried.",
       "(default 3). The job is then dead. A rejected gate is not retried.",
       "Attempts are files under the kiln home, not fields on the job.",
       "Once a pull request is open, tick watches it. A failed check or a review",
@@ -69,7 +74,8 @@ function usage(): never {
       "job is needs-human with reason feedback-exhausted.",
       "",
       "serve listens on 127.0.0.1. The page is a board of workflow stages:",
-      "queued, spec, build, review, approve, land, PR review, merged, and needs human.",
+      "queued, spec, build, review, approve, land, PR review, Done (landed locally),",
+      "Merged (pull request), and needs human. An empty board shows Done.",
       "Empty stages collapse. Approve, reject, and retry call the same",
       "functions as the CLI. POST from another origin is rejected. A tick",
       "runs every 30 seconds unless --no-tick is set, using the tick lock.",
@@ -92,6 +98,7 @@ interface FlagBag {
   prompt?: string;
   jira?: string;
   title?: string;
+  issue?: string;
   workflow?: string;
   context?: string;
   dryRun: boolean;
@@ -164,6 +171,12 @@ function parseFlags(argv: string[]): FlagBag {
     if (flag === "--title") {
       if (!next || next.startsWith("--")) usage();
       bag.title = next;
+      i += 1;
+      continue;
+    }
+    if (flag === "--issue") {
+      if (!next || next.startsWith("--")) usage();
+      bag.issue = next;
       i += 1;
       continue;
     }
@@ -274,6 +287,7 @@ async function addCommand(argv: string[]): Promise<void> {
       repo: flags.repo,
       key: flags.jira,
       ...(flags.title !== undefined ? { title: flags.title } : {}),
+      ...(flags.issue !== undefined ? { issue: flags.issue } : {}),
       dependsOn: flags.after,
       ...(flags.stack ? { stack: true } : {}),
       dryRun: flags.dryRun,
@@ -289,6 +303,7 @@ async function addCommand(argv: string[]): Promise<void> {
           repo: flags.repo,
           specPath: flags.spec,
           ...(flags.title !== undefined ? { title: flags.title } : {}),
+          ...(flags.issue !== undefined ? { issue: flags.issue } : {}),
           dependsOn: flags.after,
           ...(flags.stack ? { stack: true } : {}),
           cwd: process.cwd(),
@@ -298,6 +313,7 @@ async function addCommand(argv: string[]): Promise<void> {
           repo: flags.repo,
           prompt: flags.prompt ?? "",
           ...(flags.title !== undefined ? { title: flags.title } : {}),
+          ...(flags.issue !== undefined ? { issue: flags.issue } : {}),
           dependsOn: flags.after,
           ...(flags.stack ? { stack: true } : {}),
         });
@@ -315,6 +331,7 @@ function importCommand(argv: string[]): void {
     flags.spec ||
     flags.prompt ||
     flags.title ||
+    flags.issue ||
     flags.after.length > 0 ||
     flags.test ||
     flags.deliver ||
@@ -424,6 +441,7 @@ function hasIntakeFlags(flags: FlagBag): boolean {
       flags.prompt ||
       flags.jira ||
       flags.title ||
+      flags.issue ||
       flags.workflow ||
       flags.context ||
       flags.dryRun ||

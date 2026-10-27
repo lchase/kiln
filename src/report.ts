@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { AUTH_FAILED_LINE } from "./auth.js";
 import { readBoardFiles, readReviewRounds, type BoardFile, type BoardReviewRound } from "./board.js";
 import { feedbackRoundText, type FeedbackRound } from "./feedback.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
@@ -193,8 +194,13 @@ export interface StatusJobView {
   stack: boolean;
   source?: { kind: string; ref: string };
   runId?: string;
-  /** `yak/<run-id>` when status would print the branch (`done` or `in-review`). */
+  /**
+   * Branch status prints for `done`, `in-review`, or a feedback hold.
+   * `deliver=pr` uses the remote name. Otherwise `yak/<run-id>`.
+   */
   branch?: string;
+  /** Repo delivery mode, when the job's repo is known. */
+  deliver?: "local" | "pr";
   prUrl?: string;
   prNumber?: number;
   logPath?: string;
@@ -306,6 +312,7 @@ export function statusDetails(job: StatusJobView): string[] {
   if (job.state === "needs-human" && job.feedbackReason) lines.push(`reason ${job.feedbackReason}`);
   if (job.attemptCount > 0) lines.push(`attempts ${job.attemptCount}`);
   if (job.lastFailureReason) lines.push(`reason ${job.lastFailureReason}`);
+  if (job.lastFailureReason === "auth-failed") lines.push(AUTH_FAILED_LINE);
   if (job.nextRetryAt) lines.push(`next retry ${job.nextRetryAt}`);
   if (job.state === "dead" && job.attemptCount > 0) lines.push(`retry: kiln retry ${job.jobId}`);
   if (job.noReadableApproval) lines.push("no readable approval decision");
@@ -363,6 +370,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
       canApprove: false,
       canReject: false,
       steps: progressFor(job),
+      ...(job.deliver ? { deliver: job.deliver } : {}),
       ...(job.createdAt ? { createdAt: job.createdAt } : {}),
       ...(job.logTail ? { logTail: job.logTail } : {}),
       ...boardFields(job),
@@ -391,7 +399,8 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     stack: job.stack === true,
     ...(job.source ? { source: { kind: job.source.kind, ref: job.source.ref } } : {}),
     ...(runId ? { runId } : {}),
-    ...(showBranch ? { branch: `yak/${runId}` } : {}),
+    ...(showBranch ? { branch: job.delivery?.branch ?? `yak/${runId}` } : {}),
+    ...(job.deliver ? { deliver: job.deliver } : {}),
     ...(job.delivery?.prUrl ? { prUrl: job.delivery.prUrl } : {}),
     ...(prNumber ? { prNumber } : {}),
     ...(job.logPath ? { logPath: job.logPath } : {}),
@@ -556,7 +565,7 @@ export function renderTick(
     );
   }
   for (const note of notes) {
-    const next = note.nextRetryAt ? `  next ${note.nextRetryAt}` : "  dead";
+    const next = note.nextRetryAt ? `  next ${note.nextRetryAt}` : note.reason === "auth-failed" ? "" : "  dead";
     lines.push(`${note.kind} ${note.jobId}  ${note.reason}  attempt ${note.attempt}${next}`);
   }
   for (const note of feedbackNotes) {
