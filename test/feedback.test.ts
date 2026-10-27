@@ -275,7 +275,39 @@ describe("pull request feedback", { concurrency: 1 }, () => {
     assert.equal(ledger.rounds[0]?.trigger, "review");
   });
 
-  it("ignores comments from the operator and from kiln", () => {
+  it("starts a round from the operator's inline comment", () => {
+    const box = world();
+    box.reads.push({
+      operatorLogin: "kiln-operator",
+      headSha: box.head,
+      checks: [{ name: "sample-check", status: "completed", conclusion: "success" }],
+      reviews: [],
+      comments: [
+        {
+          id: "c-inline",
+          author: "kiln-operator",
+          body: "Rename the export.",
+          path: "src/widget.ts",
+          line: 12,
+          submittedAt: "2026-10-26T03:00:00.000Z",
+          url: "https://example.com/sample/widget/pull/4#discussion_r2",
+          resolved: false,
+        },
+      ],
+    });
+    const tick = runTick(box.config, box.host, { now: new Date("2026-10-26T03:05:00.000Z") });
+    assert.match(tick, /fix widget/);
+    assert.equal(box.starts.length, 1);
+    const description = (box.starts[0] ?? []).find((arg) => arg.startsWith("description=")) ?? "";
+    assert.match(description, /src\/widget\.ts:12/);
+    assert.match(description, /Rename the export/);
+    const ledger = readFeedbackLedger(box.config.kilnDir, box.jobId);
+    assert.ok(ledger && ledger !== "corrupt");
+    assert.equal(ledger.rounds.length, 1);
+    assert.equal(ledger.rounds[0]?.trigger, "review");
+  });
+
+  it("ignores an operator top-level LGTM and bot comments", () => {
     const box = world();
     box.reads.push({
       operatorLogin: "kiln-operator",
@@ -283,26 +315,104 @@ describe("pull request feedback", { concurrency: 1 }, () => {
       checks: [{ name: "sample-check", status: "completed", conclusion: "success" }],
       reviews: [
         {
-          id: "r-self",
+          id: "r-lgtm",
           author: "kiln-operator",
-          state: "CHANGES_REQUESTED",
-          body: "I left this on my own pull request.",
-          submittedAt: "2026-10-26T03:00:00.000Z",
+          state: "COMMENTED",
+          body: "LGTM, merging tomorrow",
+          submittedAt: "2026-10-26T03:10:00.000Z",
         },
       ],
       comments: [
+        {
+          id: "c-lgtm",
+          author: "kiln-operator",
+          body: "LGTM, merging tomorrow",
+          submittedAt: "2026-10-26T03:10:01.000Z",
+          resolved: false,
+        },
+        {
+          id: "c-ada-note",
+          author: "ada",
+          body: "Looks good from here.",
+          submittedAt: "2026-10-26T03:10:01.500Z",
+          resolved: false,
+        },
         {
           id: "c-bot",
           author: "kiln[bot]",
           body: "Posted by the factory.",
           path: "src/widget.ts",
           line: 4,
-          submittedAt: "2026-10-26T03:00:01.000Z",
+          submittedAt: "2026-10-26T03:10:02.000Z",
+          resolved: false,
+        },
+        {
+          id: "c-other-bot",
+          author: "reviewer[bot]",
+          body: "Also ignore this.",
+          path: "src/widget.ts",
+          line: 8,
+          submittedAt: "2026-10-26T03:10:03.000Z",
           resolved: false,
         },
       ],
     });
-    const tick = runTick(box.config, box.host, { now: new Date("2026-10-26T03:05:00.000Z") });
+    const tick = runTick(box.config, box.host, { now: new Date("2026-10-26T03:15:00.000Z") });
+    assert.match(tick, /nothing to launch/);
+    assert.equal(box.starts.length, 0);
+    assert.equal(readFeedbackLedger(box.config.kilnDir, box.jobId), undefined);
+    assert.match(runStatus(box.config, box.jobId, box.host), /in-review/);
+  });
+
+  it("starts a round from an operator /kiln note and strips the prefix", () => {
+    const box = world();
+    box.reads.push({
+      operatorLogin: "kiln-operator",
+      headSha: box.head,
+      checks: [{ name: "sample-check", status: "completed", conclusion: "success" }],
+      reviews: [],
+      comments: [
+        {
+          id: "c-cmd",
+          author: "kiln-operator",
+          body: "/kiln fix the empty state copy",
+          submittedAt: "2026-10-26T03:20:00.000Z",
+          url: "https://example.com/sample/widget/pull/4#issuecomment-1",
+          resolved: false,
+        },
+      ],
+    });
+    const tick = runTick(box.config, box.host, { now: new Date("2026-10-26T03:25:00.000Z") });
+    assert.match(tick, /fix widget/);
+    assert.equal(box.starts.length, 1);
+    const description = (box.starts[0] ?? []).find((arg) => arg.startsWith("description=")) ?? "";
+    assert.match(description, /fix the empty state copy/);
+    assert.doesNotMatch(description, /\/kiln/);
+    const ledger = readFeedbackLedger(box.config.kilnDir, box.jobId);
+    assert.ok(ledger && ledger !== "corrupt");
+    assert.equal(ledger.rounds[0]?.items[0]?.summary, "fix the empty state copy");
+  });
+
+  it("does not start a round from a resolved operator thread", () => {
+    const box = world();
+    box.reads.push({
+      operatorLogin: "kiln-operator",
+      headSha: box.head,
+      checks: [{ name: "sample-check", status: "completed", conclusion: "success" }],
+      reviews: [],
+      comments: [
+        {
+          id: "c-resolved",
+          author: "kiln-operator",
+          body: "Rename the export.",
+          path: "src/widget.ts",
+          line: 12,
+          submittedAt: "2026-10-26T03:30:00.000Z",
+          resolved: true,
+        },
+      ],
+    });
+    const tick = runTick(box.config, box.host, { now: new Date("2026-10-26T03:35:00.000Z") });
     assert.match(tick, /nothing to launch/);
     assert.equal(box.starts.length, 0);
     assert.equal(readFeedbackLedger(box.config.kilnDir, box.jobId), undefined);

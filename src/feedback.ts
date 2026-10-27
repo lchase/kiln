@@ -84,7 +84,10 @@ export interface FeedbackComment {
 
 /** One read of an open pull request. Tests stub this. The gh implementation only reads. */
 export interface PullRequestFeedback {
-  /** Login of the authenticated gh user. Comments by this login are ignored. */
+  /**
+   * Login of the authenticated gh user. That person opens the pull request,
+   * so their inline comments count. A top-level note counts only with a `/kiln` prefix.
+   */
   operatorLogin: string | null;
   headSha: string;
   checks: FeedbackCheck[];
@@ -109,7 +112,8 @@ export type FeedbackPlan =
 const FAILING = new Set(["failure", "timed_out", "startup_failure", "error"]);
 const PASSING = new Set(["success", "neutral", "skipped", "cancelled"]);
 const QUIET_REVIEW = new Set(["APPROVED", "COMMENTED", "DISMISSED", "PENDING"]);
-const KILN_LOGINS = new Set(["kiln", "kiln[bot]"]);
+/** A top-level operator note. The rest of the body is the fix instruction. */
+const KILN_REQUEST = /^\/kiln\b\s*/;
 
 export function feedbackLedgerPath(kilnDir: string, jobId: string): string {
   return join(kilnDir, "feedback", `${jobBasename(jobId)}.json`);
@@ -152,15 +156,34 @@ export function truncateExcerpt(text: string): string {
 }
 
 /**
- * The operator's gh login, and a login Kiln would post as.
- * Kiln does not post; the authenticated user is both, and `kiln` / `kiln[bot]`
- * is ignored if a later change ever comments under that name.
+ * Kiln itself, and any GitHub App (`name[bot]`).
+ * CI checks are not authors, so a failing check still counts.
+ * The operator is not ignored: they open the pull request, and GitHub will
+ * not let them request changes on it.
  */
-export function isIgnoredAuthor(author: string, operatorLogin: string | null): boolean {
+export function isIgnoredAuthor(author: string): boolean {
   const login = author.trim().toLowerCase();
   if (!login) return false;
-  if (operatorLogin && login === operatorLogin.trim().toLowerCase()) return true;
-  return KILN_LOGINS.has(login);
+  return login === "kiln" || login.endsWith("[bot]");
+}
+
+function isOperator(author: string, operatorLogin: string | null): boolean {
+  if (!operatorLogin) return false;
+  return author.trim().toLowerCase() === operatorLogin.trim().toLowerCase();
+}
+
+/** Text after a leading `/kiln`, or undefined when the body is not a kiln request. */
+function kilnRequest(body: string): string | undefined {
+  const trimmed = body.trim();
+  const match = KILN_REQUEST.exec(trimmed);
+  if (!match) return undefined;
+  const rest = trimmed.slice(match[0].length).trim();
+  return rest.length > 0 ? rest : undefined;
+}
+
+/** An inline comment or any other comment that belongs to a review thread. */
+function isThreadComment(comment: FeedbackComment): boolean {
+  return Boolean(comment.path) || typeof comment.line === "number";
 }
 
 /**
@@ -223,14 +246,25 @@ export function planFeedback(input: {
   }
 
   for (const review of input.snapshot.reviews) {
-    if (isIgnoredAuthor(review.author, input.snapshot.operatorLogin)) continue;
+    if (isIgnoredAuthor(review.author)) continue;
+    const source = `review:${review.id}`;
+    if (isOperator(review.author, input.snapshot.operatorLogin)) {
+      const request = kilnRequest(review.body);
+      if (!request || !isNew(source, review.submittedAt)) continue;
+      items.push({
+        kind: "review",
+        source,
+        summary: request,
+        ...(review.url ? { url: review.url } : {}),
+      });
+      continue;
+    }
     const state = review.state.trim().toUpperCase();
     if (QUIET_REVIEW.has(state)) continue;
     if (state !== "CHANGES_REQUESTED") {
       ambiguous = true;
       continue;
     }
-    const source = `review:${review.id}`;
     if (!isNew(source, review.submittedAt)) continue;
     const body = review.body.trim();
     items.push({
@@ -243,11 +277,21 @@ export function planFeedback(input: {
 
   for (const comment of input.snapshot.comments) {
     if (comment.resolved) continue;
-    if (isIgnoredAuthor(comment.author, input.snapshot.operatorLogin)) continue;
+    if (isIgnoredAuthor(comment.author)) continue;
     const source = `comment:${comment.id}`;
     if (!isNew(source, comment.submittedAt)) continue;
+    const operator = isOperator(comment.author, input.snapshot.operatorLogin);
+    let body = comment.body.trim();
+    if (!isThreadComment(comment)) {
+      // Top-level conversation notes are not review threads. Other people
+      // still act through a review or an inline comment. The operator acts
+      // here only with a `/kiln` request, and the prefix stays out of the prompt.
+      if (!operator) continue;
+      const request = kilnRequest(comment.body);
+      if (!request) continue;
+      body = request;
+    }
     const where = comment.path ? (typeof comment.line === "number" ? `${comment.path}:${comment.line}` : comment.path) : "";
-    const body = comment.body.trim();
     const summary = [where, body].filter((part) => part.length > 0).join("\n\n") || "Review comment";
     items.push({
       kind: "comment",
@@ -479,6 +523,15 @@ const THREADS_QUERY = `
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      comments(first: 100) {
+        nodes {
+          id
+          body
+          createdAt
+          url
+          author { login }
+        }
+      }
       reviewThreads(first: 100) {
         nodes {
           isResolved
@@ -523,35 +576,47 @@ function threadsFrom(checkout: string, repo: { owner: string; name: string }, pr
   } catch {
     throw new HostError("gh api graphql returned data that is not JSON.");
   }
-  const threads = dig(parsed, ["data", "repository", "pullRequest", "reviewThreads", "nodes"]);
-  if (!Array.isArray(threads)) return [];
   const comments: FeedbackComment[] = [];
+  const conversation = dig(parsed, ["data", "repository", "pullRequest", "comments", "nodes"]);
+  if (Array.isArray(conversation)) {
+    for (const node of conversation) {
+      const comment = commentFrom(node, false);
+      if (comment) comments.push(comment);
+    }
+  }
+  const threads = dig(parsed, ["data", "repository", "pullRequest", "reviewThreads", "nodes"]);
+  if (!Array.isArray(threads)) return comments;
   for (const thread of threads) {
     if (typeof thread !== "object" || thread === null) continue;
     const resolved = (thread as Record<string, unknown>).isResolved === true;
     const nodes = dig(thread, ["comments", "nodes"]);
     if (!Array.isArray(nodes)) continue;
     for (const node of nodes) {
-      if (typeof node !== "object" || node === null) continue;
-      const record = node as Record<string, unknown>;
-      const id = stringField(record, "id");
-      if (!id) continue;
-      const line = typeof record.line === "number" ? record.line : undefined;
-      const path = stringField(record, "path");
-      const url = stringField(record, "url");
-      comments.push({
-        id,
-        author: authorLogin(record.author),
-        body: stringField(record, "body"),
-        ...(path ? { path } : {}),
-        ...(line !== undefined ? { line } : {}),
-        submittedAt: stringField(record, "createdAt"),
-        ...(url ? { url } : {}),
-        resolved,
-      });
+      const comment = commentFrom(node, resolved);
+      if (comment) comments.push(comment);
     }
   }
   return comments;
+}
+
+function commentFrom(node: unknown, resolved: boolean): FeedbackComment | undefined {
+  if (typeof node !== "object" || node === null) return undefined;
+  const record = node as Record<string, unknown>;
+  const id = stringField(record, "id");
+  if (!id) return undefined;
+  const line = typeof record.line === "number" ? record.line : undefined;
+  const path = stringField(record, "path");
+  const url = stringField(record, "url");
+  return {
+    id,
+    author: authorLogin(record.author),
+    body: stringField(record, "body"),
+    ...(path ? { path } : {}),
+    ...(line !== undefined ? { line } : {}),
+    submittedAt: stringField(record, "createdAt"),
+    ...(url ? { url } : {}),
+    resolved,
+  };
 }
 
 function reviewId(record: Record<string, unknown>): string {
