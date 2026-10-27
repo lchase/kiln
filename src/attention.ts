@@ -158,6 +158,7 @@ function toItem(job: StatusJobView): AttentionItem {
 export function attentionReason(job: StatusJobView, tail = errorTail(job)): string {
   switch (job.state) {
     case "needs-human": {
+      if (job.feedbackReason) return job.feedbackReason;
       const question = gateQuestion(job);
       return question ? `Gate: ${oneLine(question)}` : "Waiting on a person";
     }
@@ -292,6 +293,7 @@ function attentionRevision(
       item.job.attemptCount,
       item.job.lastFailureReason ?? "",
       item.job.nextRetryAt ?? "",
+      feedbackStamp(item.job),
     ]),
     inFlight: inFlight.map((item) => [
       item.job.jobId,
@@ -301,11 +303,19 @@ function attentionRevision(
       item.job.attemptCount,
       item.job.lastFailureReason ?? "",
       item.job.nextRetryAt ?? "",
+      feedbackStamp(item.job),
     ]),
     doneRecently: doneRecently.map((item) => [item.job.jobId, item.job.state]),
     edges: graph.edges.map((edge) => [edge.from, edge.to, edge.stack]),
   });
   return createHash("sha256").update(body).digest("hex").slice(0, 16);
+}
+
+function feedbackStamp(job: StatusJobView): string {
+  const rounds = (job.feedbackRounds ?? [])
+    .map((round) => `${round.round}:${round.trigger}:${round.outcome ?? ""}:${round.headSha}`)
+    .join("|");
+  return `${job.feedbackReason ?? ""}:${rounds}`;
 }
 
 function oneLine(text: string, max = 180): string {

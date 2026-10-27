@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { realPullRequestFeedback, type PullRequestFeedbackSource } from "./feedback.js";
 
 /**
  * Git remote and GitHub CLI, behind one seam so tests can fake `gh` and point
@@ -51,17 +52,48 @@ export interface GitRemote {
    * Refuses the base branch and any branch that is not `yak/<run-id>`.
    */
   pushBranch(checkout: string, branch: string, baseBranch: string): void;
+  /**
+   * Fast-forward `refs/heads/<target>` on origin to `refs/heads/<source>`.
+   * Refuses the base branch, a branch that is not `yak/<run-id>`, and any
+   * force update. A non-fast-forward is left for git to reject.
+   */
+  publishBranch(checkout: string, source: string, target: string, baseBranch: string): void;
+  /** True when `ancestor` is an ancestor of `descendant` (or they are equal). */
+  isAncestor(checkout: string, ancestor: string, descendant: string): boolean;
   /** Origin's default branch name, without the `origin/` prefix. */
   defaultBranch(checkout: string): string;
+}
+
+/** How a tick starts yak. Tests pass a stub. Production spawns the yak CLI. */
+export interface AgentStart {
+  cwd: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+  logFd: number;
 }
 
 export interface KilnHost {
   github: GitHubHost;
   git: GitRemote;
+  /** Read-only pull request feedback. Absent means this tick does not watch. */
+  feedback?: PullRequestFeedbackSource;
+  /** Test seam for `yak run`. Absent means Kiln spawns yak. */
+  startAgent?(spec: AgentStart): { pid: number };
 }
 
 export function defaultHost(): KilnHost {
-  return { github: realGitHub, git: realGitRemote };
+  return { github: realGitHub, git: realGitRemote, feedback: realPullRequestFeedback };
+}
+
+const YAK_BRANCH = /^yak\/[A-Za-z0-9._-]+$/;
+
+function assertYakBranch(branch: string, baseBranch: string): void {
+  if (branch === baseBranch || branch === `refs/heads/${baseBranch}`) {
+    throw new HostError(`Refusing to push ${branch}: that is the base branch.`);
+  }
+  if (!YAK_BRANCH.test(branch)) {
+    throw new HostError(`Refusing to push ${branch}: kiln only pushes yak/<run-id>.`);
+  }
 }
 
 const gitEnv = (): NodeJS.ProcessEnv => ({ ...process.env, GIT_TERMINAL_PROMPT: "0" });
@@ -125,6 +157,23 @@ export const realGitRemote: GitRemote = {
     if (result.status !== 0) {
       throw new HostError(`Could not push ${branch}: ${result.stderr.trim() || "git push failed"}`);
     }
+  },
+
+  publishBranch(checkout, source, target, baseBranch) {
+    assertYakBranch(source, baseBranch);
+    assertYakBranch(target, baseBranch);
+    if (source.includes("+") || target.includes("+")) {
+      throw new HostError(`Refusing to push ${target}: kiln does not force-push.`);
+    }
+    const result = gitResult(checkout, ["push", "origin", `refs/heads/${source}:refs/heads/${target}`]);
+    if (result.status !== 0) {
+      throw new HostError(`Could not push ${source} onto ${target}: ${result.stderr.trim() || "git push failed"}`);
+    }
+  },
+
+  isAncestor(checkout, ancestor, descendant) {
+    const result = gitResult(checkout, ["merge-base", "--is-ancestor", ancestor, descendant]);
+    return result.status === 0;
   },
 
   defaultBranch(checkout) {

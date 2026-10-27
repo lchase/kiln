@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { KilnConfigError } from "./errors.js";
 import {
   DEFAULT_MAX_ATTEMPTS,
+  DEFAULT_MAX_FIX_ROUNDS,
   DEFAULT_STALL_TIMEOUT_MS,
   KilnConfigFileSchema,
   type JiraConfig,
@@ -21,9 +22,9 @@ export interface LoadedKilnConfig {
    */
   repos: Record<string, { path: string; test?: string; deliver: "local" | "pr"; base?: string }>;
   /**
-   * Kiln home. Jobs, logs, deliveries, launching, launch-errors, attempts, and
-   * specs live here: the directory of the config file (`--config`'s directory,
-   * `$KILN_HOME`, or `~/.kiln`).
+   * Kiln home. Jobs, logs, deliveries, launching, launch-errors, attempts,
+   * feedback, and specs live here: the directory of the config file
+   * (`--config`'s directory, `$KILN_HOME`, or `~/.kiln`).
    */
   kilnDir: string;
   jobsDir: string;
@@ -36,6 +37,8 @@ export interface LoadedKilnConfig {
   stallTimeoutMs: number;
   /** Transient failures before the job is dead. Default 3. */
   maxAttempts: number;
+  /** Pull request fix rounds before needs-human. Default 2. */
+  maxFixRounds: number;
   /** Passed to `yak run --adapter`. Default `claude-code`. */
   adapter: "mock" | "claude-code";
   /**
@@ -109,6 +112,7 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
     maxConcurrent: parsed.data.maxConcurrent ?? 2,
     stallTimeoutMs: parsed.data.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS,
     maxAttempts: parsed.data.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+    maxFixRounds: parsed.data.maxFixRounds ?? DEFAULT_MAX_FIX_ROUNDS,
     adapter: parsed.data.adapter ?? "claude-code",
     ...(jira ? { jira } : {}),
   };

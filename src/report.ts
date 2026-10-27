@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { readBoardFiles, readReviewRounds, type BoardFile, type BoardReviewRound } from "./board.js";
+import { feedbackRoundText, type FeedbackRound } from "./feedback.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import {
   inFlightCount,
@@ -23,6 +24,8 @@ export interface LaunchReport {
   output: string;
   /** Set when this launch is an automatic or manual retry of a recorded failure. */
   retry?: boolean;
+  /** A pull-request fix. The line in the tick report says `fix`, not `launch`. */
+  kind?: "fix";
 }
 
 export interface DeliverReport {
@@ -214,6 +217,12 @@ export interface StatusJobView {
   failureDetail?: string;
   /** One row per review iteration. Unsuffixed `security.json` is round 1. */
   rounds?: BoardReviewRound[];
+  /** Pull request feedback rounds. Separate from the factory reviewer rounds. */
+  feedbackRounds?: FeedbackRound[];
+  /** Set when the job is needs-human because feedback is exhausted or ambiguous. */
+  feedbackReason?: "feedback-exhausted" | "feedback-ambiguous";
+  /** `<kilnDir>/feedback/<id>.json` could not be parsed. */
+  feedbackLedgerError?: string;
   /** Spec, build, decision, reviews, and the gate, for the console drawer. */
   files?: BoardFile[];
 }
@@ -262,6 +271,9 @@ export function statusDetails(job: StatusJobView): string[] {
   if (job.state === "failed" && job.launchFailed && job.logPath) lines.push(`log ${job.logPath}`);
   if (job.state === "failed" && job.launchError) lines.push(job.launchError);
   if (job.ledgerError) lines.push(job.ledgerError);
+  if (job.feedbackLedgerError) lines.push(job.feedbackLedgerError);
+  if ((job.feedbackRounds?.length ?? 0) > 0) lines.push(`feedback ${job.feedbackRounds?.length}`);
+  if (job.state === "needs-human" && job.feedbackReason) lines.push(`reason ${job.feedbackReason}`);
   if (job.attemptCount > 0) lines.push(`attempts ${job.attemptCount}`);
   if (job.lastFailureReason) lines.push(`reason ${job.lastFailureReason}`);
   if (job.nextRetryAt) lines.push(`next retry ${job.nextRetryAt}`);
@@ -328,10 +340,16 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
   }
 
   const state = jobState(job, observation);
-  const gates = state === "needs-human" && job.run ? job.run.gates.map(toGateView) : [];
+  const feedbackReason = job.feedbackExhausted
+    ? "feedback-exhausted"
+    : job.feedbackAmbiguous
+      ? "feedback-ambiguous"
+      : undefined;
+  const gates = state === "needs-human" && job.run && !feedbackReason ? job.run.gates.map(toGateView) : [];
   const prNumber = job.delivery?.prNumber;
   const runId = job.run?.runId;
-  const showBranch = (state === "done" || state === "in-review") && runId !== undefined;
+  const showBranch =
+    runId !== undefined && (state === "done" || state === "in-review" || feedbackReason !== undefined);
   const failureDetail = job.run?.stepEvents ? latestStepFailure(job.run.stepEvents) : undefined;
   return {
     jobId: job.jobId,
@@ -355,6 +373,8 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     ...(job.lastFailureReason ? { lastFailureReason: job.lastFailureReason } : {}),
     ...(job.nextRetryAt && !job.retriesExhausted ? { nextRetryAt: job.nextRetryAt } : {}),
     ...(job.ledgerError ? { ledgerError: job.ledgerError } : {}),
+    ...(job.feedbackLedgerError ? { feedbackLedgerError: job.feedbackLedgerError } : {}),
+    ...(feedbackReason ? { feedbackReason } : {}),
     ...(job.launchError ? { launchError: job.launchError } : {}),
     ...(job.delivery?.error ? { deliveryError: job.delivery.error } : {}),
     ...(job.delivery?.viewError ? { viewError: job.delivery.viewError } : {}),
@@ -378,7 +398,11 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
   };
 }
 
-function boardFields(job: ObservedJob): { rounds?: BoardReviewRound[]; files?: BoardFile[] } {
+function boardFields(job: ObservedJob): {
+  rounds?: BoardReviewRound[];
+  files?: BoardFile[];
+  feedbackRounds?: FeedbackRound[];
+} {
   const runDir = job.run ? join(job.run.checkout, ".runs", job.run.runId) : undefined;
   const rounds = readReviewRounds(runDir);
   const files = readBoardFiles({
@@ -390,13 +414,30 @@ function boardFields(job: ObservedJob): { rounds?: BoardReviewRound[]; files?: B
     ...(job.workflow ? { workflow: job.workflow } : {}),
     gates: job.run?.gates ?? [],
   });
+  for (const round of job.feedbackRounds ?? []) {
+    const label = round.trigger === "ci" ? "CI" : "review";
+    files.push({
+      id: `feedback-r${round.round}`,
+      group: "Feedback",
+      label: `R${round.round} ${label}.md`,
+      text: feedbackRoundText(round),
+      tone: round.outcome ? "good" : "warn",
+    });
+  }
   return {
     ...(rounds.length > 0 ? { rounds } : {}),
+    ...(job.feedbackRounds?.length ? { feedbackRounds: job.feedbackRounds } : {}),
     ...(files.length > 0 ? { files } : {}),
   };
 }
 
 function progressFor(job: ObservedJob): StepProgress[] {
+  if (job.fixInProgress && !job.run) {
+    return [
+      { id: "build", phase: "current" },
+      { id: "land", phase: "pending" },
+    ];
+  }
   const plan = job.run?.stepPlan?.length ? job.run.stepPlan : (job.stepPlan ?? []);
   return stepProgress(plan, job.run?.stepEvents ?? []);
 }
@@ -459,6 +500,7 @@ export function renderTick(
   delivers: DeliverReport[] = [],
   findings: FindingsReport[] = [],
   notes: ReliabilityNote[] = [],
+  feedbackNotes: string[] = [],
 ): string {
   const lines = [`tick  inFlight=${inFlightCount(observation)}  maxConcurrent=${observation.maxConcurrent}`];
   for (const job of observation.jobs) {
@@ -485,19 +527,27 @@ export function renderTick(
     const next = note.nextRetryAt ? `  next ${note.nextRetryAt}` : "  dead";
     lines.push(`${note.kind} ${note.jobId}  ${note.reason}  attempt ${note.attempt}${next}`);
   }
+  for (const note of feedbackNotes) {
+    if (note.trim()) lines.push(note);
+  }
   for (const launch of launches) {
-    lines.push(`${launch.retry ? "retry" : "launch"} ${launch.jobId}  ${launch.repo}`);
+    const verb = launch.kind === "fix" ? "fix" : launch.retry ? "retry" : "launch";
+    lines.push(`${verb} ${launch.jobId}  ${launch.repo}`);
     for (const line of launch.output.split("\n")) {
       if (line.trim()) lines.push(`  ${line}`);
     }
   }
-  if (
-    !actions.some((action) => action.type === "launch" || action.type === "retry") &&
-    launches.length === 0 &&
-    delivers.length === 0 &&
-    findings.length === 0
-  ) {
-    lines.push("nothing to launch");
-  }
+  const acted =
+    actions.some(
+      (action) =>
+        action.type === "launch" ||
+        action.type === "retry" ||
+        action.type === "start-fix" ||
+        action.type === "mark-feedback",
+    ) ||
+    launches.length > 0 ||
+    delivers.length > 0 ||
+    findings.length > 0;
+  if (!acted) lines.push("nothing to launch");
   return `${lines.join("\n")}\n`;
 }

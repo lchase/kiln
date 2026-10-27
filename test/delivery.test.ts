@@ -97,6 +97,11 @@ function recordingGit(): { git: GitRemote; pushes: string[] } {
       pushes.push(branch);
       realGitRemote.pushBranch(checkout, branch, base);
     },
+    publishBranch: (checkout, source, target, base) => {
+      pushes.push(`${source}->${target}`);
+      realGitRemote.publishBranch(checkout, source, target, base);
+    },
+    isAncestor: (checkout, ancestor, descendant) => realGitRemote.isAncestor(checkout, ancestor, descendant),
     defaultBranch: (checkout) => realGitRemote.defaultBranch(checkout),
   };
   return { git, pushes };
