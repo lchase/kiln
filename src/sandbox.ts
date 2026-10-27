@@ -17,10 +17,13 @@ import type { SandboxSettings } from "./schemas.js";
  * and land commits with the host git identity. Pull requests and
  * `gh pr view` run in the kiln process.
  *
- * @lchase/yak 0.7.1 drops `sandbox`, `image`, and `allowedDomains` while
- * loading workflow YAML, and calls `createAgentSandboxNetwork` with only
- * `api.anthropic.com`. Kiln refuses to launch while that is still true,
- * because the job would run on the host.
+ * Preflight searches the installed `@lchase/yak` bundle for
+ * `raw.agent.allowedDomains`. `@lchase/yak` 0.8.0 keeps that property
+ * access and passes the step allowlist into the sandbox proxy. An older
+ * package drops `sandbox`, `image`, and `allowedDomains` while loading
+ * workflow YAML and calls `createAgentSandboxNetwork` with only
+ * `api.anthropic.com`. Kiln refuses that pin, because the job would run
+ * on the host.
  */
 
 export const AGENT_SANDBOX_IMAGE = "yak-agent-sandbox:latest";
@@ -194,7 +197,7 @@ export function sandboxPreflightMessage(config: LoadedKilnConfig, facts?: Sandbo
 }
 
 /**
- * `docker` argv yak 0.7.1 builds for one sandboxed agent step
+ * `docker` argv yak builds for one sandboxed agent step
  * (`dockerAgentRunArgs` in `@lchase/yak`). Kiln does not spawn docker
  * itself. Credential values are copied through so a test can show the
  * shape; do not log the result when `env` holds a real token.
@@ -232,16 +235,25 @@ export function agentSandboxDockerArgs(input: {
   ];
 }
 
-/** Proxy sidecar argv from yak's `startProxyArgs`. */
-export function proxySandboxDockerArgs(networkName: string, allowedDomains: readonly string[]): string[] {
+/**
+ * Proxy sidecar argv from yak's `startProxyArgs`. `--network` is the
+ * egress network (`bridge`, or `podman` when `bridge` is absent), not
+ * the internal sandbox network. Yak attaches that internal network only
+ * after the proxy accepts connections. Kiln does not spawn the proxy.
+ */
+export function proxySandboxDockerArgs(
+  egressNetwork: string,
+  allowedDomains: readonly string[],
+  containerName: string,
+): string[] {
   return [
     "run",
     "-d",
     "--rm",
     "--name",
-    `${networkName}-proxy`,
+    containerName,
     "--network",
-    networkName,
+    egressNetwork,
     "-e",
     `ALLOWED_DOMAINS=${allowedDomains.join(",")}`,
     PROXY_SANDBOX_IMAGE,
@@ -334,7 +346,7 @@ function missingPieces(agentImages: readonly string[], adapter: LoadedKilnConfig
   }
   if (!yakDistHonorsAllowlist(facts.yakDist)) {
     missing.push(
-      `installed @lchase/yak ${facts.yakVersion} does not pass allowedDomains from a workflow step into the sandbox proxy. @lchase/yak 0.7.1 drops sandbox, image, and allowedDomains when it loads workflow YAML, and the proxy allowlist stays api.anthropic.com. Kiln will not launch an unsandboxed run while sandbox mode is docker.`,
+      `installed @lchase/yak ${facts.yakVersion} does not pass allowedDomains from a workflow step into the sandbox proxy. A package older than 0.8.0 drops sandbox, image, and allowedDomains when it loads workflow YAML, and the proxy allowlist stays api.anthropic.com. Kiln will not launch an unsandboxed run while sandbox mode is docker.`,
     );
   }
   return missing;
