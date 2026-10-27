@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { buildAttention } from "../src/attention.js";
 import { stageOf } from "../src/board.js";
@@ -9,6 +11,7 @@ import { loadKilnConfig } from "../src/config.js";
 import { runTick } from "../src/driver.js";
 import { KilnConfigError } from "../src/errors.js";
 import { writeJob } from "../src/jobs.js";
+import { defaultHost } from "../src/host.js";
 import { packageRoot } from "../src/paths.js";
 import { readStatus } from "../src/driver.js";
 import { renderConsole } from "../src/serve-page.js";
@@ -27,6 +30,7 @@ import {
   sandboxPreflight,
   sandboxPreflightFor,
   YAK_ALLOWLIST_MARKER,
+  yakDistHonorsAllowlist,
   type SandboxFacts,
 } from "../src/sandbox.js";
 import type { LoadedKilnConfig } from "../src/config.js";
@@ -43,7 +47,7 @@ function facts(overrides: Partial<SandboxFacts> = {}): SandboxFacts {
     dockerBinary: true,
     dockerDaemon: true,
     images: [AGENT_SANDBOX_IMAGE, PROXY_SANDBOX_IMAGE],
-    yakVersion: "0.7.1",
+    yakVersion: "0.8.0",
     yakDist: `function load(){ return raw.agent.allowedDomains }`,
     env: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-oauth-value" },
     ...overrides,
@@ -181,12 +185,27 @@ describe("sandbox preflight", () => {
     assert.doesNotMatch(missingToken ?? "", /hunter2/);
     assert.doesNotMatch(missingToken ?? "", /docker binary/);
 
-    const oldYak = sandboxPreflight(config, facts({ yakDist: "createAgentSandboxNetwork(stepId)", env: {} }));
+    const oldYak = sandboxPreflight(
+      config,
+      facts({ yakVersion: "0.7.1", yakDist: "createAgentSandboxNetwork(stepId)", env: {} }),
+    );
     assert.match(oldYak ?? "", /does not pass allowedDomains/);
-    assert.match(oldYak ?? "", /0\.7\.1/);
+    assert.match(oldYak ?? "", /installed @lchase\/yak 0\.7\.1/);
+    assert.match(oldYak ?? "", /older than 0\.8\.0/);
 
     assert.equal(sandboxPreflight(config, facts()), undefined);
     assert.equal(sandboxPreflight(configWith({}), facts({ dockerBinary: false, env: {} })), undefined);
+  });
+
+  it("accepts the installed @lchase/yak 0.8.0 bundle", () => {
+    const installed = installedYak();
+    assert.equal(installed.version, "0.8.0");
+    assert.equal(yakDistHonorsAllowlist(installed.dist), true);
+    const config = configWith({ sandbox: { mode: "docker" } });
+    assert.equal(
+      sandboxPreflight(config, facts({ yakVersion: installed.version, yakDist: installed.dist })),
+      undefined,
+    );
   });
 
   it("skips the token check for the mock adapter", () => {
@@ -209,7 +228,7 @@ describe("sandbox preflight", () => {
 describe("sandbox docker argv", () => {
   it("matches yak's agent and proxy invocation", () => {
     const network = "yak-agent-spec-abc123";
-    const proxy = proxySandboxDockerArgs(network, [...DEFAULT_SANDBOX_DOMAINS]);
+    const proxy = proxySandboxDockerArgs("bridge", [...DEFAULT_SANDBOX_DOMAINS], `${network}-proxy`);
     assert.deepEqual(proxy, [
       "run",
       "-d",
@@ -217,7 +236,7 @@ describe("sandbox docker argv", () => {
       "--name",
       `${network}-proxy`,
       "--network",
-      network,
+      "bridge",
       "-e",
       `ALLOWED_DOMAINS=${DEFAULT_SANDBOX_DOMAINS.join(",")}`,
       PROXY_SANDBOX_IMAGE,
@@ -250,14 +269,27 @@ describe("sandbox docker argv", () => {
       "--print",
       "hello",
     ]);
-    assert.deepEqual(sandboxImageBuildArgs("0.7.1"), [
-      ["build", "-t", AGENT_SANDBOX_IMAGE, "https://github.com/lchase/yak.git#yak-v0.7.1:docker/agent-sandbox"],
-      ["build", "-t", PROXY_SANDBOX_IMAGE, "https://github.com/lchase/yak.git#yak-v0.7.1:docker/agent-proxy"],
+    assert.deepEqual(sandboxImageBuildArgs("0.8.0"), [
+      ["build", "-t", AGENT_SANDBOX_IMAGE, "https://github.com/lchase/yak.git#yak-v0.8.0:docker/agent-sandbox"],
+      ["build", "-t", PROXY_SANDBOX_IMAGE, "https://github.com/lchase/yak.git#yak-v0.8.0:docker/agent-proxy"],
     ]);
     assert.match(sandboxGitOverlayDockerfile(), /FROM yak-agent-sandbox:latest/);
     assert.match(sandboxGitOverlayDockerfile(), /apt-get install -y --no-install-recommends git ca-certificates/);
   });
 });
+
+function installedYak(): { version: string; dist: string } {
+  const require = createRequire(import.meta.url);
+  const pkgPath = require.resolve("@lchase/yak/package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: unknown };
+  const version = typeof pkg.version === "string" ? pkg.version : "";
+  return { version, dist: readFileSync(join(dirname(pkgPath), "dist", "index.js"), "utf8") };
+}
+
+function git(dir: string, args: string[]): void {
+  const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+  assert.equal(result.status, 0, `${args.join(" ")}\n${result.stderr}`);
+}
 
 describe("sandbox launch and board", () => {
   it("refuses to launch when preflight fails and marks the card", () => {
@@ -301,5 +333,64 @@ describe("sandbox launch and board", () => {
     assert.match(html, /sandbox · docker/);
     const reason = status.attention.needsYou.find((item) => item.job.jobId === written.job.id)?.reason ?? "";
     assert.match(reason, /docker binary is not on PATH/);
+  });
+
+  it("launches when the installed yak bundle passes the allowlist check", () => {
+    const installed = installedYak();
+    const dir = mkdtempSync(join(tmpdir(), "kiln-sandbox-launch-"));
+    keep.push(dir);
+    const checkout = join(dir, "web");
+    mkdirSync(checkout);
+    git(checkout, ["init", "-q", "-b", "main"]);
+    git(checkout, ["config", "user.email", "kiln-test@example.com"]);
+    git(checkout, ["config", "user.name", "Kiln Test"]);
+    writeFileSync(join(checkout, "README.md"), "fixture\n");
+    git(checkout, ["add", "README.md"]);
+    git(checkout, ["commit", "-q", "-m", "initial"]);
+    const configDir = join(dir, "kiln");
+    mkdirSync(configDir);
+    const configPath = join(configDir, "kiln.config.json");
+    writeFileSync(
+      configPath,
+      `${JSON.stringify({ adapter: "mock", repos: { web: { path: checkout, test: "npm test" } }, sandbox: { mode: "docker" } }, null, 2)}\n`,
+    );
+    const config = loadKilnConfig(configPath);
+    const written = writeJob(config, {
+      workflow: "feature",
+      repo: "web",
+      specText: "# Sandbox the agent\n\nDo the work.\n",
+      title: "Sandbox the agent",
+      dependsOn: [],
+      source: { kind: "prompt", ref: "inline" },
+    });
+    const child = spawn("sleep", ["30"], { stdio: "ignore" });
+    const starts: string[][] = [];
+    try {
+      const output = runTick(
+        config,
+        {
+          ...defaultHost(),
+          startAgent(spec) {
+            starts.push(spec.args);
+            return { pid: child.pid ?? 0 };
+          },
+        },
+        {
+          startup: false,
+          now: new Date("2026-05-02T00:00:00.000Z"),
+          sandboxFacts: facts({ yakVersion: installed.version, yakDist: installed.dist, env: {} }),
+        },
+      );
+      assert.equal(installed.version, "0.8.0");
+      assert.doesNotMatch(output, /does not pass allowedDomains/);
+      assert.match(output, new RegExp(`pid ${child.pid}`));
+      assert.equal(starts.length, 1);
+      const status = readStatus(config, written.job.id);
+      assert.equal(status.jobs[0]?.state, "running");
+      assert.equal(status.jobs[0]?.launchError, undefined);
+      assert.equal(status.jobs[0]?.sandboxed, true);
+    } finally {
+      child.kill();
+    }
   });
 });

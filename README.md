@@ -82,17 +82,27 @@ That is the Anthropic API, the npm registry, and the GitHub hosts a fetch or ins
 `kiln sandbox` prints the resolved mode, the allowlist, and anything still missing. `kiln sandbox build` builds the images yak ships but does not publish, from the tag that matches the installed `@lchase/yak`:
 
 ```bash
-docker build -t yak-agent-sandbox:latest https://github.com/lchase/yak.git#yak-v0.7.1:docker/agent-sandbox
-docker build -t yak-agent-sandbox-proxy:latest https://github.com/lchase/yak.git#yak-v0.7.1:docker/agent-proxy
+docker build -t yak-agent-sandbox:latest https://github.com/lchase/yak.git#yak-v0.8.0:docker/agent-sandbox
+docker build -t yak-agent-sandbox-proxy:latest https://github.com/lchase/yak.git#yak-v0.8.0:docker/agent-proxy
 ```
 
 The agent image is `node:22-slim` plus the Claude CLI at `/app/claude-cli`. It has no git. `kiln sandbox build` adds `git` and `ca-certificates` and tags that result `yak-agent-sandbox:latest` as well. The proxy image is `yak-agent-sandbox-proxy:latest` (squid on port 3128). Yak mounts the worktree at `/workspace` and puts the container on an `--internal` network whose only egress is that proxy.
 
 A linked worktree's `.git` file points at the checkout's common git dir, which is outside that mount. `git` inside the container cannot see the repository until yak mounts that dir too. Land stays on the host, where the worktree link works.
 
-On macOS, Claude subscription auth lives in the keychain. Yak forwards only `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` into the container, and never a `~/.claude` directory. Before the first sandboxed launch, run `claude setup-token` and export `CLAUDE_CODE_OAUTH_TOKEN` in the environment that `kiln tick` or `kiln serve` inherits. Kiln checks that the variable is set. It does not print or write the value. An API key in `ANTHROPIC_API_KEY` works the same way.
+Podman works when `docker` is aliased to `podman`. Yak 0.8.0 falls back from the `bridge` egress network to `podman` when `bridge` is absent. `YAK_SANDBOX_EGRESS_NETWORK` overrides that name.
 
-`kiln tick` and `kiln serve` name what is missing when sandbox mode is on: the docker binary, the docker daemon, each image, the credential, and a yak build that actually reads `allowedDomains` from the workflow. Installed `@lchase/yak` 0.7.1 drops `sandbox`, `image`, and `allowedDomains` while loading YAML, and opens the proxy with only `api.anthropic.com`. Kiln refuses to launch in that case, because the job would run on the host with the open internet. The job stays failed until `kiln retry`, after that piece is fixed. The yak change that copies those fields and passes `allowedDomains` into `createAgentSandboxNetwork` has to be in the installed package first.
+On macOS, Claude subscription auth lives in the keychain. Yak forwards only `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` into the container, and never a `~/.claude` directory. Kiln checks that one of those variables is set. It does not print or write the value.
+
+```bash
+claude setup-token
+export CLAUDE_CODE_OAUTH_TOKEN
+kiln sandbox build
+```
+
+Then set the kiln config to `"sandbox": { "mode": "docker" }`.
+
+`kiln tick` and `kiln serve` name what is missing when sandbox mode is on: the docker binary, the docker daemon, each image, and the credential. They also refuse an installed `@lchase/yak` that does not pass `allowedDomains` from the agent step into the sandbox proxy. `@lchase/yak` 0.8.0 does. An older package drops `sandbox`, `image`, and `allowedDomains` while loading YAML and opens the proxy with only `api.anthropic.com`, so the job would run on the host with the open internet. Kiln leaves that job failed until `kiln retry`, after the installed package is 0.8.0 or newer.
 
 A step that fails with yak reason `sandbox-error` goes to Needs human. The card shows the failure detail. Kiln does not schedule an automatic retry for it. The card of a sandboxed job shows `sandbox · docker` in the same monospace metadata as the rest of the board.
 
