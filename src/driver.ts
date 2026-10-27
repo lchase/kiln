@@ -27,6 +27,15 @@ import {
   isMerged,
 } from "./delivery.js";
 import {
+  feedbackSpec,
+  openFeedbackRound,
+  planFeedback,
+  readFeedbackLedger,
+  writeFeedbackLedger,
+  type FeedbackLedger,
+  type PullRequestFeedback,
+} from "./feedback.js";
+import {
   appendInvestigationFindings,
   existingFindingsPath,
   findingsFilePath,
@@ -34,7 +43,7 @@ import {
   readFindingsMarkdown,
   writeFindings,
 } from "./findings.js";
-import { defaultHost, type KilnHost, type PullRequestState } from "./host.js";
+import { defaultHost, type AgentStart, type KilnHost, type PullRequestState } from "./host.js";
 import { readJobSpec, resolveJobSpec } from "./jobs.js";
 import { jobBasename, packageRoot } from "./paths.js";
 import {
@@ -138,9 +147,13 @@ export function runTick(
   const now = options.now ?? new Date();
   return withTickLock(config.kilnDir, () => {
     const notes = recoverRuns(config, observe(config, host).observation.jobs, { startup, now });
+    const midway = observe(config, host);
+    bindOpenFixRuns(config, midway);
+    const published = publishReadyFixes(config, host, midway);
     const world = observe(config, host);
+    const feedbackNotes = watchPullRequests(config, world, host);
     const actions = decide(world.observation, now);
-    return apply(config, world, actions, host, notes);
+    return apply(config, world, actions, host, notes, now, [...published, ...feedbackNotes]);
   });
 }
 
@@ -273,21 +286,27 @@ function observe(config: LoadedKilnConfig, host: KilnHost): World {
     const tag = jobTag(entry.meta.jobId);
     const ledgerResult = readAttemptLedger(config.kilnDir, entry.meta.jobId);
     const ledger = ledgerResult && ledgerResult !== "corrupt" ? ledgerResult : undefined;
-    const picked = selectRun(runs.get(tag) ?? [], ledger);
+    const feedbackResult = readFeedbackLedger(config.kilnDir, entry.meta.jobId);
+    const feedback = feedbackResult && feedbackResult !== "corrupt" ? feedbackResult : undefined;
+    const repoKnown = entry.job ? Boolean(config.repos[entry.job.repo]) : false;
+    const repo = entry.job ? config.repos[entry.job.repo] : undefined;
+    const deliver = repo?.deliver ?? "local";
+    const deliveryRecord =
+      entry.job && repo && deliver === "pr" ? readDelivery(config.kilnDir, entry.job.id) : undefined;
+    const picked = selectJobRun(runs.get(tag) ?? [], ledger, feedback, deliveryRecord?.runId);
     const run = picked.run;
     const crumb = breadcrumbs.find((candidate) => candidate.jobId === entry.meta.jobId);
     if (crumb && run && !picked.retired) breadcrumbsToClear.push({ path: crumb.path });
     const childAlive = crumb ? pidAlive(crumb.pid) : false;
-    const launching = Boolean(crumb) && childAlive && (!run || picked.retired);
-    const launchFailed = Boolean(crumb) && !childAlive && (!run || picked.retired);
-    const repoKnown = entry.job ? Boolean(config.repos[entry.job.repo]) : false;
+    const hideBase = picked.fixInProgress && !run;
+    const launching = Boolean(crumb) && childAlive && (hideBase || !run || picked.retired);
+    const launchFailed = Boolean(crumb) && !childAlive && (hideBase || !run || picked.retired);
     const repoError =
       entry.job && !repoKnown ? `Repo ${entry.job.repo} is not registered.` : undefined;
-    const repo = entry.job ? config.repos[entry.job.repo] : undefined;
-    const deliver = repo?.deliver ?? "local";
+    const deliveryRunId = picked.fixInProgress ? deliveryRecord?.runId : run?.runId;
     const delivery =
       entry.job && repo && deliver === "pr"
-        ? observedDelivery(config.kilnDir, host, repo.path, entry.job.id, run?.runId)
+        ? observedDelivery(config.kilnDir, host, repo.path, entry.job.id, deliveryRunId)
         : undefined;
     const launchError = entry.job && !run ? readLaunchError(config.kilnDir, entry.job.id) : undefined;
     const stackError =
@@ -346,6 +365,12 @@ function observe(config: LoadedKilnConfig, host: KilnHost): World {
       ...(exhausted ? { retriesExhausted: true } : {}),
       ...(picked.retired ? { runRetired: true } : {}),
       ...(ledgerResult === "corrupt" ? { ledgerError: "attempt ledger is unreadable" } : {}),
+      ...(feedback?.rounds.length ? { feedbackRounds: feedback.rounds } : {}),
+      ...(feedback?.exhausted ? { feedbackExhausted: true } : {}),
+      ...(feedback?.ambiguous ? { feedbackAmbiguous: true } : {}),
+      ...(feedbackResult === "corrupt" ? { feedbackLedgerError: "feedback ledger is unreadable" } : {}),
+      ...(picked.fixInProgress ? { fixInProgress: true } : {}),
+      ...(picked.fixAwaitingPublish ? { fixAwaitingPublish: true } : {}),
       ...(entry.meta.error || repoError || stackError
         ? { error: entry.meta.error ?? repoError ?? stackError }
         : {}),
@@ -369,6 +394,8 @@ function apply(
   actions: ReturnType<typeof decide>,
   host: KilnHost,
   notes: ReliabilityNote[] = [],
+  now = new Date(),
+  feedbackNotes: string[] = [],
 ): string {
   const launches: LaunchReport[] = [];
   const delivers: DeliverReport[] = [];
@@ -387,6 +414,20 @@ function apply(
       if (recorded.status !== "skip") findings.push(recorded);
       continue;
     }
+    if (action.type === "mark-feedback") {
+      markFeedback(config.kilnDir, action.jobId, action.reason);
+      feedbackNotes.push(`${action.reason} ${action.jobId}`);
+      continue;
+    }
+    if (action.type === "start-fix") {
+      const job = world.jobs.get(action.jobId);
+      if (!job) {
+        throw new Error(`Tick planned a fix for ${action.jobId}, which is not in the observed jobs.`);
+      }
+      const report = startFix(config, world, job, host, now);
+      launches.push({ ...report, kind: "fix" });
+      continue;
+    }
     const job = world.jobs.get(action.jobId);
     if (!job) {
       throw new Error(`Tick planned a launch for ${action.jobId}, which is not in the observed jobs.`);
@@ -394,7 +435,7 @@ function apply(
     const report = launchJob(config, world, job, host);
     launches.push(action.type === "retry" ? { ...report, retry: true } : report);
   }
-  return renderTick(world.observation, actions, launches, delivers, findings, notes);
+  return renderTick(world.observation, actions, launches, delivers, findings, notes, feedbackNotes);
 }
 
 /**
@@ -546,11 +587,384 @@ function observedDelivery(
   };
 }
 
+/**
+ * Attach a fix run id to an open round once its journal exists.
+ * A fix run that the attempt ledger has already recorded is replaced by a
+ * newer journal, so a retry does not stay pointed at the failed run.
+ */
+function bindOpenFixRuns(config: LoadedKilnConfig, world: World): void {
+  const runs = scanRuns(config);
+  for (const job of world.observation.jobs) {
+    const ledger = readFeedbackLedger(config.kilnDir, job.jobId);
+    if (!ledger || ledger === "corrupt") continue;
+    const open = openFeedbackRound(ledger);
+    if (!open) continue;
+    const attempts = readAttemptLedger(config.kilnDir, job.jobId);
+    const retired = new Set<string>();
+    if (attempts && attempts !== "corrupt") {
+      for (const id of attempts.ignoredRunIds ?? []) retired.add(id);
+      for (const attempt of attempts.attempts) {
+        if (attempt.runId) retired.add(attempt.runId);
+      }
+    }
+    if (open.fixRunId && !retired.has(open.fixRunId)) continue;
+    const baseRunId = readDelivery(config.kilnDir, job.jobId)?.runId;
+    const settled = new Set(
+      ledger.rounds.flatMap((round) =>
+        (round.outcome === "pushed" || round.outcome === "fixed") && round.fixRunId ? [round.fixRunId] : [],
+      ),
+    );
+    const candidates = (runs.get(jobTag(job.jobId)) ?? []).filter((run) => {
+      if (run.runId === baseRunId || settled.has(run.runId) || retired.has(run.runId)) return false;
+      return true;
+    });
+    candidates.sort((left, right) => (left.runId < right.runId ? 1 : left.runId > right.runId ? -1 : 0));
+    const next = candidates[0];
+    if (!next) continue;
+    open.fixRunId = next.runId;
+    writeFeedbackLedger(config.kilnDir, ledger);
+  }
+}
+
+/**
+ * Fast-forward the open pull request branch to a fix run that finished ok.
+ * A missing branch or a history that is not a descendant is ambiguous.
+ * A rejected push that is not a fast-forward is ambiguous. Any other push
+ * error is left for the next tick. Kiln does not force-push.
+ */
+function publishReadyFixes(config: LoadedKilnConfig, host: KilnHost, world: World): string[] {
+  const notes: string[] = [];
+  for (const job of world.observation.jobs) {
+    if (!job.fixAwaitingPublish || !job.run) continue;
+    const ledger = readFeedbackLedger(config.kilnDir, job.jobId);
+    if (!ledger || ledger === "corrupt") continue;
+    const open = openFeedbackRound(ledger);
+    if (!open || open.fixRunId !== job.run.runId) continue;
+    const record = readDelivery(config.kilnDir, job.jobId);
+    const checkout = job.run.checkout;
+    const source = `yak/${job.run.runId}`;
+    if (!record?.branch) {
+      notes.push(`feedback ${job.jobId} failed: no pull request branch to publish`);
+      continue;
+    }
+    let sha: string;
+    try {
+      sha = host.git.revParse(checkout, source);
+    } catch (error) {
+      markFeedback(config.kilnDir, job.jobId, "feedback-ambiguous");
+      notes.push(`feedback-ambiguous ${job.jobId}  ${errorMessage(error)}`);
+      continue;
+    }
+    if (sha === open.headSha) {
+      open.outcome = "fixed";
+      writeFeedbackLedger(config.kilnDir, ledger);
+      notes.push(`fixed ${job.jobId}  ${sha}`);
+      continue;
+    }
+    const ancestor = host.git.isAncestor(checkout, open.headSha, sha);
+    if (!ancestor) {
+      markFeedback(config.kilnDir, job.jobId, "feedback-ambiguous");
+      notes.push(`feedback-ambiguous ${job.jobId}  ${source} is not based on ${open.headSha}`);
+      continue;
+    }
+    try {
+      host.git.publishBranch(checkout, source, record.branch, record.base);
+    } catch (error) {
+      const message = errorMessage(error);
+      if (isNonFastForward(message)) {
+        markFeedback(config.kilnDir, job.jobId, "feedback-ambiguous");
+        notes.push(`feedback-ambiguous ${job.jobId}  ${message}`);
+      } else {
+        notes.push(`feedback ${job.jobId} failed: ${message}`);
+      }
+      continue;
+    }
+    writeDelivery(config.kilnDir, {
+      jobId: record.jobId,
+      runId: record.runId,
+      branch: record.branch,
+      base: record.base,
+      sha,
+      pushed: true,
+      ...(record.prNumber ? { prNumber: record.prNumber } : {}),
+      ...(record.prUrl ? { prUrl: record.prUrl } : {}),
+    });
+    open.outcome = "pushed";
+    writeFeedbackLedger(config.kilnDir, ledger);
+    notes.push(`pushed ${job.jobId}  ${record.branch}  ${sha}`);
+  }
+  return notes;
+}
+
+function isNonFastForward(message: string): boolean {
+  return /non-fast-forward|\[rejected\]|failed to push some refs/i.test(message);
+}
+
+/**
+ * Read each open pull request once per tick and attach a plan.
+ * `readStatus` does not call this. A host with no feedback reader does not watch.
+ */
+function watchPullRequests(config: LoadedKilnConfig, world: World, host: KilnHost): string[] {
+  const notes: string[] = [];
+  if (!host.feedback) return notes;
+  for (const job of world.observation.jobs) {
+    if (job.feedbackLedgerError && job.deliver === "pr" && job.delivery?.prNumber) {
+      notes.push(`${job.feedbackLedgerError} ${job.jobId}`);
+    }
+    if (!shouldWatch(job) || !job.run) continue;
+    const ledger = readFeedbackLedger(config.kilnDir, job.jobId);
+    if (ledger === "corrupt") continue;
+    let snapshot: PullRequestFeedback;
+    try {
+      snapshot = host.feedback.read(job.run.checkout, job.delivery?.prNumber ?? 0);
+    } catch (error) {
+      notes.push(`feedback ${job.jobId} failed: ${errorMessage(error)}`);
+      continue;
+    }
+    job.feedbackPlan = planFeedback({
+      maxFixRounds: config.maxFixRounds,
+      ledger,
+      snapshot,
+    });
+  }
+  return notes;
+}
+
+function shouldWatch(job: ObservedJob): boolean {
+  if (job.deliver !== "pr" || job.workflow === INVESTIGATION_WORKFLOW) return false;
+  if (job.error || job.feedbackLedgerError || job.feedbackExhausted || job.feedbackAmbiguous) return false;
+  if (job.fixInProgress || job.fixAwaitingPublish || job.launching) return false;
+  if (!job.delivery?.prNumber) return false;
+  if (job.delivery.merged || job.delivery.prState === "MERGED" || job.delivery.prState === "CLOSED") return false;
+  return isLanded(job);
+}
+
+function markFeedback(
+  kilnDir: string,
+  jobId: string,
+  reason: "feedback-exhausted" | "feedback-ambiguous",
+): void {
+  const existing = readFeedbackLedger(kilnDir, jobId);
+  const ledger: FeedbackLedger = existing && existing !== "corrupt" ? existing : { jobId, rounds: [] };
+  if (reason === "feedback-exhausted") ledger.exhausted = true;
+  else ledger.ambiguous = true;
+  writeFeedbackLedger(kilnDir, ledger);
+}
+
+/**
+ * Open one feedback round and start the fix workflow on the pull request head.
+ * The round is written only after that commit resolves, so a missing sha
+ * retries on the next tick without consuming a round.
+ */
+function startFix(
+  config: LoadedKilnConfig,
+  world: World,
+  job: Job,
+  host: KilnHost,
+  now: Date,
+): LaunchReport {
+  const observed = world.observation.jobs.find((candidate) => candidate.jobId === job.id);
+  const plan = observed?.feedbackPlan;
+  const repo = config.repos[job.repo];
+  if (!repo || !plan || plan.action !== "fix") {
+    return { jobId: job.id, repo: job.repo, output: `Job ${job.id} has no fix to start.` };
+  }
+  let headSha: string;
+  try {
+    headSha = resolveCommit(host, repo.path, plan.headSha);
+  } catch (error) {
+    return { jobId: job.id, repo: job.repo, output: errorMessage(error) };
+  }
+  const existing = readFeedbackLedger(config.kilnDir, job.id);
+  const ledger: FeedbackLedger = existing && existing !== "corrupt" ? existing : { jobId: job.id, rounds: [] };
+  if (openFeedbackRound(ledger)) {
+    return { jobId: job.id, repo: job.repo, output: `Job ${job.id} already has an open fix round.` };
+  }
+  const round = ledger.rounds.length + 1;
+  ledger.rounds.push({
+    round,
+    headSha,
+    trigger: plan.trigger,
+    items: plan.items,
+    at: now.toISOString(),
+  });
+  writeFeedbackLedger(config.kilnDir, ledger);
+  let specText: string;
+  try {
+    specText = feedbackSpec(specHandedToYak(config, world, job), plan.items);
+  } catch (error) {
+    const message = errorMessage(error);
+    writeLaunchError(config.kilnDir, job.id, message);
+    const logPath = join(config.kilnDir, "logs", `${jobBasename(job.id)}.log`);
+    mkdirSync(dirname(logPath), { recursive: true });
+    writeFileSync(logPath, `${message}\n`);
+    writeBreadcrumb(breadcrumbPath(config.kilnDir, job.id), { jobId: job.id, pid: 0, logPath });
+    return { jobId: job.id, repo: job.repo, kind: "fix", output: message };
+  }
+  const report = launchFixRun(config, job, host, repo.path, headSha, specText);
+  return { ...report, output: `round ${round}\n${report.output}` };
+}
+
+/** Relaunch the open fix round. Does not append a round. Failures become a dead launch so retry can see them. */
+function launchOpenFix(
+  config: LoadedKilnConfig,
+  world: World,
+  job: Job,
+  host: KilnHost,
+  checkout: string,
+  open: FeedbackLedger["rounds"][number],
+): LaunchReport {
+  let specText: string;
+  let headSha: string;
+  try {
+    clearLaunchError(config.kilnDir, job.id);
+    specText = feedbackSpec(specHandedToYak(config, world, job), open.items);
+    headSha = resolveCommit(host, checkout, open.headSha);
+  } catch (error) {
+    const message = errorMessage(error);
+    writeLaunchError(config.kilnDir, job.id, message);
+    const logPath = join(config.kilnDir, "logs", `${jobBasename(job.id)}.log`);
+    mkdirSync(dirname(logPath), { recursive: true });
+    writeFileSync(logPath, `${message}\n`);
+    writeBreadcrumb(breadcrumbPath(config.kilnDir, job.id), { jobId: job.id, pid: 0, logPath });
+    return { jobId: job.id, repo: job.repo, kind: "fix", output: message };
+  }
+  return launchFixRun(config, job, host, checkout, headSha, specText);
+}
+
+function resolveCommit(host: KilnHost, checkout: string, sha: string): string {
+  try {
+    return host.git.revParse(checkout, sha);
+  } catch {
+    host.git.fetch(checkout);
+    return host.git.revParse(checkout, sha);
+  }
+}
+
+/** `workflows/fix.yaml` on `headSha`. Commits on `yak/<run-id>`. Does not push. */
+function launchFixRun(
+  config: LoadedKilnConfig,
+  job: Job,
+  host: KilnHost,
+  checkout: string,
+  headSha: string,
+  specText: string,
+): LaunchReport {
+  const sourceWorkflow = readFileSync(join(packageRoot(), "workflows", "fix.yaml"), "utf8");
+  const workflow = materializeWorkflow(config.kilnDir, job.id, "fix");
+  const repo = config.repos[job.repo];
+  const logPath = join(config.kilnDir, "logs", `${jobBasename(job.id)}.log`);
+  mkdirSync(dirname(logPath), { recursive: true });
+  ensureCheckoutExcludes(checkout);
+  const input = workflowInputs(sourceWorkflow, {
+    title: job.title,
+    specText,
+    runNonce: randomUUID(),
+    baseRef: headSha,
+  });
+  const args = agentArgs(config, job, workflow, headSha, input);
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...(repo?.test ? { KILN_TEST: repo.test } : {}),
+    KILN_TASK_TITLE: job.title,
+    KILN_VERIFY_WRAPPER: join(packageRoot(), "dist", "truncate-output.js"),
+  };
+  return spawnLogged(config, host, {
+    jobId: job.id,
+    repo: job.repo,
+    kind: "fix",
+    cwd: checkout,
+    args,
+    env,
+    logPath,
+  });
+}
+
+function agentArgs(
+  config: LoadedKilnConfig,
+  job: Job,
+  workflow: string,
+  headSha: string,
+  input: Record<string, string>,
+): string[] {
+  const args = [
+    yakCliPath(),
+    "run",
+    workflow,
+    "--adapter",
+    config.adapter,
+    "--isolation",
+    "worktree",
+    "--from",
+    headSha,
+    "--tag",
+    jobTag(job.id),
+  ];
+  for (const [key, value] of Object.entries(input)) {
+    args.push("--input", `${key}=${value}`);
+  }
+  return args;
+}
+
+function spawnLogged(
+  config: LoadedKilnConfig,
+  host: KilnHost,
+  spec: {
+    jobId: string;
+    repo: string;
+    kind?: "fix";
+    cwd: string;
+    args: string[];
+    env: NodeJS.ProcessEnv;
+    logPath: string;
+  },
+): LaunchReport {
+  const crumbPath = breadcrumbPath(config.kilnDir, spec.jobId);
+  writeBreadcrumb(crumbPath, { jobId: spec.jobId, pid: 0, logPath: spec.logPath });
+  const logFd = openSync(spec.logPath, "a");
+  try {
+    const started = spawnAgent(host, { cwd: spec.cwd, args: spec.args, env: spec.env, logFd });
+    const pid = started.pid ?? 0;
+    writeBreadcrumb(crumbPath, { jobId: spec.jobId, pid, logPath: spec.logPath });
+    return {
+      jobId: spec.jobId,
+      repo: spec.repo,
+      ...(spec.kind ? { kind: spec.kind } : {}),
+      output: `pid ${pid}\nlog ${spec.logPath}`,
+    };
+  } catch (error) {
+    writeFileSync(spec.logPath, `${errorMessage(error)}\n`);
+    return {
+      jobId: spec.jobId,
+      repo: spec.repo,
+      ...(spec.kind ? { kind: spec.kind } : {}),
+      output: `pid 0\nlog ${spec.logPath}`,
+    };
+  } finally {
+    closeSync(logFd);
+  }
+}
+
+function spawnAgent(host: KilnHost, spec: AgentStart): { pid: number } {
+  if (host.startAgent) return host.startAgent(spec);
+  const child = spawn(process.execPath, spec.args, {
+    cwd: spec.cwd,
+    detached: true,
+    stdio: ["ignore", spec.logFd, spec.logFd],
+    env: spec.env,
+  });
+  child.unref();
+  return { pid: child.pid ?? 0 };
+}
+
 function launchJob(config: LoadedKilnConfig, world: World, job: Job, host: KilnHost): LaunchReport {
   const repo = config.repos[job.repo];
   if (!repo) {
     throw new Error(`Repo ${job.repo} is not registered. Run kiln repo add ${job.repo} <path>.`);
   }
+  const feedback = readFeedbackLedger(config.kilnDir, job.id);
+  const open = feedback && feedback !== "corrupt" ? openFeedbackRound(feedback) : undefined;
+  if (open) return launchOpenFix(config, world, job, host, repo.path, open);
   const sourceWorkflow = readFileSync(join(packageRoot(), "workflows", `${job.workflow}.yaml`), "utf8");
   const testCommand = repo.test;
   if (workflowNeedsTestCommand(sourceWorkflow) && !testCommand?.trim()) {
@@ -561,7 +975,6 @@ function launchJob(config: LoadedKilnConfig, world: World, job: Job, host: KilnH
   const workflow = materializeWorkflow(config.kilnDir, job.id, job.workflow);
   const logPath = join(config.kilnDir, "logs", `${jobBasename(job.id)}.log`);
   mkdirSync(dirname(logPath), { recursive: true });
-  const crumbPath = breadcrumbPath(config.kilnDir, job.id);
   ensureCheckoutExcludes(repo.path);
 
   let baseSha: string;
@@ -591,49 +1004,14 @@ function launchJob(config: LoadedKilnConfig, world: World, job: Job, host: KilnH
     runNonce: randomUUID(),
     baseRef: baseSha,
   });
-  const args = [
-    yakCliPath(),
-    "run",
-    workflow,
-    "--adapter",
-    config.adapter,
-    "--isolation",
-    "worktree",
-    "--from",
-    baseSha,
-    "--tag",
-    jobTag(job.id),
-  ];
-  for (const [key, value] of Object.entries(input)) {
-    args.push("--input", `${key}=${value}`);
-  }
-
+  const args = agentArgs(config, job, workflow, baseSha, input);
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     KILN_TEST: testCommand,
     KILN_TASK_TITLE: job.title,
     KILN_VERIFY_WRAPPER: join(packageRoot(), "dist", "truncate-output.js"),
   };
-
-  writeBreadcrumb(crumbPath, { jobId: job.id, pid: 0, logPath });
-  const logFd = openSync(logPath, "a");
-  try {
-    const child = spawn(process.execPath, args, {
-      cwd: repo.path,
-      detached: true,
-      stdio: ["ignore", logFd, logFd],
-      env,
-    });
-    child.unref();
-    const pid = child.pid ?? 0;
-    writeBreadcrumb(crumbPath, { jobId: job.id, pid, logPath });
-    return { jobId: job.id, repo: job.repo, output: `pid ${pid}\nlog ${logPath}` };
-  } catch (error) {
-    writeFileSync(logPath, `${errorMessage(error)}\n`);
-    return { jobId: job.id, repo: job.repo, output: `pid 0\nlog ${logPath}` };
-  } finally {
-    closeSync(logFd);
-  }
+  return spawnLogged(config, host, { jobId: job.id, repo: job.repo, cwd: repo.path, args, env, logPath });
 }
 
 interface LoadedJob {
@@ -824,6 +1202,48 @@ function readLogTail(logPath: string | undefined): string | undefined {
  * even when its id does not sort after the failed one. Otherwise keep the
  * latest id, which is what a single-run job has always shown.
  */
+function selectJobRun(
+  runs: ObservedRun[],
+  ledger: AttemptLedger | undefined,
+  feedback: FeedbackLedger | undefined,
+  baseRunId: string | undefined,
+): { run?: ObservedRun; retired: boolean; fixInProgress: boolean; fixAwaitingPublish: boolean } {
+  const settled = new Set<string>();
+  for (const round of feedback?.rounds ?? []) {
+    if ((round.outcome === "pushed" || round.outcome === "fixed") && round.fixRunId) settled.add(round.fixRunId);
+  }
+  const ignored = new Set(ledger?.ignoredRunIds ?? []);
+  const failed = new Set((ledger?.attempts ?? []).flatMap((attempt) => (attempt.runId ? [attempt.runId] : [])));
+  const open = openFeedbackRound(feedback);
+  if (open) {
+    const bound =
+      open.fixRunId && !ignored.has(open.fixRunId) && !failed.has(open.fixRunId) ? open.fixRunId : undefined;
+    const fixRuns = runs.filter((run) => {
+      if (settled.has(run.runId) || ignored.has(run.runId)) return false;
+      if (bound) return run.runId === bound;
+      if (failed.has(run.runId)) return false;
+      return baseRunId ? run.runId !== baseRunId : true;
+    });
+    fixRuns.sort((left, right) => (left.runId < right.runId ? 1 : left.runId > right.runId ? -1 : 0));
+    const fix = fixRuns[0];
+    if (fix) {
+      const retired = failed.has(fix.runId);
+      return {
+        run: fix,
+        retired,
+        fixInProgress: true,
+        fixAwaitingPublish: fix.status === "ok" && !retired,
+      };
+    }
+    return { retired: false, fixInProgress: true, fixAwaitingPublish: false };
+  }
+  const picked = selectRun(
+    runs.filter((run) => !settled.has(run.runId)),
+    ledger,
+  );
+  return { ...picked, fixInProgress: false, fixAwaitingPublish: false };
+}
+
 function selectRun(runs: ObservedRun[], ledger: AttemptLedger | undefined): { run?: ObservedRun; retired: boolean } {
   const ignored = new Set(ledger?.ignoredRunIds ?? []);
   const failed = new Set(

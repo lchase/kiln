@@ -7,11 +7,13 @@ const FACTORY_DIRECTIVE = /^<!--\s*factory:\s*(prompts\/factory\/[a-z0-9-]+\.md)
 const WORKFLOW_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const FEATURE_PROMPTS = 7;
 const INVESTIGATION_PROMPTS = 1;
+const FIX_PROMPTS = 1;
 
 /** Prompt files Kiln rewrites before launch. A mismatch refuses the launch. */
 const PROMPT_COUNTS: Record<string, number> = {
   feature: FEATURE_PROMPTS,
   investigation: INVESTIGATION_PROMPTS,
+  fix: FIX_PROMPTS,
 };
 
 export interface LaunchInput {

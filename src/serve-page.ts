@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { scheduledRetry, type AttentionItem, type AttentionView } from "./attention.js";
 import { readBoardFiles, stageOf, stagesFor, type BoardFile, type BoardReviewRound, type BoardStage } from "./board.js";
+import { feedbackRoundLabel } from "./feedback.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import { packageRoot } from "./paths.js";
 import type { StatusJobView } from "./report.js";
@@ -206,7 +207,14 @@ function roundsHtml(job: StatusJobView, stage: string): string {
   const rounds = job.rounds ?? [];
   const last = rounds[rounds.length - 1]?.n;
   const rows = rounds.map((round) => roundRow(round, stage === "review" && job.state === "running" && round.n === last));
-  if (job.state === "in-review" || (job.state === "done" && safeUrl(job.prUrl))) {
+  for (const round of job.feedbackRounds ?? []) {
+    const tone = round.outcome ? " PASS" : " CHANGES";
+    rows.push(
+      `<div class="round"><span class="r">R${round.round}</span><span class="chip${tone}" style="grid-column: 2 / -1">${escapeHtml(feedbackRoundLabel(round))}</span></div>`,
+    );
+  }
+  const inReview = job.state === "in-review" || (job.state === "done" && safeUrl(job.prUrl));
+  if (inReview && (job.feedbackRounds?.length ?? 0) === 0) {
     const n = (last ?? 0) + 1;
     const tone = job.state === "done" ? " PASS" : "";
     rows.push(

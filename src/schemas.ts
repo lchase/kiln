@@ -35,6 +35,8 @@ export type JiraConfig = z.infer<typeof JiraConfigSchema>;
 export const DEFAULT_STALL_TIMEOUT_MS = 15 * 60 * 1000;
 /** Transient failures retry until this many attempts, then the job is dead. */
 export const DEFAULT_MAX_ATTEMPTS = 3;
+/** Pull request fix rounds before the job is needs-human (`feedback-exhausted`). */
+export const DEFAULT_MAX_FIX_ROUNDS = 2;
 
 export const KilnConfigFileSchema = z.object({
   note: z.string().min(1).optional(),
@@ -46,6 +48,11 @@ export const KilnConfigFileSchema = z.object({
   stallTimeoutMs: z.number().int().optional(),
   /** Transient failures before the job is dead. Default 3. */
   maxAttempts: z.number().int().min(1).optional(),
+  /**
+   * Fix rounds for an open pull request before the job is needs-human with
+   * reason `feedback-exhausted`. Default 2. Kiln does not merge.
+   */
+  maxFixRounds: z.number().int().min(1).optional(),
   adapter: z.enum(["mock", "claude-code"]).optional(),
   repos: z.record(z.string(), RepoEntrySchema),
   jira: JiraConfigSchema.optional(),

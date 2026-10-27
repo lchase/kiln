@@ -1,0 +1,44 @@
+# One pull-request fix, run by yak (@lchase/yak).
+#
+# The same builder as workflows/feature.yaml (factory builder, opus). Kiln
+# launches it with `yak run --isolation worktree --from <pull request head>`
+# on a job whose pull request is already open. Yak cuts a worktree branch
+# `yak/<run-id>` from that commit. The agent commits there. Kiln fast-forwards
+# the open pull request branch. This workflow does not open, approve, merge,
+# or comment on a pull request, and it does not force-push.
+name: kiln-fix
+version: "1"
+inputSchema:
+  inline:
+    type: object
+    additionalProperties: false
+    properties:
+      title: { type: string }
+      description: { type: string }
+      acceptance: { type: string }
+      runNonce: { type: string }
+      baseRef: { type: string }
+    required: [title, description, acceptance, runNonce, baseRef]
+steps:
+  - id: build
+    needs: [input]
+    agent:
+      model: opus
+      prompt:
+        file: prompts/kiln/fix.md
+      schema:
+        inline:
+          type: object
+          additionalProperties: false
+          properties:
+            summary: { type: string }
+            status: { type: string, enum: [READY, BLOCKED] }
+          required: [summary, status]
+      tools: [Read, Grep, Glob, Bash, Write, Edit, Skill]
+    produces: build
+
+  - id: land
+    needs: [input, build]
+    skipIf: 'build.status != "READY"'
+    command:
+      run: 'git add -A && git diff --cached --quiet || git commit -m "kiln: $KILN_TASK_TITLE"'

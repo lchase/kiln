@@ -1,3 +1,4 @@
+import type { FeedbackPlan, FeedbackRound } from "./feedback.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import type { JobSource, JobState } from "./schemas.js";
 
@@ -155,6 +156,23 @@ export interface ObservedJob {
   runRetired?: boolean;
   /** The attempt ledger could not be parsed. Automatic retry stays off. */
   ledgerError?: string;
+  /** Rounds already recorded for the open pull request. */
+  feedbackRounds?: FeedbackRound[];
+  /** `maxFixRounds` is used. Derived state is needs-human while the pull request is open. */
+  feedbackExhausted?: boolean;
+  /** Feedback Kiln could not classify. Derived state is needs-human. No fix is launched. */
+  feedbackAmbiguous?: boolean;
+  /** `<kilnDir>/feedback/<id>.json` could not be parsed. Watching stays off. */
+  feedbackLedgerError?: string;
+  /**
+   * A fix round is open. The selected `run` is that fix, or absent when the
+   * journal has not appeared yet. The original landed run is not `run`.
+   */
+  fixInProgress?: boolean;
+  /** The fix run finished ok and Kiln still has to publish it onto the pull request branch. */
+  fixAwaitingPublish?: boolean;
+  /** Set by tick after it reads GitHub. `readStatus` leaves this unset. */
+  feedbackPlan?: FeedbackPlan;
   /** The job file could not be used. Decide skips it. */
   error?: string;
 }
@@ -174,14 +192,16 @@ export type Action =
   | { type: "launch"; jobId: string; repo: string }
   | { type: "retry"; jobId: string; repo: string }
   | { type: "deliver"; jobId: string; repo: string }
-  | { type: "record-findings"; jobId: string };
+  | { type: "record-findings"; jobId: string }
+  | { type: "start-fix"; jobId: string; repo: string }
+  | { type: "mark-feedback"; jobId: string; reason: "feedback-exhausted" | "feedback-ambiguous" };
 
 export function inFlightCount(observation: Observation): number {
   return observation.jobs.filter((job) => inFlight(job, observation)).length;
 }
 
 function inFlight(job: ObservedJob, observation: Observation): boolean {
-  if (job.error) return false;
+  if (job.error || job.feedbackExhausted || job.feedbackAmbiguous) return false;
   const state = jobState(job, observation);
   return state === "running" || state === "needs-human" || state === "approved";
 }
@@ -196,7 +216,13 @@ function inFlight(job: ObservedJob, observation: Observation): boolean {
  * An investigation is `done` on approve and never `in-review`.
  */
 export function jobState(job: ObservedJob, observation: Observation): JobState {
-  if (job.launching && (!job.run || job.runRetired)) return "running";
+  if (job.fixAwaitingPublish) return "in-review";
+  if (job.launching && (!job.run || job.runRetired || job.fixInProgress)) return "running";
+  if ((job.feedbackExhausted || job.feedbackAmbiguous) && isLanded(job) && !job.fixInProgress) {
+    if (job.delivery?.merged || job.delivery?.prState === "MERGED") return "done";
+    if (job.delivery?.prState === "CLOSED") return "failed";
+    return "needs-human";
+  }
   if (job.run && !job.runRetired) return activeRunState(job);
   if (job.run && isLanded(job)) return landedState(job);
   if (job.run?.status === "ok" && job.run.gateDecision === "reject") return "rejected";
@@ -274,8 +300,14 @@ function needsDelivery(job: ObservedJob): boolean {
 }
 
 function canLaunch(job: ObservedJob, observation: Observation): boolean {
-  if (job.error || job.run || job.launching || job.launchFailed) return false;
+  if (job.error || job.run || job.launching || job.launchFailed || job.fixInProgress) return false;
   return dependenciesMet(job, observation);
+}
+
+/** An in-review job with new pull request feedback and room under `maxFixRounds`. */
+function canStartFix(job: ObservedJob): boolean {
+  if (job.error || job.launching || job.fixInProgress || job.fixAwaitingPublish) return false;
+  return job.feedbackPlan?.action === "fix";
 }
 
 /** A recorded transient failure whose backoff has elapsed. One retry per tick, ahead of a new job. */
@@ -307,11 +339,25 @@ export function decide(observation: Observation, now = new Date()): Action[] {
     actions.push({ type: "deliver", jobId: job.jobId, repo: job.repo });
   }
 
+  for (const job of observation.jobs) {
+    if (job.feedbackPlan?.action === "exhaust") {
+      actions.push({ type: "mark-feedback", jobId: job.jobId, reason: "feedback-exhausted" });
+    } else if (job.feedbackPlan?.action === "ambiguous") {
+      actions.push({ type: "mark-feedback", jobId: job.jobId, reason: "feedback-ambiguous" });
+    }
+  }
+
   if (inFlightCount(observation) >= observation.maxConcurrent) return actions;
 
   const retry = observation.jobs.find((job) => canRetry(job, observation, now));
   if (retry) {
     actions.push({ type: "retry", jobId: retry.jobId, repo: retry.repo });
+    return actions;
+  }
+
+  const fix = observation.jobs.find((job) => canStartFix(job));
+  if (fix) {
+    actions.push({ type: "start-fix", jobId: fix.jobId, repo: fix.repo });
     return actions;
   }
 
