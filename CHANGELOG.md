@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/lchase/kiln/compare/kiln-v0.4.0...kiln-v0.5.0) (2026-10-27)
+
+
+### Features
+
+* feed pull request failures back into a bounded fix ([#23](https://github.com/lchase/kiln/issues/23)) ([d3f6f74](https://github.com/lchase/kiln/commit/d3f6f74e1f0bda3700fbd55e390df4eb0c6f65ca))
+
 ## [0.4.0](https://github.com/lchase/kiln/compare/kiln-v0.3.0...kiln-v0.4.0) (2026-10-27)
 
 
