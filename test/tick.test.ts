@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { packageRoot } from "../src/paths.js";
+import { reapLaunches } from "./reap.js";
 
 const root = packageRoot();
 const keep: string[] = [];
@@ -222,7 +223,8 @@ function checkoutPair(): { cwd: string; home: string; web: string; api: string }
   return { cwd, home, web, api };
 }
 
-after(() => {
+after(async () => {
+  for (const dir of keep) await reapLaunches(dir);
   for (const dir of keep) rmSync(dir, { recursive: true, force: true });
 });
 
