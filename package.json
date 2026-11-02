@@ -2,6 +2,7 @@
   "name": "@lchase/kiln",
   "version": "0.6.1",
   "description": "Run a workflow on any registered repo. A markdown spec is the input.",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "kiln": "./dist/cli.js"

@@ -534,9 +534,453 @@
     }
   }
 
+  var settingsDoc = null;
+  var repoDraft = {};
+  var editing = null;
+  var settingsSaving = false;
+  var settingsDefaults = {};
+
+  function showSettingsError(message) {
+    var el = document.getElementById("settings-error");
+    if (!el) return;
+    el.hidden = !message;
+    el.textContent = message || "";
+  }
+
+  function markSettingsDirty() {
+    var saved = document.getElementById("settings-saved");
+    if (saved) saved.hidden = true;
+  }
+
+  function clearSettingsErrors() {
+    var nodes = document.querySelectorAll("#settings .field-error");
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].hidden = true;
+      nodes[i].textContent = "";
+    }
+    showSettingsError("");
+  }
+
+  function showSlot(name, message) {
+    var slot = document.querySelector('#settings [data-error="' + name + '"]');
+    if (!slot) return;
+    slot.hidden = !message;
+    slot.textContent = message || "";
+    if (message && slot.scrollIntoView) slot.scrollIntoView({ block: "nearest" });
+  }
+
+  function setSettingsTab(tab) {
+    var repos = document.getElementById("settings-repos");
+    var globalPane = document.getElementById("settings-global");
+    if (repos) repos.hidden = tab !== "repos";
+    if (globalPane) globalPane.hidden = tab !== "global";
+    var buttons = document.querySelectorAll("#settings-form [data-settings-tab]");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].setAttribute("aria-pressed", buttons[i].getAttribute("data-settings-tab") === tab ? "true" : "false");
+    }
+  }
+
+  function setPressed(selector, attr, value) {
+    var buttons = document.querySelectorAll(selector);
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].setAttribute("aria-pressed", buttons[i].getAttribute(attr) === value ? "true" : "false");
+    }
+  }
+
+  function selectedAttr(selector, attr, fallback) {
+    var pressed = document.querySelector(selector + '[aria-pressed="true"]');
+    return pressed ? pressed.getAttribute(attr) || fallback : fallback;
+  }
+
+  function cloneRepos(repos) {
+    var out = {};
+    var names = Object.keys(repos || {});
+    for (var i = 0; i < names.length; i++) {
+      var name = names[i];
+      var repo = repos[name] || {};
+      out[name] = {
+        path: repo.path || "",
+        test: repo.test || "",
+        deliver: repo.deliver === "pr" ? "pr" : "local",
+        base: repo.base || "",
+        prTitle: repo.prTitle || "",
+        branch: repo.branch || "",
+      };
+    }
+    return out;
+  }
+
+  function fillHints(defaults) {
+    settingsDefaults = defaults || {};
+    var pr = document.getElementById("hint-pr-title");
+    var branch = document.getElementById("hint-branch");
+    var title = settingsDefaults.prTitle || "[{issue}] {title}";
+    var template = settingsDefaults.branch || "{issue}-{slug}";
+    if (pr) pr.textContent = "Default " + title + ", which renders as [ABC-123] Title.";
+    if (branch) branch.textContent = "Default " + template + ", which renders as ABC-123-slug.";
+    var prInput = document.getElementById("repo-pr-title");
+    var branchInput = document.getElementById("repo-branch");
+    if (prInput) prInput.placeholder = title;
+    if (branchInput) branchInput.placeholder = template;
+    var attempts = document.getElementById("hint-attempts");
+    var stall = document.getElementById("hint-stall");
+    var rounds = document.getElementById("hint-fix");
+    if (attempts) attempts.textContent = "Default " + (settingsDefaults.maxAttempts != null ? settingsDefaults.maxAttempts : 3) + ". Transient failures before the job is dead.";
+    if (stall) stall.textContent = "Default " + (settingsDefaults.stallTimeoutMs != null ? settingsDefaults.stallTimeoutMs : 900000) + " (15 minutes). 0 disables stall detection.";
+    if (rounds) rounds.textContent = "Default " + (settingsDefaults.maxFixRounds != null ? settingsDefaults.maxFixRounds : 2) + ". Fix rounds before the job needs a person.";
+    var attemptInput = document.getElementById("max-attempts");
+    var stallInput = document.getElementById("stall-timeout");
+    var roundInput = document.getElementById("max-fix-rounds");
+    if (attemptInput) attemptInput.placeholder = String(settingsDefaults.maxAttempts != null ? settingsDefaults.maxAttempts : 3);
+    if (stallInput) stallInput.placeholder = String(settingsDefaults.stallTimeoutMs != null ? settingsDefaults.stallTimeoutMs : 900000);
+    if (roundInput) roundInput.placeholder = String(settingsDefaults.maxFixRounds != null ? settingsDefaults.maxFixRounds : 2);
+  }
+
+  function fillGlobal(data) {
+    fillHints(data.defaults || {});
+    var attempts = document.getElementById("max-attempts");
+    var stall = document.getElementById("stall-timeout");
+    var rounds = document.getElementById("max-fix-rounds");
+    if (attempts) attempts.value = data.maxAttempts != null ? String(data.maxAttempts) : "";
+    if (stall) stall.value = data.stallTimeoutMs != null ? String(data.stallTimeoutMs) : "";
+    if (rounds) rounds.value = data.maxFixRounds != null ? String(data.maxFixRounds) : "";
+    setPressed("#sandbox-mode [data-sandbox]", "data-sandbox", data.sandbox && data.sandbox.mode === "docker" ? "docker" : "off");
+    var domains = document.getElementById("sandbox-domains");
+    if (domains) domains.value = data.sandbox && data.sandbox.allowDomains ? data.sandbox.allowDomains.join("\n") : "";
+  }
+
+  function renderRepoList() {
+    var host = document.getElementById("repo-list");
+    if (!host) return;
+    var names = Object.keys(repoDraft).sort();
+    var html = "";
+    for (var i = 0; i < names.length; i++) {
+      var name = names[i];
+      if (editing && editing.original === name) continue;
+      var repo = repoDraft[name];
+      var bits = [repo.deliver || "local"];
+      if (repo.base) bits.push("base " + repo.base);
+      if (repo.test) bits.push(repo.test);
+      html += '<div class="repo-row"><div><div class="num">' + esc(name) + '</div><div class="branch">' + esc(repo.path || "") + '</div><div class="meta">' + esc(bits.join(" · ")) + '</div></div><div class="d-actions"><button type="button" data-repo-edit="' + esc(name) + '">Edit</button><button type="button" data-repo-remove="' + esc(name) + '">Remove</button></div></div>';
+    }
+    if (!html && !editing) html = '<p class="empty">No repos yet.</p>';
+    host.innerHTML = html;
+  }
+
+  function fillEditor(name, repo) {
+    var nameInput = document.getElementById("repo-name");
+    var pathInput = document.getElementById("repo-path");
+    var testInput = document.getElementById("repo-test");
+    var baseInput = document.getElementById("repo-base");
+    var titleInput = document.getElementById("repo-pr-title");
+    var branchInput = document.getElementById("repo-branch");
+    if (nameInput) nameInput.value = name || "";
+    if (pathInput) pathInput.value = repo.path || "";
+    if (testInput) testInput.value = repo.test || "";
+    if (baseInput) baseInput.value = repo.base || "";
+    if (titleInput) titleInput.value = repo.prTitle || "";
+    if (branchInput) branchInput.value = repo.branch || "";
+    setPressed("#repo-deliver [data-deliver]", "data-deliver", repo.deliver === "pr" ? "pr" : "local");
+    var browser = document.getElementById("repo-browser");
+    if (browser) { browser.hidden = true; browser.innerHTML = ""; }
+  }
+
+  function readEditor() {
+    function value(id) {
+      var el = document.getElementById(id);
+      return el ? el.value.trim() : "";
+    }
+    return {
+      name: value("repo-name"),
+      path: value("repo-path"),
+      test: value("repo-test"),
+      deliver: selectedAttr("#repo-deliver [data-deliver]", "data-deliver", "local"),
+      base: value("repo-base"),
+      prTitle: value("repo-pr-title"),
+      branch: value("repo-branch"),
+    };
+  }
+
+  function flushEditor() {
+    if (!editing) return true;
+    var repo = readEditor();
+    showSlot("name", "");
+    if (!repo.name) {
+      showSlot("name", "Name is required.");
+      return false;
+    }
+    if (repo.name !== editing.original && Object.prototype.hasOwnProperty.call(repoDraft, repo.name)) {
+      showSlot("name", "A repo named " + repo.name + " is already in the list.");
+      return false;
+    }
+    if (editing.original && editing.original !== repo.name) delete repoDraft[editing.original];
+    repoDraft[repo.name] = repo;
+    editing.original = repo.name;
+    return true;
+  }
+
+  function openEditor(name, repo) {
+    editing = { original: name };
+    fillEditor(name, repo);
+    var editor = document.getElementById("repo-editor");
+    if (editor) editor.hidden = false;
+    renderRepoList();
+    var nameInput = document.getElementById("repo-name");
+    if (nameInput && nameInput.focus) nameInput.focus();
+  }
+
+  function closeEditor() {
+    editing = null;
+    var editor = document.getElementById("repo-editor");
+    if (editor) editor.hidden = true;
+    renderRepoList();
+  }
+
+  function startEdit(name) {
+    if (!Object.prototype.hasOwnProperty.call(repoDraft, name)) return;
+    if (editing && editing.original !== name && !flushEditor()) return;
+    if (editing && editing.original === name) return;
+    openEditor(name, repoDraft[name]);
+  }
+
+  function startAdd() {
+    if (editing && !flushEditor()) return;
+    openEditor(null, { path: "", test: "", deliver: "local", base: "", prTitle: "", branch: "" });
+  }
+
+  function removeRepo(name) {
+    var ok = window.confirm("Remove " + name + " from the kiln config? This only edits the config. The checkout on disk is left as it is.");
+    if (!ok) return;
+    if (editing && editing.original === name) {
+      editing = null;
+      var editor = document.getElementById("repo-editor");
+      if (editor) editor.hidden = true;
+    } else if (editing && !flushEditor()) {
+      return;
+    }
+    delete repoDraft[name];
+    markSettingsDirty();
+    renderRepoList();
+  }
+
+  function optionalInt(raw) {
+    var text = String(raw == null ? "" : raw).trim();
+    if (!text) return undefined;
+    if (!/^-?\d+$/.test(text)) return text;
+    return Number(text);
+  }
+
+  function domainList(raw) {
+    return String(raw || "").split(/[\s,]+/).filter(function (part) { return part.trim(); }).map(function (part) { return part.trim(); });
+  }
+
+  function inputValue(id) {
+    var el = document.getElementById(id);
+    return el ? el.value : "";
+  }
+
+  function settingsPayload() {
+    var repos = {};
+    var names = Object.keys(repoDraft);
+    for (var i = 0; i < names.length; i++) {
+      var name = names[i];
+      var repo = repoDraft[name];
+      var entry = { path: repo.path || "" };
+      if (repo.test) entry.test = repo.test;
+      if (repo.deliver === "pr" || repo.deliver === "local") entry.deliver = repo.deliver;
+      if (repo.base) entry.base = repo.base;
+      if (repo.prTitle) entry.prTitle = repo.prTitle;
+      if (repo.branch) entry.branch = repo.branch;
+      repos[name] = entry;
+    }
+    var body = { revision: settingsDoc ? settingsDoc.revision : "", repos: repos };
+    var attempts = optionalInt(inputValue("max-attempts"));
+    var stall = optionalInt(inputValue("stall-timeout"));
+    var rounds = optionalInt(inputValue("max-fix-rounds"));
+    if (attempts !== undefined) body.maxAttempts = attempts;
+    if (stall !== undefined) body.stallTimeoutMs = stall;
+    if (rounds !== undefined) body.maxFixRounds = rounds;
+    var mode = selectedAttr("#sandbox-mode [data-sandbox]", "data-sandbox", "off");
+    var domains = domainList(inputValue("sandbox-domains"));
+    var sandbox = {};
+    if (mode) sandbox.mode = mode;
+    if (domains.length) sandbox.allowDomains = domains;
+    if (mode || domains.length) body.sandbox = sandbox;
+    return body;
+  }
+
+  function applyFieldErrors(fields) {
+    var keys = Object.keys(fields || {});
+    var lines = [];
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      var message = fields[key];
+      lines.push(message);
+      var repoField = /^repos\.([^.]+)\.([^.]+)$/.exec(key);
+      if (repoField) {
+        setSettingsTab("repos");
+        if (Object.prototype.hasOwnProperty.call(repoDraft, repoField[1])) startEdit(repoField[1]);
+        showSlot(repoField[2], message);
+        continue;
+      }
+      if (key.indexOf("sandbox.allowDomains") === 0) {
+        setSettingsTab("global");
+        showSlot("sandbox.allowDomains", message);
+        continue;
+      }
+      if (key === "sandbox.mode" || key === "maxAttempts" || key === "stallTimeoutMs" || key === "maxFixRounds") {
+        setSettingsTab("global");
+        showSlot(key, message);
+        continue;
+      }
+      if (key === "name" || key.indexOf("repos.") === 0) {
+        setSettingsTab("repos");
+        showSlot("name", message);
+      }
+    }
+    if (lines.length) showSettingsError(lines.join("\n"));
+  }
+
+  function applySettingsDocument(data) {
+    settingsDoc = data;
+    repoDraft = cloneRepos(data.repos || {});
+    var pathEl = document.getElementById("settings-path");
+    if (pathEl) pathEl.textContent = data.path || "";
+    fillGlobal(data);
+    if (editing && editing.original && Object.prototype.hasOwnProperty.call(repoDraft, editing.original)) {
+      fillEditor(editing.original, repoDraft[editing.original]);
+    } else {
+      closeEditor();
+    }
+    renderRepoList();
+  }
+
+  function loadSettings() {
+    clearSettingsErrors();
+    var saved = document.getElementById("settings-saved");
+    if (saved) saved.hidden = true;
+    fetch("/api/settings", { cache: "no-store", headers: { Accept: "application/json" } })
+      .then(function (response) {
+        return response.json().then(function (data) { return { ok: response.ok, status: response.status, data: data }; });
+      })
+      .then(function (result) {
+        if (!result.ok) {
+          showSettingsError((result.data && result.data.error) || "Could not load settings.");
+          return;
+        }
+        editing = null;
+        var editor = document.getElementById("repo-editor");
+        if (editor) editor.hidden = true;
+        applySettingsDocument(result.data);
+        setSettingsTab("repos");
+      })
+      .catch(function () { showSettingsError("Could not load settings."); });
+  }
+
+  function saveSettings() {
+    if (settingsSaving) return;
+    if (!flushEditor()) return;
+    clearSettingsErrors();
+    var payload = settingsPayload();
+    settingsSaving = true;
+    fetch("/api/settings", {
+      method: "PUT",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Kiln-CSRF": body.getAttribute("data-csrf") || "",
+      },
+      body: JSON.stringify(payload),
+    })
+      .then(function (response) {
+        return response.json().then(function (data) { return { ok: response.ok, status: response.status, data: data }; });
+      })
+      .then(function (result) {
+        settingsSaving = false;
+        if (result.status === 400) {
+          applyFieldErrors((result.data && result.data.fields) || {});
+          if (!document.getElementById("settings-error") || document.getElementById("settings-error").hidden) {
+            showSettingsError((result.data && result.data.error) || "Settings are invalid.");
+          }
+          return;
+        }
+        if (!result.ok) {
+          showSettingsError((result.data && result.data.error) || "Could not save settings.");
+          return;
+        }
+        applySettingsDocument(result.data);
+        var saved = document.getElementById("settings-saved");
+        if (saved) {
+          saved.hidden = false;
+          saved.textContent = "Saved";
+        }
+      })
+      .catch(function () {
+        settingsSaving = false;
+        showSettingsError("Could not save settings.");
+      });
+  }
+
+  function renderRepoListing(data) {
+    var host = document.getElementById("repo-browser");
+    if (!host) return;
+    host.hidden = false;
+    var html = '<div class="branch">' + esc(data.path || "") + "</div>";
+    if (data.parent) html += '<button type="button" class="fs-up" data-path="' + esc(data.parent) + '">Up</button>';
+    html += '<div class="fs-list">';
+    var entries = data.entries || [];
+    var dirs = 0;
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i].kind !== "dir") continue;
+      dirs += 1;
+      html += '<button type="button" class="fs-item" data-kind="dir" data-path="' + esc(entries[i].path) + '">' + esc(entries[i].name) + "</button>";
+    }
+    if (!dirs) html += '<div class="empty">No folders here.</div>';
+    html += '</div><button type="button" class="fs-use" data-path="' + esc(data.path || "") + '">Use this folder</button>';
+    host.innerHTML = html;
+  }
+
+  function loadRepoFs(path, fallback) {
+    var query = path ? "?path=" + encodeURIComponent(path) : "";
+    fetch("/api/fs" + query, { cache: "no-store", headers: { Accept: "application/json" } })
+      .then(function (response) {
+        return response.json().then(function (data) { return { ok: response.ok, data: data }; });
+      })
+      .then(function (result) {
+        if (!result.ok) {
+          if (fallback && path) {
+            loadRepoFs("", false);
+            return;
+          }
+          showSlot("path", (result.data && result.data.error) || "Could not list that directory.");
+          return;
+        }
+        showSlot("path", "");
+        if (result.data.kind === "file") {
+          var parent = String(result.data.path || "").replace(/\/[^/]+$/, "");
+          loadRepoFs(parent, false);
+          return;
+        }
+        renderRepoListing(result.data);
+      })
+      .catch(function () { showSlot("path", "Could not list that directory."); });
+  }
+
+  function openSettings() {
+    var sheets = document.querySelectorAll(".sheet");
+    for (var i = 0; i < sheets.length; i++) sheets[i].hidden = sheets[i].id !== "settings";
+    body.classList.add("open");
+    try { localStorage.removeItem("kiln-drawer"); } catch (err) { /* private mode */ }
+    loadSettings();
+  }
+
   document.addEventListener("click", function (event) {
     var target = event.target;
     if (!target || !target.closest) return;
+    if (target.closest("#open-settings")) {
+      openSettings();
+      return;
+    }
     if (target.closest("#add-job")) {
       openIntake();
       return;
@@ -550,6 +994,60 @@
     if (pick) {
       var picks = document.querySelectorAll("#repo-pick .pick");
       for (var p = 0; p < picks.length; p++) picks[p].setAttribute("aria-pressed", picks[p] === pick ? "true" : "false");
+      return;
+    }
+    var settingsTab = target.closest("#settings-form [data-settings-tab]");
+    if (settingsTab) {
+      setSettingsTab(settingsTab.getAttribute("data-settings-tab") || "repos");
+      return;
+    }
+    var deliverBtn = target.closest("#repo-deliver [data-deliver]");
+    if (deliverBtn) {
+      setPressed("#repo-deliver [data-deliver]", "data-deliver", deliverBtn.getAttribute("data-deliver") || "local");
+      markSettingsDirty();
+      return;
+    }
+    var sandboxBtn = target.closest("#sandbox-mode [data-sandbox]");
+    if (sandboxBtn) {
+      setPressed("#sandbox-mode [data-sandbox]", "data-sandbox", sandboxBtn.getAttribute("data-sandbox") || "off");
+      markSettingsDirty();
+      return;
+    }
+    if (target.closest("#repo-add")) {
+      startAdd();
+      return;
+    }
+    if (target.closest("#repo-done")) {
+      if (flushEditor()) closeEditor();
+      return;
+    }
+    if (target.closest("#repo-browse")) {
+      var currentPath = document.getElementById("repo-path");
+      loadRepoFs(currentPath ? currentPath.value.trim() : "", true);
+      return;
+    }
+    var editBtn = target.closest("[data-repo-edit]");
+    if (editBtn) {
+      startEdit(editBtn.getAttribute("data-repo-edit") || "");
+      return;
+    }
+    var removeBtn = target.closest("[data-repo-remove]");
+    if (removeBtn) {
+      removeRepo(removeBtn.getAttribute("data-repo-remove") || "");
+      return;
+    }
+    var repoFs = target.closest("#repo-browser .fs-item, #repo-browser .fs-up, #repo-browser .fs-use");
+    if (repoFs) {
+      var nextPath = repoFs.getAttribute("data-path") || "";
+      if (repoFs.classList.contains("fs-use")) {
+        var pathInput = document.getElementById("repo-path");
+        if (pathInput) pathInput.value = nextPath;
+        markSettingsDirty();
+        var browser = document.getElementById("repo-browser");
+        if (browser) browser.hidden = true;
+        return;
+      }
+      loadRepoFs(nextPath, false);
       return;
     }
     var fsButton = target.closest(".fs-item, .fs-up, .fs-use");
@@ -680,6 +1178,17 @@
     event.preventDefault();
     submitIntake(false);
   });
+  var settingsForm = document.getElementById("settings-form");
+  if (settingsForm) {
+    settingsForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      saveSettings();
+    });
+    settingsForm.addEventListener("input", function () {
+      markSettingsDirty();
+      clearSettingsErrors();
+    });
+  }
   var previewBtn = document.getElementById("preview-job");
   if (previewBtn) previewBtn.addEventListener("click", function () { submitIntake(true); });
   showFresh();

@@ -7,6 +7,7 @@ import {
   DEFAULT_MAX_FIX_ROUNDS,
   DEFAULT_STALL_TIMEOUT_MS,
   KilnConfigFileSchema,
+  REPO_NAME,
   type JiraConfig,
   type RepoEntry,
   type SandboxSettings,
@@ -82,7 +83,6 @@ export interface ResolveKilnConfigOptions extends LoadKilnConfigOptions {
 }
 
 const CONFIG_NAME = "kiln.config.json";
-const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export function loadKilnConfig(configPath: string, options: LoadKilnConfigOptions = {}): LoadedKilnConfig {
   const home = options.home ?? homedir();
@@ -103,12 +103,7 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
   const repos: LoadedKilnConfig["repos"] = {};
   for (const [name, entry] of Object.entries(parsed.data.repos)) {
     assertRepoName(name);
-    const checkout = resolveConfiguredPath(configDir, entry.path, home);
-    if (!existsSync(checkout) || !statSync(checkout).isDirectory()) {
-      throw new KilnConfigError(
-        `Checkout for ${name} does not exist or is not a directory: ${checkout}. Set repos.${name}.path in the kiln config.`,
-      );
-    }
+    const checkout = assertCheckoutDirectory(name, configDir, entry.path, home);
     repos[name] = {
       path: checkout,
       ...(entry.test ? { test: entry.test } : {}),
@@ -344,6 +339,17 @@ function repoMap(raw: Record<string, unknown>): Record<string, unknown> {
 export function resolveConfiguredPath(configDir: string, value: string, home: string): string {
   const expanded = expandHome(value, home);
   return isAbsolute(expanded) ? expanded : resolve(configDir, expanded);
+}
+
+/** Resolved checkout. The loader and the settings API both refuse a missing directory. */
+export function assertCheckoutDirectory(name: string, configDir: string, value: string, home: string): string {
+  const checkout = resolveConfiguredPath(configDir, value, home);
+  if (!existsSync(checkout) || !statSync(checkout).isDirectory()) {
+    throw new KilnConfigError(
+      `Checkout for ${name} does not exist or is not a directory: ${checkout}. Set repos.${name}.path in the kiln config.`,
+    );
+  }
+  return checkout;
 }
 
 function pathToStore(userPath: string, cwd: string, home: string): string {

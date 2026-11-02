@@ -22,24 +22,35 @@ export function parseIssueKey(raw: string): string {
   return key;
 }
 
+export const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
 export const RepoEntrySchema = z.object({
-  path: z.string().min(1),
-  test: z.string().min(1).optional(),
+  path: z.string().min(1, "Path is required."),
+  test: z.string().min(1, "Test command is empty.").optional(),
   deliver: z.enum(["local", "pr"]).optional(),
-  base: z.string().min(1).optional(),
+  base: z.string().min(1, "Base branch is empty.").optional(),
   /**
    * Pull request title when the job has an `issue`. Placeholders `{issue}` and `{title}`.
    * Default `[{issue}] {title}`. A job with no issue keeps its title and ignores this.
    */
-  prTitle: z.string().min(1).optional(),
+  prTitle: z.string().min(1, "PR title template is empty.").optional(),
   /**
    * Remote branch for `deliver=pr`. Placeholders `{issue}`, `{slug}`, and `{jobId}`.
    * Default `<issue>-<slug>`, or `kiln/<slug>-<short id>` when there is no issue.
    * The local branch stays `yak/<run-id>`.
    */
-  branch: z.string().min(1).optional(),
+  branch: z.string().min(1, "Branch template is empty.").optional(),
 });
 export type RepoEntry = z.infer<typeof RepoEntrySchema>;
+
+/** Repo map shared by the config file and the settings API. */
+export const KilnReposSchema = z.record(
+  z.string().regex(
+    REPO_NAME,
+    "must start with a letter or digit and contain only letters, digits, dots, underscores, and hyphens",
+  ),
+  RepoEntrySchema,
+);
 
 /**
  * Optional Jira Cloud credentials in the gitignored kiln config.
@@ -70,6 +81,15 @@ export const SandboxSettingsSchema = z.object({
 });
 export type SandboxSettings = z.infer<typeof SandboxSettingsSchema>;
 
+/**
+ * Sandbox fields the settings UI edits. `image` stays on the file schema only
+ * and is preserved when settings are saved.
+ */
+export const EditableSandboxSchema = SandboxSettingsSchema.pick({
+  mode: true,
+  allowDomains: true,
+}).strict();
+
 const WORKFLOW_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /** No yak event and no log output for this long stalls a running job. `<= 0` disables it. */
@@ -79,26 +99,57 @@ export const DEFAULT_MAX_ATTEMPTS = 3;
 /** Pull request fix rounds before the job is needs-human (`feedback-exhausted`). */
 export const DEFAULT_MAX_FIX_ROUNDS = 2;
 
+/**
+ * Milliseconds without a yak event or log output before a running job is
+ * killed and retried. Default 15 minutes. `0` or negative disables stall detection.
+ */
+const stallTimeoutMs = z.number().int("Stall timeout must be a whole number of milliseconds.").optional();
+/** Transient failures before the job is dead. Default 3. */
+const maxAttempts = z
+  .number()
+  .int("Max attempts must be a whole number.")
+  .min(1, "Max attempts must be at least 1.")
+  .optional();
+/**
+ * Fix rounds for an open pull request before the job is needs-human with
+ * reason `feedback-exhausted`. Default 2. Kiln does not merge.
+ */
+const maxFixRounds = z
+  .number()
+  .int("Max fix rounds must be a whole number.")
+  .min(1, "Max fix rounds must be at least 1.")
+  .optional();
+
+/**
+ * The subset `kiln serve` settings can edit. The file schema below uses these
+ * same field validators. Settings does not accept jira, tokens, adapter,
+ * workflows, or sandbox image.
+ */
+export const EditableKilnSettingsSchema = z.object({
+  repos: KilnReposSchema,
+  stallTimeoutMs,
+  maxAttempts,
+  maxFixRounds,
+  sandbox: EditableSandboxSchema.optional(),
+});
+export type EditableKilnSettings = z.infer<typeof EditableKilnSettingsSchema>;
+
+/** PUT /api/settings body. `revision` is the sha256 of the file the client loaded. */
+export const SettingsWriteSchema = EditableKilnSettingsSchema.extend({
+  revision: z.string().min(1, "Reload settings and try again."),
+}).strict();
+
 export const KilnConfigFileSchema = z.object({
   note: z.string().min(1).optional(),
   maxConcurrent: z.number().int().min(1).optional(),
-  /**
-   * Milliseconds without a yak event or log output before a running job is
-   * killed and retried. Default 15 minutes. `0` or negative disables stall detection.
-   */
-  stallTimeoutMs: z.number().int().optional(),
-  /** Transient failures before the job is dead. Default 3. */
-  maxAttempts: z.number().int().min(1).optional(),
-  /**
-   * Fix rounds for an open pull request before the job is needs-human with
-   * reason `feedback-exhausted`. Default 2. Kiln does not merge.
-   */
-  maxFixRounds: z.number().int().min(1).optional(),
+  stallTimeoutMs,
+  maxAttempts,
+  maxFixRounds,
   adapter: z.enum(["mock", "claude-code"]).optional(),
   sandbox: SandboxSettingsSchema.optional(),
   /** Per-workflow sandbox override. A set field replaces the global one; an omitted field inherits. */
   workflows: z.record(z.string().regex(WORKFLOW_KEY), z.object({ sandbox: SandboxSettingsSchema.optional() })).optional(),
-  repos: z.record(z.string(), RepoEntrySchema),
+  repos: KilnReposSchema,
   jira: JiraConfigSchema.optional(),
 });
 export type KilnConfigFile = z.infer<typeof KilnConfigFileSchema>;

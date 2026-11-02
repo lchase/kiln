@@ -78,10 +78,13 @@ ${columns}
 <button class="tool" type="button" id="notify" data-tip="Notify me" aria-label="Notify me"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 7 3 7H3s3 0 3-7"/><path d="M10 19a2 2 0 0 0 4 0"/></svg></button>
 <span class="sep" aria-hidden="true"></span>
 <button class="tool" type="button" id="compact" aria-pressed="true" data-tip="expand empty columns" aria-label="expand empty columns"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h7m0 0-3-3m3 3-3 3M21 12h-7m0 0 3-3m-3 3 3 3M12 4v16"/></svg></button>
+<span class="sep" aria-hidden="true"></span>
+<button class="tool" type="button" id="open-settings" data-tip="Settings" aria-label="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/></svg></button>
 </nav>
 <div class="scrim" data-close></div>
 <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Job">
 ${intakeSheet(intake, items)}
+${settingsSheet()}
 ${items.map((item) => sheet(item, intake.csrf)).join("\n")}
 </aside>`;
   return document({
@@ -188,6 +191,73 @@ function intakeSheet(intake: ServePageOptions, items: AttentionItem[]): string {
 <pre class="text preview" id="intake-preview" hidden></pre>
 <p class="form-error" id="intake-error" role="alert" hidden></p>
 <div class="d-actions"><button type="button" id="preview-job" hidden>Preview</button><button type="submit">Add</button></div>
+</form>
+</section>`;
+}
+
+function settingsSheet(): string {
+  return `<section class="sheet intake" id="settings" aria-label="Settings" hidden>
+<div class="d-head">
+<div class="num">kiln.config.json</div>
+<h3>Settings</h3>
+<button type="button" class="close" data-close aria-label="Close">×</button>
+</div>
+<form id="settings-form" class="intake-form">
+<p class="meta" id="settings-path"></p>
+<p class="saved" id="settings-saved" role="status" hidden>Saved</p>
+<p class="form-error" id="settings-error" role="alert" hidden></p>
+<div class="seg" role="tablist" aria-label="Settings sections">
+<button type="button" data-settings-tab="repos" aria-pressed="true">Repos</button>
+<button type="button" data-settings-tab="global" aria-pressed="false">Global</button>
+</div>
+<div id="settings-repos">
+<div id="repo-editor" hidden>
+<label class="field"><span class="k">Name</span><input id="repo-name" type="text" autocomplete="off" spellcheck="false"></label>
+<p class="field-error" data-error="name" hidden></p>
+<div class="field"><span class="k">Path</span><div class="path-row"><input id="repo-path" type="text" autocomplete="off" spellcheck="false" placeholder="~/code/web"><button type="button" class="pick" id="repo-browse">Browse</button></div></div>
+<div class="fs" id="repo-browser" hidden></div>
+<p class="field-error" data-error="path" hidden></p>
+<label class="field"><span class="k">Test command</span><input id="repo-test" type="text" autocomplete="off" spellcheck="false" placeholder="npm test"></label>
+<p class="field-error" data-error="test" hidden></p>
+<div class="field"><span class="k">Deliver</span><div class="seg" id="repo-deliver" role="group" aria-label="Deliver mode">
+<button type="button" data-deliver="local" aria-pressed="true">local</button>
+<button type="button" data-deliver="pr" aria-pressed="false">pr</button>
+</div></div>
+<p class="field-error" data-error="deliver" hidden></p>
+<label class="field"><span class="k">Base branch</span><input id="repo-base" type="text" autocomplete="off" spellcheck="false" placeholder="main"></label>
+<p class="field-error" data-error="base" hidden></p>
+<label class="field"><span class="k">PR title template</span><input id="repo-pr-title" type="text" autocomplete="off" spellcheck="false"></label>
+<p class="hint" id="hint-pr-title">Default [{issue}] {title}, which renders as [ABC-123] Title.</p>
+<p class="field-error" data-error="prTitle" hidden></p>
+<label class="field"><span class="k">Branch template</span><input id="repo-branch" type="text" autocomplete="off" spellcheck="false"></label>
+<p class="hint" id="hint-branch">Default {issue}-{slug}, which renders as ABC-123-slug.</p>
+<p class="field-error" data-error="branch" hidden></p>
+<div class="d-actions"><button type="button" id="repo-done">Done</button></div>
+</div>
+<div id="repo-list"></div>
+<div class="d-actions"><button type="button" id="repo-add">Add repo</button></div>
+</div>
+<div id="settings-global" hidden>
+<div class="field"><span class="k">Sandbox</span><div class="seg" id="sandbox-mode" role="group" aria-label="Sandbox mode">
+<button type="button" data-sandbox="off" aria-pressed="true">Off</button>
+<button type="button" data-sandbox="docker" aria-pressed="false">Docker</button>
+</div>
+<p class="hint">Off leaves the agent unsandboxed. Docker runs agent steps in the sandbox.</p>
+<p class="field-error" data-error="sandbox.mode" hidden></p></div>
+<label class="field"><span class="k">Allow domains</span><textarea id="sandbox-domains" rows="3" placeholder="example.com" spellcheck="false"></textarea></label>
+<p class="hint">One hostname per line. When set, this replaces the built-in host list.</p>
+<p class="field-error" data-error="sandbox.allowDomains" hidden></p>
+<label class="field"><span class="k">Max attempts</span><input id="max-attempts" type="number" min="1" step="1"></label>
+<p class="hint" id="hint-attempts"></p>
+<p class="field-error" data-error="maxAttempts" hidden></p>
+<label class="field"><span class="k">Stall timeout (ms)</span><input id="stall-timeout" type="number" step="1"></label>
+<p class="hint" id="hint-stall"></p>
+<p class="field-error" data-error="stallTimeoutMs" hidden></p>
+<label class="field"><span class="k">Max fix rounds</span><input id="max-fix-rounds" type="number" min="1" step="1"></label>
+<p class="hint" id="hint-fix"></p>
+<p class="field-error" data-error="maxFixRounds" hidden></p>
+</div>
+<div class="d-actions"><button type="submit">Save</button></div>
 </form>
 </section>`;
 }
