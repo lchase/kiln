@@ -11,7 +11,15 @@ import { defaultHost } from "../src/host.js";
 import { KilnConfigError } from "../src/errors.js";
 import { writeJob } from "../src/jobs.js";
 import { packageRoot } from "../src/paths.js";
-import { isPidAlive, isStalled, readAttemptLedger, RETRY_BASE_MS, retryDelayMs, MAX_RETRY_BACKOFF_MS } from "../src/reliability.js";
+import {
+  cleanupRunWorktree,
+  isPidAlive,
+  isStalled,
+  readAttemptLedger,
+  RETRY_BASE_MS,
+  retryDelayMs,
+  MAX_RETRY_BACKOFF_MS,
+} from "../src/reliability.js";
 import { scheduledRetry } from "../src/attention.js";
 import { DEFAULT_MAX_ATTEMPTS, DEFAULT_STALL_TIMEOUT_MS } from "../src/schemas.js";
 
@@ -312,7 +320,7 @@ describe("run reliability", () => {
     assert.equal(savedStatus?.lastFailureReason, "orphaned");
     assert.equal(savedStatus?.attemptCount, 1);
     assert.equal(existsSync(emptyTree), false);
-    assert.equal(git(checkout, ["branch", "--list", `yak/${emptyRun}`]).trim(), "");
+    assert.equal(git(checkout, ["branch", "--list", `yak/${emptyRun}`]).trim(), `yak/${emptyRun}`);
     assert.equal(existsSync(savedTree), true);
     assert.match(git(checkout, ["log", "-1", "--format=%s", `yak/${savedRun}`]), /unpushed/);
     assert.equal(readFileSync(join(checkout, "scratch.txt"), "utf8"), "mine\n");
@@ -828,6 +836,146 @@ describe("run reliability", () => {
     }
   });
 });
+
+describe("failed-run worktree cleanup", () => {
+  it("removes a clean worktree and leaves the branch when origin is ahead and the run has no commits of its own", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiln-rel-ahead-"));
+    keep.push(dir);
+    const checkout = repoWithOrigin(dir);
+    pushAhead(dir);
+    const head = git(checkout, ["rev-parse", "HEAD"]).trim();
+    const origin = git(checkout, ["rev-parse", "origin/main"]).trim();
+    assert.notEqual(head, origin);
+    git(checkout, ["merge-base", "--is-ancestor", "HEAD", "origin/main"]);
+    const runId = "2000-11-01T00-00-00Z-ahead";
+    const tree = addRunWorktree(checkout, runId);
+    assert.equal(git(checkout, ["rev-parse", `yak/${runId}`]).trim(), head);
+
+    assert.equal(cleanupRunWorktree(checkout, runId), "removed");
+    assert.equal(existsSync(tree), false);
+    assert.equal(git(checkout, ["branch", "--list", `yak/${runId}`]).trim(), `yak/${runId}`);
+    assert.equal(cleanupRunWorktree(checkout, runId), "absent");
+    assert.equal(cleanupRunWorktree(checkout, "2000-11-01T00-00-09Z-missing"), "absent");
+    assert.equal(git(checkout, ["branch", "--list", `yak/${runId}`]).trim(), `yak/${runId}`);
+  });
+
+  it("keeps a worktree when the run branch has a local-only commit", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiln-rel-local-"));
+    keep.push(dir);
+    const checkout = repoWithOrigin(dir);
+    const runId = "2000-11-01T00-00-01Z-local";
+    const tree = addRunWorktree(checkout, runId);
+    writeFileSync(join(tree, "notes.txt"), "keep\n");
+    git(tree, ["add", "notes.txt"]);
+    git(tree, ["commit", "-q", "-m", "local only"]);
+    assert.equal(git(checkout, ["branch", "-r", "--contains", `yak/${runId}`]).trim(), "");
+
+    assert.equal(cleanupRunWorktree(checkout, runId), "kept");
+    assert.equal(existsSync(tree), true);
+    assert.equal(cleanupRunWorktree(checkout, runId), "kept");
+    assert.match(git(checkout, ["log", "-1", "--format=%s", `yak/${runId}`]), /local only/);
+    assert.match(git(checkout, ["rev-parse", "--verify", `refs/heads/yak/${runId}`]).trim(), /^[0-9a-f]{40}$/);
+  });
+
+  it("removes a clean worktree when the run branch commit is already on a remote", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiln-rel-pushed-"));
+    keep.push(dir);
+    const checkout = repoWithOrigin(dir);
+    const runId = "2000-11-01T00-00-02Z-pushed";
+    const tree = addRunWorktree(checkout, runId);
+    writeFileSync(join(tree, "landed.txt"), "pushed\n");
+    git(tree, ["add", "landed.txt"]);
+    git(tree, ["commit", "-q", "-m", "pushed"]);
+    git(tree, ["push", "-q", "origin", `HEAD:refs/heads/yak/${runId}`]);
+    assert.equal(
+      git(checkout, ["rev-parse", `yak/${runId}`]).trim(),
+      git(checkout, ["rev-parse", `refs/remotes/origin/yak/${runId}`]).trim(),
+    );
+
+    assert.equal(cleanupRunWorktree(checkout, runId), "removed");
+    assert.equal(existsSync(tree), false);
+    assert.equal(git(checkout, ["branch", "--list", `yak/${runId}`]).trim(), `yak/${runId}`);
+    assert.equal(cleanupRunWorktree(checkout, runId), "absent");
+  });
+
+  it("removes a clean worktree when a run exits failed and keeps one with unpushed work", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiln-rel-failed-exit-"));
+    keep.push(dir);
+    const checkout = repoWithOrigin(dir);
+    pushAhead(dir);
+    const config = load(dir, checkout, { maxAttempts: 3, stallTimeoutMs: 60_000 });
+    const cleanId = add(config, "Failed with a clean tree");
+    const savedId = add(config, "Failed with unpushed work");
+    const cleanRun = "2000-11-02T00-00-00Z-clean";
+    const savedRun = "2000-11-02T00-00-01Z-saved";
+    const started = "2020-01-01T00:00:00.000Z";
+    const finished = "2020-01-01T00:00:01.000Z";
+    for (const [runId, id] of [
+      [cleanRun, cleanId],
+      [savedRun, savedId],
+    ] as const) {
+      journal(checkout, runId, [
+        { t: "run.started", at: started, runId, tag: `kiln:${id}`, pid: 2_147_483_646 },
+        { t: "run.finished", at: finished, status: "failed", runId },
+      ]);
+    }
+    const cleanTree = addRunWorktree(checkout, cleanRun);
+    const savedTree = addRunWorktree(checkout, savedRun);
+    writeFileSync(join(savedTree, "notes.txt"), "keep this\n");
+    git(savedTree, ["add", "notes.txt"]);
+    git(savedTree, ["commit", "-q", "-m", "unpushed"]);
+
+    const now = new Date("2026-11-02T00:00:00.000Z");
+    const tick = runTick(config, undefined, { startup: false, now });
+    assert.match(tick, new RegExp(`fail ${cleanId}  failed  attempt 1`));
+    assert.match(tick, new RegExp(`fail ${savedId}  failed  attempt 1`));
+    assert.doesNotMatch(tick, new RegExp(`crash ${cleanId}|crash ${savedId}|orphan ${cleanId}|orphan ${savedId}`));
+    assert.equal(readStatus(config, cleanId).jobs[0]?.lastFailureReason, "failed");
+    assert.equal(readStatus(config, savedId).jobs[0]?.lastFailureReason, "failed");
+    assert.equal(existsSync(cleanTree), false);
+    assert.equal(existsSync(savedTree), true);
+    assert.equal(git(checkout, ["branch", "--list", `yak/${cleanRun}`]).trim(), `yak/${cleanRun}`);
+    assert.match(git(checkout, ["rev-parse", "--verify", `refs/heads/yak/${savedRun}`]).trim(), /^[0-9a-f]{40}$/);
+    assert.match(git(checkout, ["log", "-1", "--format=%s", `yak/${savedRun}`]), /unpushed/);
+
+    const again = runTick(config, undefined, { startup: false, now: new Date(now.getTime() + 1000) });
+    assert.doesNotMatch(again, new RegExp(`fail ${cleanId}|fail ${savedId}`));
+    assert.equal(existsSync(cleanTree), false);
+    assert.equal(existsSync(savedTree), true);
+    assert.equal(cleanupRunWorktree(checkout, cleanRun), "absent");
+    assert.equal(cleanupRunWorktree(checkout, savedRun), "kept");
+  });
+});
+
+function repoWithOrigin(dir: string): string {
+  const remote = join(dir, "origin.git");
+  const checkout = join(dir, "web");
+  const other = join(dir, "other");
+  git(dir, ["init", "--bare", "-q", remote]);
+  git(remote, ["symbolic-ref", "HEAD", "refs/heads/main"]);
+  initRepo(checkout);
+  git(checkout, ["remote", "add", "origin", remote]);
+  git(checkout, ["push", "-q", "-u", "origin", "main"]);
+  git(dir, ["clone", "-q", remote, other]);
+  git(other, ["config", "user.email", "kiln-test@example.com"]);
+  git(other, ["config", "user.name", "Kiln Test"]);
+  return checkout;
+}
+
+function pushAhead(dir: string): void {
+  const other = join(dir, "other");
+  writeFileSync(join(other, "ahead.txt"), "ahead\n");
+  git(other, ["add", "ahead.txt"]);
+  git(other, ["commit", "-q", "-m", "origin ahead"]);
+  git(other, ["push", "-q", "origin", "HEAD:main"]);
+  git(join(dir, "web"), ["fetch", "-q", "origin"]);
+}
+
+function addRunWorktree(checkout: string, runId: string): string {
+  const tree = join(checkout, ".yak", "worktrees", runId);
+  git(checkout, ["worktree", "add", "-q", "-b", `yak/${runId}`, tree, "HEAD"]);
+  return tree;
+}
 
 function attemptsOf(kilnDir: string, jobId: string) {
   const read = readAttemptLedger(kilnDir, jobId);

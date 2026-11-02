@@ -116,8 +116,10 @@ export function resetAttemptLedger(kilnDir: string, jobId: string, runId?: strin
 
 /**
  * Stall, orphan, crash, and non-zero-exit handling for one observation.
- * Caller holds the tick lock. Safe to run twice: a run id is recorded once,
- * and worktree cleanup no-ops once the tree is gone or must be kept.
+ * A run that finishes with status `failed` takes the same worktree decision
+ * as a crash. Caller holds the tick lock. Safe to run twice: a run id is
+ * recorded once, and worktree cleanup no-ops once the tree is gone or must
+ * be kept.
  */
 export function recoverRuns(
   config: LoadedKilnConfig,
@@ -211,6 +213,8 @@ function pendingFailure(job: ObservedJob, config: LoadedKilnConfig, options: Rec
       ? { reason: "orphaned", runId: run.runId, pid: run.pid, detail: "process gone at startup" }
       : { reason: "crashed", runId: run.runId, pid: run.pid, detail: "process exited" });
   }
+  // A normal failed exit (journal status failed) is not a crash. It still
+  // records an attempt and reaches cleanupRunWorktree below.
   if (run?.status === "failed") {
     return classifyAuth(job, { reason: "failed", runId: run.runId, pid: run.pid, detail: "non-zero exit" });
   }
@@ -339,6 +343,8 @@ function writeLedger(kilnDir: string, ledger: AttemptLedger): void {
  * Drop a failed run's worktree only when that loses no commits.
  * A branch with commits that are not on HEAD and not on a remote is kept,
  * and so is a dirty worktree. The checkout's own worktree is not removed.
+ * The branch is left in place.
+ * A second call, or a call when the worktree is already gone, does nothing.
  */
 export function cleanupRunWorktree(checkout: string, runId: string): "kept" | "removed" | "absent" {
   if (!safeRunId(runId)) return "kept";
@@ -348,20 +354,16 @@ export function cleanupRunWorktree(checkout: string, runId: string): "kept" | "r
   const worktreeRoot = resolve(root, ".yak", "worktrees");
   if (worktree === root || !worktree.startsWith(`${worktreeRoot}${sep}`)) return "kept";
 
+  if (!existsSync(worktree)) return "absent";
   const branchExists = gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
-  const worktreeExists = existsSync(worktree);
-  if (!branchExists && !worktreeExists) return "absent";
   if (checkedOut(root, branch)) return "kept";
   if (branchExists && hasUnpushedCommits(root, branch)) return "kept";
-  if (worktreeExists && worktreeDirty(worktree)) return "kept";
+  if (worktreeDirty(worktree)) return "kept";
 
-  if (worktreeExists && worktreeListed(root, worktree)) {
+  if (worktreeListed(root, worktree)) {
     gitOk(root, ["worktree", "remove", worktree]);
   }
-  if (existsSync(worktree)) return "kept";
-  if (branchExists) gitOk(root, ["branch", "-D", branch]);
-  const stillBranch = gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
-  return existsSync(worktree) || stillBranch ? "kept" : "removed";
+  return existsSync(worktree) ? "kept" : "removed";
 }
 
 function safeRunId(runId: string): boolean {
@@ -373,9 +375,14 @@ function checkedOut(checkout: string, branch: string): boolean {
   return result.status === 0 && result.stdout.trim() === branch;
 }
 
-/** Commits on the branch that are neither in HEAD nor on any remote. Failure keeps the branch. */
+/**
+ * Commits on the branch that are neither in HEAD nor on any remote.
+ * `--not` toggles exclusion for every following revision, so it must appear
+ * once: a second `--not` would count commits that exist only on a remote.
+ * A git error keeps the worktree.
+ */
 function hasUnpushedCommits(checkout: string, branch: string): boolean {
-  const result = git(checkout, ["rev-list", "--count", branch, "--not", "HEAD", "--not", "--remotes"]);
+  const result = git(checkout, ["rev-list", "--count", branch, "--not", "HEAD", "--remotes"]);
   if (result.status !== 0) return true;
   const count = Number(result.stdout.trim());
   return !Number.isInteger(count) || count > 0;
