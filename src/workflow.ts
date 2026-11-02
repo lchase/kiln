@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, sep } from "node:path";
 import { jobBasename, packageRoot } from "./paths.js";
 
@@ -36,6 +36,22 @@ const INPUT_VALUES: Record<string, (input: LaunchInput) => string> = {
   description: (input) => input.specText,
   acceptance: (input) => input.specText,
 };
+
+/** Workflow names from `workflows/*.yaml`, sorted. */
+export function listWorkflowNames(): string[] {
+  const dir = join(packageRoot(), "workflows");
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return names
+    .filter((name) => name.endsWith(".yaml") && !name.startsWith("."))
+    .map((name) => name.slice(0, -".yaml".length))
+    .filter((name) => WORKFLOW_NAME.test(name))
+    .sort();
+}
 
 export function assertWorkflowName(name: string): string {
   if (!WORKFLOW_NAME.test(name)) {
