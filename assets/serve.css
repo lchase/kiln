@@ -454,6 +454,7 @@ body.open .drawer { transform: none; }
 }
 .intake-form select,
 .intake-form input[type="text"],
+.intake-form input[type="number"],
 .intake-form textarea {
   width: 100%;
   font: 14px/20px Roboto, sans-serif;
@@ -504,6 +505,25 @@ body.open .drawer { transform: none; }
   background: var(--primary);
   border-color: transparent;
 }
+#settings-form { max-width: 640px; }
+#settings-path { margin: 0; }
+.saved { margin: 0; color: var(--pass); font-family: var(--mono); font-size: 12px; line-height: 16px; }
+.hint { margin: 0; color: var(--faint); font-size: 12px; line-height: 16px; }
+.field-error { margin: 0; color: var(--human); font-size: 12px; line-height: 16px; }
+.path-row { display: flex; gap: 8px; align-items: center; }
+.path-row input { flex: 1; min-width: 0; }
+.repo-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.repo-row .num { font-family: var(--mono); font-size: 13px; }
+.repo-row .d-actions { margin-top: 0; flex: none; }
+#repo-editor { padding-top: 8px; }
+#settings-error { white-space: pre-wrap; }
 .back { display: inline-block; margin: 24px 24px 0; }
 .page { padding: 0 24px 48px; }
 .text { font-family: var(--mono); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }

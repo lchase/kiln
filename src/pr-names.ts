@@ -5,6 +5,8 @@
  */
 
 export const DEFAULT_PR_TITLE = "[{issue}] {title}";
+/** Default remote branch when the job has an issue. Renders as `ABC-123-slug`. */
+export const DEFAULT_BRANCH_TEMPLATE = "{issue}-{slug}";
 
 export function stripIssuePrefix(title: string, issue: string): string {
   const trimmed = title.trim();
@@ -59,8 +61,8 @@ export function shortJobId(jobId: string): string {
 }
 
 export function defaultRemoteBranch(input: { title: string; jobId: string; issue?: string }): string {
+  if (input.issue) return formatBranchTemplate(DEFAULT_BRANCH_TEMPLATE, input);
   const slug = titleSlug(input.title, input.issue);
-  if (input.issue) return `${input.issue}-${slug}`;
   return `kiln/${slug}-${shortJobId(input.jobId)}`;
 }
 

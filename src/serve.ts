@@ -14,6 +14,7 @@ import { packageRoot } from "./paths.js";
 import { SANDBOX_PREFLIGHT_PREFIX } from "./sandbox.js";
 import type { StatusJobView } from "./report.js";
 import { renderConsole, type ServePageOptions, renderMessagePage, renderTextPage } from "./serve-page.js";
+import { readSettings, saveSettings } from "./settings.js";
 import { listWorkflowNames } from "./workflow.js";
 
 export interface ServeOptions {
@@ -142,6 +143,20 @@ async function handle(
     return;
   }
 
+  if (method === "GET" && path === "/api/settings") {
+    if (!originAllowed(req, boundPort())) {
+      sendJson(res, 403, { error: "Cross-origin request rejected." }, secrets);
+      return;
+    }
+    const result = readSettings(config.configPath);
+    if (!result.ok) {
+      sendJson(res, result.status, result.body, secrets);
+      return;
+    }
+    sendJson(res, 200, result.document, secrets);
+    return;
+  }
+
   if (method === "GET" && path === "/api/fs") {
     if (!originAllowed(req, boundPort())) {
       sendJson(res, 403, { error: "Cross-origin request rejected." }, secrets);
@@ -153,6 +168,20 @@ async function handle(
       const message = error instanceof Error ? error.message : String(error);
       sendJson(res, statusCode(error) ?? 500, { error: message }, secrets);
     }
+    return;
+  }
+
+  if (method === "PUT" && path === "/api/settings") {
+    const raw = await readBody(req);
+    if (!originAllowed(req, boundPort())) {
+      sendJson(res, 403, { error: "Cross-origin request rejected." }, secrets);
+      return;
+    }
+    if (!csrfOk(csrf, req, raw)) {
+      sendJson(res, 403, { error: "CSRF token rejected." }, secrets);
+      return;
+    }
+    await putSettings(req, res, state, raw);
     return;
   }
 
@@ -437,6 +466,34 @@ function csrfOk(expected: string, req: IncomingMessage, body: string): boolean {
   const right = Buffer.from(provided);
   if (left.length !== right.length) return false;
   return timingSafeEqual(left, right);
+}
+
+async function putSettings(req: IncomingMessage, res: ServerResponse, state: LiveConfig, raw: string): Promise<void> {
+  const secrets = state.secrets;
+  if (!headerValue(req.headers["content-type"]).includes("application/json")) {
+    sendJson(res, 400, { error: "Content-Type must be application/json." }, secrets);
+    return;
+  }
+  let parsed: unknown;
+  if (!raw.trim()) {
+    sendJson(res, 400, { error: "Request body must be a JSON object." }, secrets);
+    return;
+  }
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    sendJson(res, 400, { error: "Request body is not JSON." }, secrets);
+    return;
+  }
+  const result = saveSettings(state.config.configPath, parsed, homedir());
+  if (!result.ok) {
+    sendJson(res, result.status, result.body, secrets);
+    return;
+  }
+  state.mtimeMs = -1;
+  state.size = -1;
+  refreshLiveConfig(state);
+  sendJson(res, 200, result.document, state.secrets);
 }
 
 async function createJob(req: IncomingMessage, res: ServerResponse, state: LiveConfig, raw: string): Promise<void> {
