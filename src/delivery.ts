@@ -6,6 +6,7 @@ import type { GitRemote, KilnHost, PullRequestRef } from "./host.js";
 import { HostError } from "./host.js";
 import { readJobSpec } from "./jobs.js";
 import { jobBasename } from "./paths.js";
+import { chooseRemoteBranch, defaultRemoteBranch, formatBranchTemplate, isPublishableBranch, pullRequestTitle } from "./pr-names.js";
 import type { Job } from "./schemas.js";
 
 /**
@@ -79,7 +80,8 @@ export function clearLaunchError(kilnDir: string, jobId: string): void {
  *
  * `deliver=local` without `--stack` is checkout HEAD.
  * `deliver=pr` fetches and uses `origin/<base>` (configured, or origin's default).
- * A stacked job uses the upstream `yak/<run-id>` tip in this checkout.
+ * A stacked job uses the local upstream `yak/<run-id>` tip. The caller passes
+ * that ref, not the remote pull request head.
  */
 export function resolveLaunchBase(input: {
   checkout: string;
@@ -108,7 +110,7 @@ export interface DeliverRequest {
   job: Job;
   checkout: string;
   runId: string;
-  /** Pull request base branch. A stacked job passes the upstream `yak/<run-id>`. */
+  /** Pull request base branch. A stacked job passes the upstream remote branch. */
   baseBranch: string;
   host: KilnHost;
 }
@@ -121,35 +123,71 @@ export interface DeliverOutcome {
 }
 
 /**
- * Push `yak/<run-id>` and open one draft pull request. A later tick looks up
- * the branch's pull request and skips both when the remote SHA already matches.
+ * Remote branch this job would publish, before a delivery record exists.
+ * A branch template that is not a safe ref falls back to the default name.
+ */
+export function plannedRemoteBranch(job: Job, template?: string): string {
+  const input = {
+    title: job.title,
+    jobId: job.id,
+    ...(job.issue ? { issue: job.issue } : {}),
+  };
+  if (template?.trim()) {
+    const name = formatBranchTemplate(template, input);
+    if (isPublishableBranch(name)) return name;
+  }
+  return defaultRemoteBranch(input);
+}
+
+/**
+ * Push local `yak/<run-id>` to the remote branch and open one draft pull request.
+ * The delivery record stores the remote name. A later tick looks that name up
+ * and skips both the push and `gh pr create` when origin already has this commit.
+ * A recorded name, including an older `yak/<run-id>` record, is reused.
  * Failures stay on this job (`HostError` text) and do not escape.
  */
 export function deliverJob(request: DeliverRequest): DeliverOutcome {
-  const branch = `yak/${request.runId}`;
+  const localBranch = `yak/${request.runId}`;
   const prior = readDelivery(request.config.kilnDir, request.job.id);
   const sameRun = prior?.runId === request.runId ? prior : undefined;
+  const repo = request.config.repos[request.job.repo];
+  let remoteName = sameRun?.branch;
   try {
-    const localSha = request.host.git.revParse(request.checkout, branch);
+    const localSha = request.host.git.revParse(request.checkout, localBranch);
     if (sameRun?.prNumber && sameRun.prUrl && sameRun.sha === localSha) {
       return { ok: true, detail: sameRun.prUrl, prUrl: sameRun.prUrl, prNumber: sameRun.prNumber };
     }
-    // Ask gh before pushing so a missing or logged-out CLI does not publish the branch.
-    let existing = request.host.github.findByHead(request.checkout, branch);
-    const remoteSha = request.host.git.remoteBranchSha(request.checkout, branch);
-    if (remoteSha !== localSha) {
-      request.host.git.pushBranch(request.checkout, branch, request.baseBranch);
+    if (!remoteName) {
+      remoteName = chooseRemoteBranch({
+        title: request.job.title,
+        jobId: request.job.id,
+        ...(request.job.issue ? { issue: request.job.issue } : {}),
+        ...(repo?.branchTemplate ? { template: repo.branchTemplate } : {}),
+        localSha,
+        remoteSha: (name) => request.host.git.remoteBranchSha(request.checkout, name),
+      });
     }
+    // Ask gh before pushing so a missing or logged-out CLI does not publish the branch.
+    let existing = request.host.github.findByHead(request.checkout, remoteName);
+    const remoteSha = request.host.git.remoteBranchSha(request.checkout, remoteName);
+    if (remoteSha !== localSha) {
+      request.host.git.publishBranch(request.checkout, localBranch, remoteName, request.baseBranch);
+    }
+    const title = pullRequestTitle({
+      title: request.job.title,
+      ...(request.job.issue ? { issue: request.job.issue } : {}),
+      ...(repo?.prTitle ? { template: repo.prTitle } : {}),
+    });
     writeDelivery(request.config.kilnDir, {
       jobId: request.job.id,
       runId: request.runId,
-      branch,
+      branch: remoteName,
       base: request.baseBranch,
       sha: localSha,
       pushed: true,
       ...(sameRun?.prNumber ? { prNumber: sameRun.prNumber, prUrl: sameRun.prUrl } : {}),
     });
-    if (!existing) existing = request.host.github.findByHead(request.checkout, branch);
+    if (!existing) existing = request.host.github.findByHead(request.checkout, remoteName);
     const pr =
       existing ??
       (sameRun?.prNumber && sameRun.prUrl
@@ -158,20 +196,20 @@ export function deliverJob(request: DeliverRequest): DeliverOutcome {
             url: sameRun.prUrl,
             state: "OPEN" as const,
             mergedAt: null,
-            head: branch,
+            head: remoteName,
             base: request.baseBranch,
           }
         : request.host.github.createDraft({
             checkout: request.checkout,
-            head: branch,
+            head: remoteName,
             base: request.baseBranch,
-            title: request.job.title,
+            title,
             body: pullRequestBody(request),
           }));
     writeDelivery(request.config.kilnDir, {
       jobId: request.job.id,
       runId: request.runId,
-      branch,
+      branch: remoteName,
       base: request.baseBranch,
       sha: localSha,
       pushed: true,
@@ -186,7 +224,7 @@ export function deliverJob(request: DeliverRequest): DeliverOutcome {
     writeDelivery(request.config.kilnDir, {
       jobId: request.job.id,
       runId: request.runId,
-      branch,
+      branch: remoteName ?? plannedRemoteBranch(request.job, repo?.branchTemplate),
       base: request.baseBranch,
       ...(base?.sha ? { sha: base.sha } : {}),
       pushed: base?.pushed ?? false,

@@ -24,6 +24,7 @@ interface StoredJob {
   workflow: string;
   spec: string;
   title: string;
+  issue?: string;
   dependsOn?: string[];
   source: { kind: string; ref: string };
   createdAt: string;
@@ -407,7 +408,8 @@ describe("intake", () => {
       ].join("\n"),
       "02-record-answers.md": [
         "---",
-        "title: Record the platform answers",
+        "title: ABC-9: Record the platform answers",
+        "issue: abc-9",
         "type: task",
         "blocked-by:",
         '  - "01"',
@@ -424,10 +426,12 @@ describe("intake", () => {
     const list = jobs.find((job) => job.source?.ref.endsWith("01-list-facts.md"));
     const record = jobs.find((job) => job.source?.ref.endsWith("02-record-answers.md"));
     assert.ok(list && record);
-    assert.equal(record.title, "Record the platform answers");
+    assert.equal(record.title, "ABC-9: Record the platform answers");
+    assert.equal(record.issue, "ABC-9");
+    assert.equal(list.issue, undefined);
     assert.equal(record.workflow, "feature");
     assert.deepEqual(record.dependsOn, [list.id]);
-    assert.match(imported.stdout, /02\s+Record the platform answers\s+feature\s+deps 01/);
+    assert.match(imported.stdout, /02\s+ABC-9: Record the platform answers\s+feature\s+deps 01/);
   });
 
   it("imports a spike ticket as investigation", () => {

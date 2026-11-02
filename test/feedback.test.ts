@@ -483,8 +483,19 @@ describe("pull request feedback", { concurrency: 1 }, () => {
 
   it("fast-forwards the pull request branch when the fix run finishes, and refuses a force push", () => {
     const box = world();
+    const remoteName = "kiln/sample-widget-widget";
+    writeDelivery(box.config.kilnDir, {
+      jobId: box.jobId,
+      runId: "base01",
+      branch: remoteName,
+      base: "main",
+      sha: box.head,
+      pushed: true,
+      prNumber: 4,
+      prUrl: "https://example.com/sample/widget/pull/4",
+    });
     git(box.checkout, ["branch", "yak/base01", "HEAD"]);
-    git(box.checkout, ["push", "-q", "origin", "yak/base01"]);
+    git(box.checkout, ["push", "-q", "origin", `yak/base01:${remoteName}`]);
     const work = mkdtempSync(join(tmpdir(), "kiln-fix-wt-"));
     keep.push(work);
     git(box.checkout, ["worktree", "add", "-q", "-b", "yak/fix01", work, "HEAD"]);
@@ -528,15 +539,16 @@ describe("pull request feedback", { concurrency: 1 }, () => {
     assert.match(tick, /pushed widget/);
     assert.equal(box.starts.length, 0);
     assert.equal(box.github.creates, 0);
-    const published = git(box.checkout, ["ls-remote", "origin", "refs/heads/yak/base01"]).split(/\s+/)[0];
+    const published = git(box.checkout, ["ls-remote", "origin", `refs/heads/${remoteName}`]).split(/\s+/)[0];
     assert.equal(published, fixSha);
+    assert.equal(git(box.checkout, ["ls-remote", "origin", "refs/heads/yak/fix01"]).trim(), "");
     const ledger = readFeedbackLedger(box.config.kilnDir, box.jobId);
     assert.ok(ledger && ledger !== "corrupt");
     assert.equal(ledger.rounds[0]?.outcome, "pushed");
 
     git(box.checkout, ["branch", "yak/old01", box.head]);
     assert.throws(
-      () => realGitRemote.publishBranch(box.checkout, "yak/old01", "yak/base01", "main"),
+      () => realGitRemote.publishBranch(box.checkout, "yak/old01", remoteName, "main"),
       /non-fast-forward|rejected|Could not push/,
     );
     assert.throws(
@@ -547,7 +559,7 @@ describe("pull request feedback", { concurrency: 1 }, () => {
       () => realGitRemote.publishBranch(box.checkout, "yak/base01", "main", "main"),
       /base branch/,
     );
-    const still = git(box.checkout, ["ls-remote", "origin", "refs/heads/yak/base01"]).split(/\s+/)[0];
+    const still = git(box.checkout, ["ls-remote", "origin", `refs/heads/${remoteName}`]).split(/\s+/)[0];
     assert.equal(still, fixSha);
   });
 

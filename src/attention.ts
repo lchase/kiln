@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import type { StatusJobView, StatusState, StatusView } from "./report.js";
+import { AUTH_FAILED_LINE } from "./auth.js";
 import { SANDBOX_PREFLIGHT_PREFIX } from "./sandbox.js";
 
 /**
@@ -164,8 +165,10 @@ export function attentionReason(job: StatusJobView, tail = errorTail(job)): stri
       return question ? `Gate: ${oneLine(question)}` : "Waiting on a person";
     }
     case "dead":
+      if (job.lastFailureReason === "auth-failed") return AUTH_FAILED_LINE;
       return job.sandboxError ? `Sandbox: ${oneLine(job.sandboxError)}` : "Run died before it finished";
     case "failed": {
+      if (job.lastFailureReason === "auth-failed") return AUTH_FAILED_LINE;
       if (job.sandboxError) return `Sandbox: ${oneLine(job.sandboxError)}`;
       const why = failureLine(job.launchError) || firstLine(job.deliveryError) || firstLine(job.failureDetail) || firstLine(tail) || "Run failed";
       return `Failed: ${oneLine(why)}`;

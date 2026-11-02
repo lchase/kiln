@@ -9,6 +9,7 @@ export interface AddFileInput {
   repo: string;
   specPath: string;
   title?: string;
+  issue?: string;
   dependsOn: string[];
   stack?: boolean;
   cwd: string;
@@ -35,6 +36,7 @@ export function addFromFile(config: LoadedKilnConfig, input: AddFileInput): { jo
     specText: text,
     title,
     dependsOn: input.dependsOn,
+    ...(input.issue !== undefined ? { issue: input.issue } : {}),
     ...(input.stack ? { stack: true } : {}),
     source: { kind: "file", ref: source },
     ...(input.now ? { now: input.now } : {}),

@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
+import { AUTH_PREFLIGHT_PREFIX } from "./auth.js";
 import { loadKilnConfig, type LoadedKilnConfig } from "./config.js";
 import { answerJob, readStatus, retryJob, runTick, startupRecovery } from "./driver.js";
 import { browse } from "./fs-browse.js";
@@ -109,7 +110,7 @@ export function loadServeCss(): string {
 function safeTick(config: LoadedKilnConfig, secrets: string[], startup: boolean): void {
   try {
     const report = runTick(config, defaultHost(), { startup });
-    if (report.startsWith(SANDBOX_PREFLIGHT_PREFIX)) {
+    if (report.startsWith(SANDBOX_PREFLIGHT_PREFIX) || report.startsWith(AUTH_PREFLIGHT_PREFIX)) {
       const tickAt = report.indexOf("\ntick ");
       const head = tickAt === -1 ? report : report.slice(0, tickAt);
       process.stderr.write(`${redact(head.trimEnd(), secrets)}\n`);
@@ -595,7 +596,12 @@ function redirect(res: ServerResponse, location: string): void {
 }
 
 function secretValues(config: LoadedKilnConfig): string[] {
-  const values = [config.jira?.apiToken, process.env.JIRA_API_TOKEN];
+  const values = [
+    config.jira?.apiToken,
+    process.env.JIRA_API_TOKEN,
+    process.env.CLAUDE_CODE_OAUTH_TOKEN,
+    process.env.ANTHROPIC_API_KEY,
+  ];
   const found: string[] = [];
   for (const value of values) {
     const trimmed = value?.trim();
