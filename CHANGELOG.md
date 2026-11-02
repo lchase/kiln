@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.0](https://github.com/lchase/kiln/compare/kiln-v0.6.1...kiln-v0.7.0) (2026-11-02)
+
+
+### Features
+
+* add jobs from the serve board ([#30](https://github.com/lchase/kiln/issues/30)) ([1934a77](https://github.com/lchase/kiln/commit/1934a772137d3e3207bf07c218a0d6a42332c270))
+* settings UI for kiln serve ([#32](https://github.com/lchase/kiln/issues/32)) ([21c5a4a](https://github.com/lchase/kiln/commit/21c5a4a8bfd8c3606f464891611831d32ce89bea))
+
+
+### Bug Fixes
+
+* stop auth retries and name pull requests ([#29](https://github.com/lchase/kiln/issues/29)) ([dab9e8b](https://github.com/lchase/kiln/commit/dab9e8b6cd7e21c7e020c99bcdea8d87734bbf09))
+
 ## [0.6.1](https://github.com/lchase/kiln/compare/kiln-v0.6.0...kiln-v0.6.1) (2026-10-27)
 
 
