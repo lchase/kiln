@@ -26,6 +26,7 @@ import {
   HostError,
 } from "../src/host.js";
 import { packageRoot } from "../src/paths.js";
+import { defaultRemoteBranch } from "../src/pr-names.js";
 
 const root = packageRoot();
 const keep: string[] = [];
@@ -377,10 +378,12 @@ describe("delivery", { concurrency: 1 }, () => {
     assert.equal(config.repos.web?.deliver, "pr");
     assert.equal(config.repos.web?.base, undefined);
 
+    const remoteName = defaultRemoteBranch({ title: "Show the weekly summary", jobId: id });
     const first = runTick(config, host);
     assert.match(first, new RegExp(`deliver ${id}\\s+web\\s+https://github.com/example/repo/pull/1`));
     assert.equal(github.creates, 1);
-    assert.deepEqual(remote.pushes, [`yak/${runId}`]);
+    assert.deepEqual(remote.pushes, [`yak/${runId}->${remoteName}`]);
+    assert.equal(github.pulls[0]?.head, remoteName);
     assert.equal(github.pulls[0]?.title, "Show the weekly summary");
     assert.equal(github.pulls[0]?.base, "main");
     assert.match(github.pulls[0]?.body ?? "", /Ship the weekly summary/);
@@ -399,23 +402,28 @@ describe("delivery", { concurrency: 1 }, () => {
       prNumber: number;
       prUrl: string;
     };
-    assert.equal(record.branch, `yak/${runId}`);
+    assert.equal(record.branch, remoteName);
     assert.equal(record.prNumber, 1);
 
     const second = runTick(config, host);
     assert.doesNotMatch(second, /deliver /);
     assert.equal(github.creates, 1);
-    assert.deepEqual(remote.pushes, [`yak/${runId}`]);
+    assert.deepEqual(remote.pushes, [`yak/${runId}->${remoteName}`]);
 
     rmSync(join(home, ".kiln", "deliveries", `${id}.json`));
     const third = runTick(config, host);
     assert.match(third, /pull\/1/);
     assert.equal(github.creates, 1);
-    assert.deepEqual(remote.pushes, [`yak/${runId}`]);
+    assert.deepEqual(remote.pushes, [`yak/${runId}->${remoteName}`]);
     assert.equal(git(origin, ["rev-parse", "refs/heads/main"]).trim(), mainBefore);
-    assert.equal(git(origin, ["rev-parse", `refs/heads/yak/${runId}`]).trim().length, 40);
+    assert.equal(git(origin, ["rev-parse", `refs/heads/${remoteName}`]).trim().length, 40);
+    const yakRemote = spawnSync("git", ["rev-parse", "--verify", `refs/heads/yak/${runId}`], {
+      cwd: origin,
+      encoding: "utf8",
+    });
+    assert.notEqual(yakRemote.status, 0);
     const status = runStatus(config, id, host);
-    assert.match(status, new RegExp(`${id}\\s+web\\s+feature\\s+in-review`));
+    assert.match(status, new RegExp(`${id}\\s+web\\s+feature\\s+in-review\\s+run ${runId}\\s+branch ${remoteName.replaceAll("/", "\\/")}`));
     assert.match(status, /pr https:\/\/github.com\/example\/repo\/pull\/1/);
   });
 
@@ -514,12 +522,13 @@ describe("delivery", { concurrency: 1 }, () => {
     const downstream = addJob(cwd, home, "web", "Show the summary", [upstream], true);
     landRun(checkout, upstream, upstreamRun);
     const github = new FakeGitHub();
+    const upstreamRemote = "feature/publish-the-summary";
     github.pulls.push({
       number: 2,
       url: "https://github.com/example/repo/pull/2",
       state: "OPEN",
       mergedAt: null,
-      head: `yak/${upstreamRun}`,
+      head: upstreamRemote,
       base: "main",
       title: "Publish the summary",
       body: "open",
@@ -528,7 +537,7 @@ describe("delivery", { concurrency: 1 }, () => {
     writeDelivery(config.kilnDir, {
       jobId: upstream,
       runId: upstreamRun,
-      branch: `yak/${upstreamRun}`,
+      branch: upstreamRemote,
       base: "main",
       pushed: true,
       prNumber: 2,
@@ -556,8 +565,16 @@ describe("delivery", { concurrency: 1 }, () => {
     const delivered = runTick(config, host);
     assert.match(delivered, new RegExp(`deliver ${downstream}`));
     assert.equal(github.creates, 1);
-    assert.equal(github.pulls[1]?.base, `yak/${upstreamRun}`);
-    assert.equal(github.pulls[1]?.head, `yak/${runId}`);
+    const downstreamRemote = defaultRemoteBranch({ title: "Show the summary", jobId: downstream });
+    assert.equal(github.pulls[1]?.base, upstreamRemote);
+    assert.equal(github.pulls[1]?.head, downstreamRemote);
+    assert.equal(git(worktree, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), `yak/${runId}`);
+    const pushedYak = spawnSync("git", ["rev-parse", "--verify", `refs/heads/yak/${runId}`], {
+      cwd: origin,
+      encoding: "utf8",
+    });
+    assert.notEqual(pushedYak.status, 0);
+    assert.equal(git(origin, ["rev-parse", `refs/heads/${downstreamRemote}`]).trim().length, 40);
     assert.equal(github.pulls[0]?.state, "OPEN");
     assert.equal(git(origin, ["rev-parse", "refs/heads/main"]).trim(), mainBefore);
     assertCheckoutUntouched(checkout, before);

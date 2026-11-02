@@ -374,7 +374,8 @@ describe("serve pages", () => {
     assert.doesNotMatch(html, /id="graph-panel"/);
     assert.doesNotMatch(html, /Show more/);
     for (const index of jobs.keys()) assert.match(html, new RegExp(`id="job-done-${index}"`));
-    assert.match(html, /id="col-merged"/);
+    assert.match(html, /id="col-done"/);
+    assert.doesNotMatch(html, /id="col-merged"/);
   });
 
   it("links findings for an investigation and keeps a failed job's retry", () => {

@@ -14,11 +14,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import { claudeCredentialPreflight } from "./auth.js";
 import { buildAttention, type KilnStatus } from "./attention.js";
 import type { LoadedKilnConfig } from "./config.js";
 import {
   clearLaunchError,
   deliverJob,
+  plannedRemoteBranch,
   readDelivery,
   readLaunchError,
   resolveLaunchBase,
@@ -173,8 +175,11 @@ export function runTick(
     const feedbackNotes = watchPullRequests(config, world, host);
     const actions = decide(world.observation, now);
     const body = apply(config, world, actions, host, notes, now, [...published, ...feedbackNotes], facts);
-    const problem = facts ? sandboxPreflight(config, facts) : undefined;
-    return problem ? `${problem}\n${body}` : body;
+    const heads = [
+      claudeCredentialPreflight(process.env, config.adapter),
+      facts ? sandboxPreflight(config, facts) : undefined,
+    ].filter((line): line is string => Boolean(line));
+    return heads.length > 0 ? `${heads.join("\n")}\n${body}` : body;
   });
 }
 
@@ -517,7 +522,7 @@ function deliverObserved(
     writeDelivery(config.kilnDir, {
       jobId,
       runId: observed.run.runId,
-      branch: `yak/${observed.run.runId}`,
+      branch: plannedRemoteBranch(job, repo.branchTemplate),
       base: repo.base ?? "unknown",
       pushed: false,
       error: message,
@@ -574,12 +579,22 @@ function specHandedToYak(config: LoadedKilnConfig, world: World, job: Job): stri
   return appendInvestigationFindings(base, sections);
 }
 
+/** Remote name the stacked pull request targets. Falls back to the local yak ref. */
 function upstreamBranch(world: World, job: Job): string | undefined {
   const upstreamId = job.dependsOn?.[0];
   if (!upstreamId) return undefined;
   const upstream = world.observation.jobs.find((candidate) => candidate.jobId === upstreamId);
   if (!upstream?.run) return undefined;
   return upstream.delivery?.branch ?? `yak/${upstream.run.runId}`;
+}
+
+/** Local `yak/<run-id>` the stacked worktree is cut from. Yak owns that ref. */
+function upstreamLocalBranch(world: World, job: Job): string | undefined {
+  const upstreamId = job.dependsOn?.[0];
+  if (!upstreamId) return undefined;
+  const upstream = world.observation.jobs.find((candidate) => candidate.jobId === upstreamId);
+  if (!upstream?.run) return undefined;
+  return `yak/${upstream.run.runId}`;
 }
 
 function observedDelivery(
@@ -792,6 +807,8 @@ function startFix(
   now: Date,
   sandboxFacts?: SandboxFacts,
 ): LaunchReport {
+  const refused = claudeCredentialPreflight(process.env, config.adapter);
+  if (refused) return { jobId: job.id, repo: job.repo, kind: "fix", output: refused };
   const observed = world.observation.jobs.find((candidate) => candidate.jobId === job.id);
   const plan = observed?.feedbackPlan;
   const repo = config.repos[job.repo];
@@ -881,6 +898,8 @@ function launchFixRun(
   specText: string,
   sandboxFacts?: SandboxFacts,
 ): LaunchReport {
+  const refused = claudeCredentialPreflight(process.env, config.adapter);
+  if (refused) return { jobId: job.id, repo: job.repo, kind: "fix", output: refused };
   const sourceWorkflow = readFileSync(join(packageRoot(), "workflows", "fix.yaml"), "utf8");
   const workflow = materializeWorkflow(config.kilnDir, job.id, "fix");
   const repo = config.repos[job.repo];
@@ -1036,6 +1055,8 @@ function launchJob(
   host: KilnHost,
   sandboxFacts?: SandboxFacts,
 ): LaunchReport {
+  const refused = claudeCredentialPreflight(process.env, config.adapter);
+  if (refused) return { jobId: job.id, repo: job.repo, output: refused };
   const repo = config.repos[job.repo];
   if (!repo) {
     throw new Error(`Repo ${job.repo} is not registered. Run kiln repo add ${job.repo} <path>.`);
@@ -1067,7 +1088,7 @@ function launchJob(
       deliver: repo.deliver,
       stack: job.stack === true,
       ...(repo.base ? { configuredBase: repo.base } : {}),
-      ...(job.stack ? { upstreamBranch: upstreamBranch(world, job) } : {}),
+      ...(job.stack ? { upstreamBranch: upstreamLocalBranch(world, job) } : {}),
       git: host.git,
     });
     specText = specHandedToYak(config, world, job);

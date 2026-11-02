@@ -21,7 +21,19 @@ export interface LoadedKilnConfig {
    * Repo name → checkout. `deliver` defaults to `local`. `base` is unset when
    * the config omits it; tick discovers origin's default branch then.
    */
-  repos: Record<string, { path: string; test?: string; deliver: "local" | "pr"; base?: string }>;
+  repos: Record<
+    string,
+    {
+      path: string;
+      test?: string;
+      deliver: "local" | "pr";
+      base?: string;
+      /** Pull request title template. Applied only when the job has an issue. */
+      prTitle?: string;
+      /** Remote branch template. The config file key is `branch`. */
+      branchTemplate?: string;
+    }
+  >;
   /**
    * Kiln home. Jobs, logs, deliveries, launching, launch-errors, attempts,
    * feedback, and specs live here: the directory of the config file
@@ -102,6 +114,8 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
       ...(entry.test ? { test: entry.test } : {}),
       deliver: entry.deliver ?? "local",
       ...(entry.base ? { base: entry.base } : {}),
+      ...(entry.prTitle ? { prTitle: entry.prTitle } : {}),
+      ...(entry.branch ? { branchTemplate: entry.branch } : {}),
     };
   }
 
@@ -193,6 +207,10 @@ export function addRepo(options: AddRepoOptions): string {
   if (deliver) entry.deliver = deliver;
   const base = options.base ?? previousString(previous, "base");
   if (base) entry.base = base;
+  const prTitle = previousString(previous, "prTitle");
+  if (prTitle) entry.prTitle = prTitle;
+  const branchTemplate = previousString(previous, "branch");
+  if (branchTemplate) entry.branch = branchTemplate;
   repos[options.name] = entry;
   raw.repos = repos;
 
@@ -203,10 +221,18 @@ export function addRepo(options: AddRepoOptions): string {
 
   mkdirSync(configDir, { recursive: true });
   writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`);
+  const effectiveDeliver = options.deliver ?? previousDeliver(previous) ?? "local";
   const lines = [`added ${options.name}`, `path ${checkout}`];
   if (entry.test) lines.push(`test ${entry.test}`);
-  if (entry.deliver) lines.push(`deliver ${entry.deliver}`);
+  lines.push(`deliver ${effectiveDeliver}`);
   if (entry.base) lines.push(`base ${entry.base}`);
+  if (entry.prTitle) lines.push(`prTitle ${entry.prTitle}`);
+  if (entry.branch) lines.push(`branch ${entry.branch}`);
+  const change =
+    effectiveDeliver === "pr"
+      ? `kiln repo add ${options.name} ${options.repoPath} --deliver local`
+      : `kiln repo add ${options.name} ${options.repoPath} --deliver pr --base main`;
+  lines.push(`Change delivery with: ${change}`);
   lines.push(`wrote ${configPath}`);
   return `${lines.join("\n")}\n`;
 }
@@ -219,8 +245,10 @@ export function renderRepoList(config: LoadedKilnConfig): string {
     if (!repo) return name;
     const bits = [name, repo.path];
     if (repo.test) bits.push(`test ${repo.test}`);
-    if (repo.deliver === "pr") bits.push("deliver pr");
+    bits.push(`deliver ${repo.deliver}`);
     if (repo.base) bits.push(`base ${repo.base}`);
+    if (repo.prTitle) bits.push(`prTitle ${repo.prTitle}`);
+    if (repo.branchTemplate) bits.push(`branch ${repo.branchTemplate}`);
     return bits.join("  ");
   });
   return `${lines.join("\n")}\n`;

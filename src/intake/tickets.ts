@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import type { LoadedKilnConfig } from "../config.js";
 import { INVESTIGATION_WORKFLOW } from "../findings.js";
 import { listValidJobs, newJobId, writeJob } from "../jobs.js";
-import type { Job } from "../schemas.js";
+import { ISSUE_KEY, type Job } from "../schemas.js";
 import { assertWorkflowName } from "../workflow.js";
 
 /** Context files larger than this are named in the spec instead of copied in. */
@@ -34,6 +34,8 @@ interface ParsedTicket {
   label: string;
   number: number;
   title: string;
+  /** Set from front matter `issue:` or a leading key on the heading. */
+  issue?: string;
   text: string;
   blockedBy: TicketRef[];
   spike: boolean;
@@ -176,6 +178,7 @@ export function importTickets(config: LoadedKilnConfig, input: ImportTicketsInpu
         repo: input.repo,
         specText: composeSpec(write.ticket.text, context),
         title: write.ticket.title,
+        ...(write.ticket.issue ? { issue: write.ticket.issue } : {}),
         dependsOn: write.dependsOn,
         ...(input.stack ? { stack: true } : {}),
         source: { kind: "tickets", ref: write.ticket.path },
@@ -320,12 +323,18 @@ function parseTicket(dirAbs: string, file: string): ParsedTicket {
   if (!title) {
     throw new Error(`Ticket ${file} has no title. Expected a "# NN: Title" heading or front matter title.`);
   }
+  const headingIssue = issueKeyIn(title);
+  if (meta.issue && headingIssue && meta.issue !== headingIssue) {
+    throw new Error(`Ticket ${file} issue ${meta.issue} does not match the heading issue ${headingIssue}.`);
+  }
+  const issue = meta.issue ?? headingIssue;
   return {
     file,
     path,
     label,
     number,
     title,
+    ...(issue ? { issue } : {}),
     text,
     blockedBy: dedupeRefs([...meta.blockedBy, ...bodyDeps]),
     spike: looksLikeSpike(title, text, meta.type),
@@ -335,6 +344,7 @@ function parseTicket(dirAbs: string, file: string): ParsedTicket {
 interface FrontMatter {
   title?: string;
   type?: string;
+  issue?: string;
   blockedBy: TicketRef[];
 }
 
@@ -348,6 +358,7 @@ function parseFrontMatter(yaml: string): FrontMatter {
   const lines = yaml.split(/\r?\n/);
   let title: string | undefined;
   let type: string | undefined;
+  let issue: string | undefined;
   const blockedBy: TicketRef[] = [];
   let listKey: "blocked-by" | undefined;
   for (const line of lines) {
@@ -364,12 +375,20 @@ function parseFrontMatter(yaml: string): FrontMatter {
     const value = field[2] ?? "";
     if (key === "title") title = unquote(value);
     else if (key === "type") type = unquote(value);
-    else if (key === "blocked-by") {
+    else if (key === "issue") {
+      const raw = unquote(value).trim();
+      if (!raw) throw new Error("front matter issue is empty");
+      const keyNorm = raw.toUpperCase();
+      if (!ISSUE_KEY.test(keyNorm)) {
+        throw new Error(`front matter issue ${JSON.stringify(raw)} is not a KEY-123 identifier.`);
+      }
+      issue = keyNorm;
+    } else if (key === "blocked-by") {
       if (!value.trim()) listKey = "blocked-by";
       else blockedBy.push(...refsFromScalar(value));
     }
   }
-  return { title: title?.trim() || undefined, type: type?.trim() || undefined, blockedBy };
+  return { title: title?.trim() || undefined, type: type?.trim() || undefined, ...(issue ? { issue } : {}), blockedBy };
 }
 
 function refsFromScalar(raw: string): TicketRef[] {
@@ -420,6 +439,18 @@ function blockedByFromBody(body: string, filename: string): TicketRef[] {
     refs.push({ raw: num[1], number: Number(num[1]) });
   }
   return refs;
+}
+
+/** A leading `ABC-123:`, `ABC-123 `, or `[ABC-123]` on a title. `01: Title` is not an issue. */
+function issueKeyIn(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const match = /^\s*(?:\[([A-Za-z][A-Za-z0-9]+-\d+)\]|([A-Za-z][A-Za-z0-9]+-\d+):|([A-Za-z][A-Za-z0-9]+-\d+)\s+)/.exec(
+    value,
+  );
+  const raw = match?.[1] ?? match?.[2] ?? match?.[3];
+  if (!raw) return undefined;
+  const key = raw.toUpperCase();
+  return ISSUE_KEY.test(key) ? key : undefined;
 }
 
 function headingTitle(body: string): { title: string; number?: number; rawNumber?: string } | undefined {

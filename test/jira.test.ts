@@ -21,6 +21,7 @@ interface StoredJob {
   workflow: string;
   spec: string;
   title: string;
+  issue?: string;
   dependsOn?: string[];
   source?: { kind: string; ref: string };
   createdAt: string;
@@ -301,7 +302,8 @@ describe("jira intake", () => {
     const job = readJobs(config)[0];
     assert.ok(job);
     assert.equal(job.id, result.job?.id);
-    assert.equal(job.title, "PROJ-1: Show the empty state");
+    assert.equal(job.title, "Show the empty state");
+    assert.equal(job.issue, "PROJ-1");
     assert.equal(job.repo, "web");
     assert.equal(job.workflow, "feature");
     assert.equal(job.dependsOn, undefined);
@@ -432,7 +434,8 @@ describe("jira intake", () => {
     const job = readJobs(config).find((candidate) => candidate.source?.ref === "PROJ-2");
     assert.ok(job);
     assert.deepEqual(job.dependsOn, [first.job.id, other.job.id]);
-    assert.equal(job.title, "PROJ-2: Render the empty state");
+    assert.equal(job.title, "Render the empty state");
+    assert.equal(job.issue, "PROJ-2");
     assert.match(specText(config, job), /^# PROJ-2: Render the empty state\nSource: https:\/\/acme\.atlassian\.net\/browse\/PROJ-2\n/);
     assert.doesNotMatch(result.warnings.join("\n"), /PROJ-8/);
     assert.doesNotMatch(result.warnings.join("\n"), /PROJ-7/);
@@ -594,7 +597,8 @@ describe("jira intake", () => {
     assert.equal(result.created, false);
     assert.equal(result.job, undefined);
     assert.match(result.report, /^dry-run PROJ-1\n/);
-    assert.match(result.report, /title PROJ-1: Show the empty state/);
+    assert.match(result.report, /title Show the empty state/);
+    assert.match(result.report, /issue PROJ-1/);
     assert.match(result.report, /source jira PROJ-1/);
     assert.match(result.report, /# PROJ-1: Show the empty state/);
     assert.match(result.report, /Source: https:\/\/acme\.atlassian\.net\/browse\/PROJ-1/);

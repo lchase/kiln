@@ -1,12 +1,9 @@
 import type { LoadedKilnConfig } from "../config.js";
 import { assertCanStack, listValidJobs, renderAddedJob, writeJob } from "../jobs.js";
-import type { Job } from "../schemas.js";
+import { ISSUE_KEY, type Job } from "../schemas.js";
 import { assertWorkflowName } from "../workflow.js";
 import { INVESTIGATION_WORKFLOW } from "../findings.js";
 import { typeLooksLikeSpike, workflowForSpike } from "./tickets.js";
-
-/** Jira issue keys, stored and matched in uppercase (`PROJ-123`). */
-const ISSUE_KEY = /^[A-Z][A-Z0-9]+-\d+$/;
 
 const ENV_BASE_URL = "JIRA_BASE_URL";
 const ENV_EMAIL = "JIRA_EMAIL";
@@ -44,6 +41,8 @@ export interface AddJiraInput {
   repo: string;
   key: string;
   title?: string;
+  /** When set, must be the same key as `--jira`. */
+  issue?: string;
   dependsOn: string[];
   stack?: boolean;
   dryRun: boolean;
@@ -68,6 +67,15 @@ export interface AddJiraResult {
  */
 export async function addFromJira(config: LoadedKilnConfig, input: AddJiraInput): Promise<AddJiraResult> {
   const key = normalizeIssueKey(input.key);
+  if (input.issue !== undefined) {
+    const explicit = input.issue.trim().toUpperCase();
+    if (!ISSUE_KEY.test(explicit)) {
+      throw new Error(`Issue key ${JSON.stringify(input.issue)} must match KEY-123.`);
+    }
+    if (explicit !== key) {
+      throw new Error(`--issue ${explicit} does not match --jira ${key}.`);
+    }
+  }
   assertKnownRepo(config, input.repo);
   assertWorkflowName(input.workflow);
 
@@ -99,7 +107,7 @@ export async function addFromJira(config: LoadedKilnConfig, input: AddJiraInput)
     acceptanceMarkdown: acceptanceMarkdown(issue.acceptance),
   });
   assertCanStack(input.repo, dependsOn, input.stack, listValidJobs(config));
-  const title = input.title?.trim() || `${key}: ${issue.summary}`;
+  const title = input.title?.trim() || issue.summary.trim();
   if (!title) {
     throw new Error("Job title is empty. Pass --title.");
   }
@@ -123,6 +131,7 @@ export async function addFromJira(config: LoadedKilnConfig, input: AddJiraInput)
     repo: input.repo,
     specText: safeSpec,
     title: redactSecrets(title, credentials),
+    issue: key,
     dependsOn,
     ...(input.stack ? { stack: true } : {}),
     source: { kind: "jira", ref: key },
@@ -447,7 +456,13 @@ function renderDryRun(input: {
   dependsOn: string[];
   specText: string;
 }): string {
-  const lines = [`dry-run ${input.key}`, `repo ${input.repo}`, `workflow ${input.workflow}`, `title ${input.title}`];
+  const lines = [
+    `dry-run ${input.key}`,
+    `repo ${input.repo}`,
+    `workflow ${input.workflow}`,
+    `title ${input.title}`,
+    `issue ${input.key}`,
+  ];
   if (input.dependsOn.length > 0) lines.push(`dependsOn ${input.dependsOn.join(", ")}`);
   lines.push(`source jira ${input.key}`, "spec:", input.specText.trimEnd(), "created nothing", "");
   return lines.join("\n");
