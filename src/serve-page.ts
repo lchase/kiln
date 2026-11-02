@@ -182,6 +182,7 @@ function intakeSheet(intake: ServePageOptions, items: AttentionItem[]): string {
 <p class="meta" id="picked"></p>
 </div>
 <div data-pane="jira" hidden><label class="field"><span class="k">Jira key</span><input id="jira-key" type="text" placeholder="PROJ-123" autocomplete="off" spellcheck="false"></label></div>
+<label class="field" id="issue-field"><span class="k">Issue</span><input id="job-issue" type="text" placeholder="ABC-123" autocomplete="off" spellcheck="false"></label>
 <label class="field" id="title-field"><span class="k">Title</span><input id="job-title" type="text" autocomplete="off"></label>
 <fieldset class="field" id="after-field"><legend class="k">After</legend><div id="after-list">${afterOptions(items)}</div></fieldset>
 <pre class="text preview" id="intake-preview" hidden></pre>

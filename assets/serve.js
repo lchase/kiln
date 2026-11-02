@@ -249,6 +249,7 @@
   }
 
   var titleDirty = false;
+  var issueDirty = false;
   var sourceKind = "prompt";
   var specPath = "";
   var ticketsDir = "";
@@ -370,9 +371,11 @@
     var label = document.getElementById("browser-label");
     if (label) label.textContent = sourceKind === "tickets" ? "Tickets folder" : "Spec file";
     var titleField = document.getElementById("title-field");
+    var issueField = document.getElementById("issue-field");
     var afterField = document.getElementById("after-field");
     var preview = document.getElementById("preview-job");
     if (titleField) titleField.hidden = sourceKind === "tickets";
+    if (issueField) issueField.hidden = sourceKind === "tickets";
     if (afterField) afterField.hidden = sourceKind === "tickets";
     if (preview) preview.hidden = sourceKind !== "tickets";
     var pre = document.getElementById("intake-preview");
@@ -383,7 +386,19 @@
       var title = document.getElementById("job-title");
       if (promptBox && title) title.value = titleFromPrompt(promptBox.value);
     }
+    syncIssueDefault();
     if (sourceKind === "spec" || sourceKind === "tickets") openBrowser();
+  }
+
+  function syncIssueDefault() {
+    var input = document.getElementById("job-issue");
+    if (!input || issueDirty) return;
+    if (sourceKind !== "jira") {
+      input.value = "";
+      return;
+    }
+    var key = document.getElementById("jira-key");
+    input.value = key ? key.value.trim().toUpperCase() : "";
   }
 
   function openIntake() {
@@ -418,6 +433,8 @@
     var payload = { repo: repo, workflow: workflow ? workflow.value : "", source: source };
     if (dryRun) payload.dryRun = true;
     if (sourceKind !== "tickets") {
+      var issue = document.getElementById("job-issue");
+      if (issue && issue.value.trim()) payload.issue = issue.value.trim();
       var title = document.getElementById("job-title");
       if (title && titleDirty) payload.title = title.value;
       var checked = document.querySelectorAll("#after-list input:checked");
@@ -654,6 +671,10 @@
   }
   var titleInput = document.getElementById("job-title");
   if (titleInput) titleInput.addEventListener("input", function () { titleDirty = true; });
+  var issueInput = document.getElementById("job-issue");
+  if (issueInput) issueInput.addEventListener("input", function () { issueDirty = true; });
+  var jiraKey = document.getElementById("jira-key");
+  if (jiraKey) jiraKey.addEventListener("input", syncIssueDefault);
   var addForm = document.getElementById("add-form");
   if (addForm) addForm.addEventListener("submit", function (event) {
     event.preventDefault();

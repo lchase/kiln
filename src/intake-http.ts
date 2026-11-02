@@ -7,6 +7,7 @@ import { addFromFile } from "./intake/file.js";
 import { addFromJira } from "./intake/jira.js";
 import { addFromPrompt } from "./intake/prompt.js";
 import { importTickets, type ImportTicketRow } from "./intake/tickets.js";
+import { parseIssueKey } from "./schemas.js";
 
 export interface IntakeHttpResult {
   ids: string[];
@@ -27,6 +28,8 @@ interface IntakeRequest {
   repo: string;
   workflow: string;
   title?: string;
+  /** Normalized `KEY-123`. Omitted for a Jira source defaults to that key inside `addFromJira`. */
+  issue?: string;
   after: string[];
   stack?: boolean;
   dryRun: boolean;
@@ -57,6 +60,7 @@ async function runIntake(config: LoadedKilnConfig, request: IntakeRequest, home:
     workflow: request.workflow,
     repo: request.repo,
     ...(request.title !== undefined ? { title: request.title } : {}),
+    ...(request.issue !== undefined ? { issue: request.issue } : {}),
     dependsOn: request.after,
     ...(request.stack ? { stack: true } : {}),
   };
@@ -114,8 +118,12 @@ function parseIntake(body: unknown): IntakeRequest {
   const stack = optionalBoolean(record.stack, "stack must be a boolean.");
   const dryRun = optionalBoolean(record.dryRun, "dryRun must be a boolean.") ?? false;
   const source = parseSource(record.source);
+  const issue = parseIssueField(record.issue);
   if (source.kind === "tickets" && title !== undefined) {
     throw new HttpError(400, "A tickets import does not take a title. Each file has its own.");
+  }
+  if (source.kind === "tickets" && issue !== undefined) {
+    throw new HttpError(400, "A tickets import does not take an issue. Each file has its own.");
   }
   if (source.kind === "tickets" && after.length > 0) {
     throw new HttpError(400, "A tickets import does not take after. Blocked-by in the files sets dependencies.");
@@ -124,11 +132,25 @@ function parseIntake(body: unknown): IntakeRequest {
     repo,
     workflow,
     ...(title !== undefined ? { title } : {}),
+    ...(issue !== undefined ? { issue } : {}),
     after,
     ...(stack ? { stack: true } : {}),
     dryRun,
     source,
   };
+}
+
+/** Same `KEY-123` rule as `kiln add --issue`. A blank field is omitted. */
+function parseIssueField(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new HttpError(400, "issue must be a string.");
+  if (!value.trim()) return undefined;
+  try {
+    return parseIssueKey(value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new HttpError(400, message);
+  }
 }
 
 function parseSource(value: unknown): Source {

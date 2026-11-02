@@ -15,6 +15,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { packageRoot } from "../src/paths.js";
+import { plannedRemoteBranch } from "../src/delivery.js";
+import { pullRequestTitle } from "../src/pr-names.js";
+import type { Job } from "../src/schemas.js";
 import { reapLaunches } from "./reap.js";
 
 const root = packageRoot();
@@ -204,6 +207,7 @@ interface StoredJob {
   dependsOn?: string[];
   stack?: boolean;
   source?: { kind: string; ref: string };
+  issue?: string;
 }
 
 function readJobs(home: string): StoredJob[] {
@@ -230,6 +234,7 @@ function digest(home: string): unknown[] {
       stack: Boolean(job.stack),
       dependsOn: (job.dependsOn ?? []).map((id) => byId.get(id)?.title ?? id).sort(),
       source: job.source,
+      issue: job.issue ?? null,
       spec: specOf(home, job),
     }))
     .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
@@ -374,6 +379,8 @@ describe("serve intake", () => {
       const page = await text(`${server.url}/`);
       assert.equal(page.status, 200);
       assert.match(page.body, /id="add-job"/);
+      assert.match(page.body, /id="job-issue"/);
+      assert.match(page.body, /placeholder="ABC-123"/);
       assert.match(page.body, /aria-label="Add job"/);
       assert.match(page.body, /id="intake"/);
       assert.match(page.body, />Prompt</);
@@ -467,6 +474,7 @@ describe("serve intake", () => {
         const jiraJob = readJobs(other.home)[0];
         assert.ok(jiraJob);
         assert.equal(jiraJob.source?.ref, "PROJ-1");
+        assert.equal(jiraJob.issue, "PROJ-1");
         assert.equal(specOf(other.home, jiraJob).includes(TOKEN), false);
         assert.match(specOf(other.home, jiraJob), /\[redacted\]/);
       } finally {
@@ -604,6 +612,33 @@ describe("serve intake", () => {
       assert.equal(key.status, 400);
       assert.match(JSON.parse(key.body).error, /not a KEY-123/);
 
+      const badIssue = await postJob(server.url, csrf, {
+        repo: "web",
+        workflow: "feature",
+        issue: "not a key",
+        source: { kind: "prompt", text: "Hi\n" },
+      });
+      assert.equal(badIssue.status, 400);
+      assert.match(JSON.parse(badIssue.body).error, /must match KEY-123/);
+
+      const ticketIssue = await postJob(server.url, csrf, {
+        repo: "web",
+        workflow: "feature",
+        issue: "ABC-123",
+        source: { kind: "tickets", dir: join(home, "tickets") },
+      });
+      assert.equal(ticketIssue.status, 400);
+      assert.match(JSON.parse(ticketIssue.body).error, /does not take an issue/);
+
+      const mismatch = await postJob(server.url, csrf, {
+        repo: "web",
+        workflow: "feature",
+        issue: "OTHER-9",
+        source: { kind: "jira", key: "PROJ-1" },
+      });
+      assert.equal(mismatch.status, 400);
+      assert.match(JSON.parse(mismatch.body).error, /does not match --jira PROJ-1/);
+
       const titled = await postJob(server.url, csrf, {
         repo: "web",
         workflow: "feature",
@@ -726,6 +761,35 @@ describe("serve intake", () => {
       assert.equal(evilHost.status, 403);
       assert.match(evilHost.body, /Cross-origin request rejected/);
       assert.equal(evilHost.body.includes("SENTINEL-LINE"), false);
+    } finally {
+      await stop(server.child);
+    }
+  });
+});
+
+describe("serve issue field", () => {
+  it("stores an issue from the API and names the pull request and branch from it", async () => {
+    const { cwd, home } = workDir("kiln-serve-issue-");
+    const web = join(home, "web");
+    mkdirSync(web);
+    register(cwd, home, "web", web);
+    const server = await startServe(["--port", "0", "--no-tick"], { cwd, home });
+    try {
+      const csrf = csrfFrom((await text(`${server.url}/`)).body);
+      const created = await postJob(server.url, csrf, {
+        repo: "web",
+        workflow: "feature",
+        issue: "abc-123",
+        source: { kind: "prompt", text: "Show the weekly summary\n" },
+      });
+      assert.equal(created.status, 200, created.body);
+      const ids = JSON.parse(created.body) as { ids: string[] };
+      const job = readJobs(home).find((item) => item.id === ids.ids[0]);
+      assert.ok(job);
+      assert.equal(job.issue, "ABC-123");
+      assert.equal(job.title, "Show the weekly summary");
+      assert.equal(pullRequestTitle({ title: job.title, issue: job.issue }), "[ABC-123] Show the weekly summary");
+      assert.equal(plannedRemoteBranch(job as Job), "ABC-123-show-the-weekly-summary");
     } finally {
       await stop(server.child);
     }
