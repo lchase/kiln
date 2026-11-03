@@ -1011,8 +1011,9 @@
   document.addEventListener("click", function (event) {
     var target = event.target;
     if (!target || !target.closest) return;
-    if (target.closest("#open-settings")) {
-      openSettings();
+    var settingsControl = target.closest("#open-settings");
+    if (settingsControl) {
+      if (settingsControl.tagName !== "A") openSettings();
       return;
     }
     if (target.closest("#add-job")) {
@@ -1169,7 +1170,7 @@
       return;
     }
     el.className = "status";
-    var jobs = document.querySelectorAll(".board .card").length;
+    var jobs = document.querySelectorAll(".job").length;
     el.textContent = jobs + (jobs === 1 ? " job · " : " jobs · ") + new Date().toLocaleTimeString();
     localizeTimes(document);
   }
@@ -1194,11 +1195,20 @@
           toggle.textContent = data.paused ? "Resume" : "Pause";
           toggle.setAttribute("aria-pressed", data.paused ? "true" : "false");
           form.setAttribute("action", data.paused ? "/api/resume" : "/api/pause");
+          var label = document.getElementById("run-label");
+          var dot = document.getElementById("run-dot");
+          if (label) label.textContent = data.paused ? "Paused" : "Running";
+          if (dot) dot.classList.toggle("paused", data.paused);
         }
         var spend = document.getElementById("spend");
         if (spend && data && data.spend) {
           var capText = data.spend.cap == null ? "no cap" : "$" + Number(data.spend.cap).toFixed(2);
           spend.textContent = "today " + data.spend.day + "  $" + Number(data.spend.usd).toFixed(2) + " / " + capText;
+          var capNote = document.getElementById("cap-note");
+          if (capNote) {
+            var blocked = data.spend.blocked === true || (data.spend.cap != null && Number(data.spend.usd) >= Number(data.spend.cap));
+            capNote.hidden = !blocked;
+          }
         }
         stamp(true);
       })
@@ -1237,11 +1247,70 @@
   }
   var previewBtn = document.getElementById("preview-job");
   if (previewBtn) previewBtn.addEventListener("click", function () { submitIntake(true); });
+  function readSeen() {
+    try {
+      var raw = localStorage.getItem("kiln-seen");
+      var parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (err) {
+      return {};
+    }
+  }
+
+  function writeSeen(map) {
+    try { localStorage.setItem("kiln-seen", JSON.stringify(map)); } catch (err) { /* private mode */ }
+  }
+
+  function paintCount(node, count) {
+    if (!node) return;
+    if (!count) {
+      node.hidden = true;
+      node.textContent = "";
+      return;
+    }
+    node.hidden = false;
+    node.textContent = count === 1 ? "1 change since you last looked" : count + " changes since you last looked";
+  }
+
+  function paintUnseen() {
+    var seen = readSeen();
+    var params = [];
+    for (var id in seen) {
+      if (!Object.prototype.hasOwnProperty.call(seen, id)) continue;
+      if (typeof seen[id] !== "string" || !seen[id]) continue;
+      params.push("seen=" + encodeURIComponent(id + "|" + seen[id]));
+    }
+    fetch("/api/unseen" + (params.length ? "?" + params.join("&") : ""), { cache: "no-store", headers: { Accept: "application/json" } })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) {
+        if (!data) return;
+        var counts = {};
+        var jobs = data.jobs || [];
+        for (var i = 0; i < jobs.length; i++) counts[jobs[i].jobId] = jobs[i].count;
+        var nodes = document.querySelectorAll("[data-unseen-for]");
+        for (var n = 0; n < nodes.length; n++) paintCount(nodes[n], counts[nodes[n].getAttribute("data-unseen-for")] || 0);
+        paintCount(document.getElementById("inbox-unseen"), data.inbox || 0);
+      })
+      .catch(function () { /* the list still works without the badge */ });
+  }
+
+  function markLooking() {
+    var id = body.getAttribute("data-job");
+    var latest = body.getAttribute("data-latest");
+    if (!id || !latest) return;
+    var seen = readSeen();
+    seen[id] = latest;
+    writeSeen(seen);
+  }
+
   showFresh();
   renderCompact();
   notifyLabel();
   applyRepo();
   stamp(true);
+  paintUnseen();
+  markLooking();
+  if (document.getElementById("settings-form")) loadSettings();
   try {
     var open = localStorage.getItem("kiln-drawer");
     if (open) openJob(open);

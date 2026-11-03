@@ -1,22 +1,12 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { scheduledRetry } from "./attention.js";
 import type { ObservedGate } from "./reconcile.js";
 
 /**
- * Factory-board stages. Step ids come from the workflow YAML. The labels and
- * the `agent · model` line match the factory agents those steps run.
- * Delivery stages (PR review, merged) are kiln states, not yaml steps.
- * Needs human stays last.
+ * Review rounds and the artifact texts `kiln status` attaches to a job.
+ * The serve shell reads phases from the event log; these readers stay for
+ * that status payload.
  */
-
-export interface BoardStage {
-  id: string;
-  label: string;
-  who: string;
-  /** Column title color. Empty means the default ink. `queued` is dimmer, not a new hue. */
-  tone?: "human" | "merged" | "queued";
-}
 
 export interface BoardReviewRound {
   n: number;
@@ -32,107 +22,6 @@ export interface BoardFile {
   label: string;
   text: string;
   tone?: "good" | "warn" | "stop";
-}
-
-export interface StageJob {
-  state: string;
-  workflow: string;
-  steps: { id: string; phase: string }[];
-  attemptCount?: number;
-  maxAttempts?: number;
-  lastFailureReason?: string;
-  nextRetryAt?: string;
-  prUrl?: string;
-  prNumber?: number;
-}
-
-const FEATURE_STAGES = ["spec", "build", "review", "approve", "land", "pr-review"] as const;
-
-const CATALOG: BoardStage[] = [
-  { id: "queued", label: "Queued", who: "waiting · deps", tone: "queued" },
-  { id: "spec", label: "Spec", who: "spec-writer · opus" },
-  { id: "build", label: "Build", who: "builder · opus" },
-  { id: "review", label: "Review", who: "sec · ux · ui · code" },
-  { id: "approve", label: "Approve", who: "approver · opus" },
-  { id: "explore", label: "Explore", who: "investigator · opus" },
-  { id: "land", label: "Land", who: "git commit" },
-  { id: "pr-review", label: "PR review", who: "pr-sync" },
-  { id: "done", label: "Done", who: "local", tone: "merged" },
-  { id: "merged", label: "Merged", who: "pr", tone: "merged" },
-  { id: "needs-human", label: "Needs human", who: "approve · retry", tone: "human" },
-];
-
-const STEP_STAGE: Record<string, string> = {
-  spec: "spec",
-  build: "build",
-  verify: "build",
-  security: "review",
-  ux: "review",
-  ui: "review",
-  code: "review",
-  approver: "approve",
-  approve: "needs-human",
-  land: "land",
-  explore: "explore",
-};
-
-const HUMAN_STATES = new Set(["needs-human", "failed", "dead", "invalid", "rejected"]);
-
-/**
- * Column for one job. Human gates and broken runs sit in Needs human.
- * A failed job with an automatic retry still scheduled stays on the step
- * its last run reached. `scheduledRetry` is that decision.
- */
-export function stageOf(job: StageJob): string {
-  if (scheduledRetry(job)) return runStage(job);
-  if (HUMAN_STATES.has(job.state)) return "needs-human";
-  if (job.state === "in-review") return "pr-review";
-  if (job.state === "done") return job.prUrl || job.prNumber ? "merged" : "done";
-  const current = job.steps.find((step) => step.phase === "current" || step.phase === "failed");
-  if (job.state === "queued" || job.state === "blocked") return "queued";
-  if (job.state === "approved") {
-    if (current && current.id !== "land" && current.id !== "approve" && STEP_STAGE[current.id]) return STEP_STAGE[current.id];
-    return "land";
-  }
-  if (current && STEP_STAGE[current.id]) return STEP_STAGE[current.id];
-  return runStage(job);
-}
-
-/**
- * Stage of the last step the run actually reached.
- * The approve gate's column is Needs human; a scheduled retry is not a gate,
- * so that step stays on Approve. Spec or Explore when the run never started a step.
- */
-function runStage(job: StageJob): string {
-  const last = [...job.steps].reverse().find((step) => step.phase === "current" || step.phase === "failed");
-  const stage = last ? STEP_STAGE[last.id] : undefined;
-  if (stage && stage !== "needs-human") return stage;
-  if (stage === "needs-human") {
-    const earlier = [...job.steps].reverse().find((step) => {
-      const mapped = STEP_STAGE[step.id];
-      return step.phase === "done" && mapped !== undefined && mapped !== "needs-human";
-    });
-    if (earlier) return STEP_STAGE[earlier.id] ?? "approve";
-    return "approve";
-  }
-  return job.workflow === "investigation" ? "explore" : "spec";
-}
-
-/** Stages to render. An empty kiln still shows the feature pipeline, collapsed. */
-export function stagesFor(jobs: StageJob[]): BoardStage[] {
-  const workflows = new Set(jobs.map((job) => job.workflow));
-  const wanted = new Set<string>();
-  if (jobs.length === 0 || workflows.has("feature") || [...workflows].some((name) => name !== "investigation")) {
-    for (const id of FEATURE_STAGES) wanted.add(id);
-  }
-  if (workflows.has("investigation")) wanted.add("explore");
-  wanted.add("queued");
-  wanted.add("needs-human");
-  const reached = new Set(jobs.map((job) => stageOf(job)));
-  if (reached.has("done") || !reached.has("merged")) wanted.add("done");
-  if (reached.has("merged")) wanted.add("merged");
-  for (const id of reached) wanted.add(id);
-  return CATALOG.filter((stage) => wanted.has(stage.id));
 }
 
 const REVIEW_FILE = /^(security|ux|ui|code)(?:\.(\d+))?\.json$/;

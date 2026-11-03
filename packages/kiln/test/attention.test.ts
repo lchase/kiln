@@ -204,53 +204,42 @@ describe("attention view", () => {
     const changed = jobs.map((item) => (item.jobId === "queued" ? { ...item, state: "running" as const } : item));
     assert.notEqual(buildAttention(changed).revision, attention.revision);
 
-    const html = renderConsole("/* kiln-serve */", attention);
-    assert.match(html, /\(5\) Kiln/);
+    const page = (section: "inbox" | "hand" | "repos" | "history") =>
+      renderConsole("/* kiln-serve */", attention, { csrf: "", repos: [], workflows: [], section });
+    const html = page("inbox");
+    assert.match(html, /\(1\) Kiln/);
     assert.doesNotMatch(html, /id="graph-panel"/);
     assert.match(html, /action="\/api\/jobs\/human\/approve"/);
-    assert.match(html, /action="\/api\/jobs\/failed\/retry"/);
-    assert.match(html, /class="col slim"/);
-    const column = (id: string) => {
-      const start = html.indexOf(`id="col-${id}"`);
-      assert.ok(start >= 0, id);
-      const next = html.indexOf('<section class="col', start + 1);
-      return html.slice(start, next === -1 ? html.indexOf("</main>") : next);
-    };
-    const human = column("needs-human");
-    assert.match(human, /id="job-human"/);
-    assert.match(human, /id="job-dead"/);
-    assert.match(human, /id="job-failed"/);
-    assert.match(human, /id="job-invalid"/);
-    assert.match(human, /id="job-rejected"/);
-    assert.doesNotMatch(human, /id="job-review"/);
-    const build = column("build");
-    assert.match(build, /id="job-running"/);
-    assert.doesNotMatch(build, /id="job-queued"/);
-    assert.match(column("land"), /id="job-approved"/);
-    const queued = column("queued");
-    assert.match(queued, /waiting · deps/);
-    assert.match(queued, /id="job-queued"/);
-    assert.match(queued, /id="job-down"/);
-    assert.match(queued, /id="job-stacked"/);
-    assert.match(queued, /waiting for PR #3 to merge/);
-    assert.match(queued, /data-job="stacked" data-deps="running"/);
-    assert.match(queued, /depends on/);
-    const spec = column("spec");
-    assert.doesNotMatch(spec, /id="job-queued"/);
-    assert.doesNotMatch(spec, /id="job-down"/);
-    assert.doesNotMatch(spec, /id="job-stacked"/);
-    const review = column("pr-review");
-    assert.match(review, /id="job-review"/);
-    assert.match(review, /Pull request #12 is open/);
-    assert.match(review, /PR review/);
-    const merged = column("merged");
-    assert.match(merged, /id="job-done-new"/);
-    assert.match(merged, /merged · PR/);
-    assert.doesNotMatch(merged, /id="job-done-old"/);
-    assert.doesNotMatch(merged, /id="job-rejected"/);
-    const done = column("done");
-    assert.match(done, /id="job-done-old"/);
-    assert.match(done, /landed locally/);
+    assert.match(html, /id="job-human"/);
+    assert.doesNotMatch(html, /id="job-dead"/);
+    assert.doesNotMatch(html, /id="job-review"/);
+    const hand = page("hand");
+    assert.match(hand, /action="\/api\/jobs\/failed\/retry"/);
+    assert.match(hand, /id="job-dead"/);
+    assert.match(hand, /id="job-failed"/);
+    assert.match(hand, /id="job-invalid"/);
+    assert.doesNotMatch(hand, /id="job-human"/);
+    assert.doesNotMatch(hand, /id="job-review"/);
+    assert.doesNotMatch(hand, /id="job-rejected"/);
+    const repos = page("repos");
+    assert.match(repos, /id="job-running"/);
+    assert.match(repos, /id="job-queued"/);
+    assert.match(repos, /id="job-down"/);
+    assert.match(repos, /id="job-stacked"/);
+    assert.match(repos, /waiting for PR #3 to merge/);
+    assert.match(repos, /data-job="stacked"/);
+    assert.match(repos, /data-deps="running"/);
+    assert.match(repos, /depends on/);
+    assert.match(repos, /href="\/jobs\/review"/);
+    assert.match(repos, /id="job-review"/);
+    assert.match(repos, /Pull request #12 is open/);
+    assert.match(repos, /PR review/);
+    const history = page("history");
+    assert.match(history, /id="job-done-new"/);
+    assert.match(history, /merged · PR/);
+    assert.match(history, /id="job-done-old"/);
+    assert.match(history, /landed locally/);
+    assert.match(history, /id="job-rejected"/);
     assert.doesNotMatch(html, /Show more/);
   });
 
@@ -376,8 +365,6 @@ describe("attention view", () => {
     assert.match(html, /Which runner\?/);
     assert.match(html, /src\/summary\.ts/);
     assert.match(html, /No must-fix findings/);
-    assert.match(html, /build\.md/);
-    assert.match(html, /findings\.md/);
     assert.doesNotMatch(html, /should not show for an investigation/);
   });
 
@@ -441,25 +428,19 @@ describe("attention view", () => {
     );
     assert.equal(attention.needsYouCount, 1);
 
-    const html = renderConsole("", attention);
-    assert.match(html, /\(1\) Kiln/);
-    const column = (id: string) => {
-      const start = html.indexOf(`id="col-${id}"`);
-      assert.ok(start >= 0, id);
-      const next = html.indexOf('<section class="col', start + 1);
-      return html.slice(start, next === -1 ? html.indexOf("</main>") : next);
-    };
-    const build = column("build");
-    assert.match(build, /id="job-again"/);
-    assert.match(build, /class="card retrying"/);
-    assert.match(build, /retrying <time datetime="2026-10-26T23:35:46.000Z" data-time="clock">/);
-    assert.match(build, /attempt 1\/3 · stalled/);
-    assert.doesNotMatch(build, /your call/);
-    const human = column("needs-human");
-    assert.match(human, /id="job-spent"/);
-    assert.match(human, /your call/);
-    assert.match(human, /attempt 3\/3 · crashed/);
-    assert.doesNotMatch(human, /id="job-again"/);
+    const options = { csrf: "", repos: [], workflows: [] as string[] };
+    const repos = renderConsole("", attention, { ...options, section: "repos" });
+    assert.match(repos, /id="job-again"/);
+    assert.match(repos, /class="job retrying"/);
+    assert.match(repos, /retrying <time datetime="2026-10-26T23:35:46.000Z" data-time="clock">/);
+    assert.match(repos, /attempt 1\/3 · stalled/);
+    const row = repos.slice(repos.indexOf('id="job-again"'), repos.indexOf("</article>", repos.indexOf('id="job-again"')));
+    assert.doesNotMatch(row, /your call/);
+    const hand = renderConsole("", attention, { ...options, section: "hand" });
+    assert.match(hand, /id="job-spent"/);
+    assert.match(hand, /your call/);
+    assert.match(hand, /attempt 3\/3 · crashed/);
+    assert.doesNotMatch(hand, /id="job-again"/);
 
     const resumed = statusView(
       observation([
@@ -479,11 +460,13 @@ describe("attention view", () => {
       ]),
     );
     assert.equal(resumed.jobs[0]?.state, "running");
-    const live = renderConsole("", buildAttention(resumed.jobs));
-    assert.match(live, /id="col-build"[\s\S]*id="job-live"/);
-    assert.match(live, /class="card"/);
-    assert.doesNotMatch(live, /retrying/);
-    assert.match(live, /aria-label="running"/);
+    const live = renderConsole("", buildAttention(resumed.jobs), { csrf: "", repos: [], workflows: [], section: "repos" });
+    const liveStart = live.indexOf('id="job-live"');
+    const liveRow = live.slice(liveStart, live.indexOf("</article>", liveStart));
+    assert.match(live, /class="job"[^>]*id="job-live"/);
+    assert.match(liveRow, /data-state="running"/);
+    assert.doesNotMatch(liveRow, /retrying/);
+    assert.match(liveRow, /Running/);
   });
 });
 
