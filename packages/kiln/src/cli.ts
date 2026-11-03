@@ -2,6 +2,7 @@
 import { addRepo, renderRepoList, resolveKilnConfig } from "./config.js";
 import { renderSandboxStatus, runSandboxBuild } from "./sandbox.js";
 import { answerJob, retryJob, reviseJob, runStatus, runTick } from "./driver.js";
+import { productionHost } from "./host.js";
 import { pauseFactory, resumeFactory } from "./rails.js";
 import { parseSince, renderLedgerFile } from "./ledger.js";
 import { startServe } from "./serve.js";
@@ -90,6 +91,11 @@ function usage(): never {
       "that requests changes starts a fix on that same branch, up to maxFixRounds",
       "(default 2). Kiln does not merge, approve, or comment. Past that bound the",
       "job is needs-human with reason feedback-exhausted.",
+      "Triggers in the kiln config start work without kiln add. A cron fires",
+      "on the serve tick in local time, once per slot, and once on startup",
+      "when a slot was missed. Jira polls are per repo. Kiln-owned pull",
+      "request activity uses the same read as the fix loop. A failed fire",
+      "waits for the next slot. Pause and the daily cap skip the fire.",
       "",
       "serve listens on 127.0.0.1. The page is a board of workflow stages:",
       "queued, spec, build, review, approve, land, PR review, Done (landed locally),",
@@ -415,7 +421,7 @@ function tickCommand(argv: string[]): void {
     usage();
   }
   const config = resolveKilnConfig({ configPath: flags.configPath });
-  process.stdout.write(runTick(config));
+  process.stdout.write(runTick(config, productionHost()));
 }
 
 function statusCommand(argv: string[]): void {

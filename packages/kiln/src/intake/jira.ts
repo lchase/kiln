@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import type { LoadedKilnConfig } from "../config.js";
 import { assertCanStack, listValidJobs, renderAddedJob, writeJob } from "../jobs.js";
 import { ISSUE_KEY, type Job } from "../schemas.js";
@@ -144,6 +145,100 @@ export async function addFromJira(config: LoadedKilnConfig, input: AddJiraInput)
     report: renderAddedJob(written.job, written.jsonPath),
     warnings,
   };
+}
+
+/** One issue from a Jira search. Polling and a future webhook both use this shape. */
+export interface JiraPollIssue {
+  key: string;
+  summary: string;
+  /** Server timestamp. The poll treats a new key as a new issue. */
+  updated: string;
+  description?: string;
+}
+
+/**
+ * Search Jira with the operator's token. The token stays in the child
+ * environment and is never written to stdout, a job, or an event.
+ * `POST /rest/api/3/search/jql` is the read. There is no webhook here.
+ */
+export function searchJiraIssues(
+  config: LoadedKilnConfig,
+  jql: string,
+  env: NodeJS.ProcessEnv = process.env,
+): JiraPollIssue[] {
+  const query = jql.trim();
+  if (!query || query.length > 2_000) throw new Error("Jira poll JQL is empty or too long.");
+  const credentials = resolveJiraCredentials(config, env);
+  const script = [
+    "const base = process.env.KILN_JIRA_BASE;",
+    "const email = process.env.KILN_JIRA_EMAIL;",
+    "const token = process.env.KILN_JIRA_TOKEN;",
+    "const jql = process.env.KILN_JIRA_JQL;",
+    "if (!base || !email || !token || !jql) { console.error('jira search is missing credentials'); process.exit(2); }",
+    "const auth = Buffer.from(email + ':' + token, 'utf8').toString('base64');",
+    "let url;",
+    "try { url = new URL('/rest/api/3/search/jql', base.endsWith('/') ? base : base + '/'); }",
+    "catch { console.error('jira base url is invalid'); process.exit(2); }",
+    "const response = await fetch(url, {",
+    "  method: 'POST',",
+    "  headers: { Authorization: 'Basic ' + auth, Accept: 'application/json', 'Content-Type': 'application/json' },",
+    "  body: JSON.stringify({ jql, maxResults: 50, fields: ['summary', 'updated', 'description'] }),",
+    "});",
+    "const text = await response.text();",
+    "if (!response.ok) { console.error('jira search failed HTTP ' + response.status); process.exit(1); }",
+    "process.stdout.write(text);",
+  ].join("\n");
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    encoding: "utf8",
+    timeout: 20_000,
+    env: {
+      PATH: env.PATH,
+      KILN_JIRA_BASE: credentials.baseUrl,
+      KILN_JIRA_EMAIL: credentials.email,
+      KILN_JIRA_TOKEN: credentials.apiToken,
+      KILN_JIRA_JQL: query,
+    },
+  });
+  if (result.error || result.status !== 0) {
+    const detail = (result.stderr || result.error?.message || "jira search failed").trim().split("\n")[0] ?? "jira search failed";
+    throw new Error(redactSecrets(detail, credentials).slice(0, 300));
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout || "{}");
+  } catch {
+    throw new Error("Jira search returned data that is not JSON.");
+  }
+  return parseSearchIssues(parsed, credentials);
+}
+
+function parseSearchIssues(payload: unknown, credentials: JiraCredentials): JiraPollIssue[] {
+  const issues = typeof payload === "object" && payload !== null && "issues" in payload ? payload.issues : undefined;
+  if (!Array.isArray(issues)) throw new Error("Jira search returned data that is not a list of issues.");
+  const out: JiraPollIssue[] = [];
+  for (const item of issues) {
+    if (typeof item !== "object" || item === null) continue;
+    const record = item as { key?: unknown; fields?: unknown };
+    if (typeof record.key !== "string") continue;
+    let key: string;
+    try {
+      key = normalizeIssueKey(record.key);
+    } catch {
+      continue;
+    }
+    const fields = typeof record.fields === "object" && record.fields !== null ? (record.fields as Record<string, unknown>) : {};
+    const summary = typeof fields.summary === "string" ? fields.summary.trim().replace(/\s+/g, " ") : "";
+    if (!summary) continue;
+    const updated = typeof fields.updated === "string" && fields.updated.trim() ? fields.updated.trim() : key;
+    const description = adfToMarkdown(fields.description).trim();
+    out.push({
+      key,
+      summary: redactSecrets(summary, credentials),
+      updated: redactSecrets(updated, credentials),
+      ...(description ? { description: redactSecrets(description, credentials) } : {}),
+    });
+  }
+  return out;
 }
 
 export function normalizeIssueKey(raw: string): string {

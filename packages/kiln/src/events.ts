@@ -20,8 +20,8 @@ import { redactDeep } from "./redact.js";
  * parses it. A write failure is reported and does not escape to the caller.
  *
  * `run_id` and `step` are null when the moment has none. `job_id` is null
- * for `config.reloaded`, `kiln.paused`, `kiln.resumed`, and `budget.blocked`,
- * which are not a job.
+ * for `config.reloaded`, `kiln.paused`, `kiln.resumed`, `budget.blocked`,
+ * and trigger fires that do not belong to a job yet.
  */
 
 export const EVENT_NAMES = [
@@ -43,6 +43,10 @@ export const EVENT_NAMES = [
   "kiln.paused",
   "kiln.resumed",
   "budget.blocked",
+  "trigger.fired",
+  "trigger.routed",
+  "trigger.failed",
+  "trigger.skipped",
 ] as const;
 export type EventName = (typeof EVENT_NAMES)[number];
 
@@ -146,6 +150,35 @@ const BudgetBlocked = z.object({
   cap: z.number().nonnegative(),
   once,
 });
+const TriggerFired = z.object({
+  trigger_id: z.string().min(1),
+  source: z.enum(["schedule", "jira", "pr", "review"]),
+  /** Stable dedupe id. Not named `key`: the redactor masks any property with that name. */
+  dedupe: z.string().min(1),
+  external_id: z.string().min(1),
+  revision: z.string().min(1),
+  repo: z.string().min(1).optional(),
+  title: z.string().min(1).optional(),
+  once,
+});
+const TriggerRouted = z.object({
+  trigger_id: z.string().min(1),
+  dedupe: z.string().min(1),
+  action: z.enum(["create", "attach"]),
+  workflow: z.string().min(1).optional(),
+  repo: z.string().min(1).optional(),
+  once,
+});
+const TriggerFailed = z.object({
+  trigger_id: z.string().min(1),
+  error: z.string().min(1),
+  once,
+});
+const TriggerSkipped = z.object({
+  trigger_id: z.string().min(1),
+  reason: z.enum(["paused", "capped"]),
+  once,
+});
 
 const envelope = {
   id: z.string().min(1),
@@ -192,6 +225,30 @@ export const EventSchema = z.discriminatedUnion("event", [
     event: z.literal("budget.blocked"),
     job_id: z.string().min(1).nullable(),
     properties: BudgetBlocked,
+  }),
+  z.object({
+    ...envelope,
+    event: z.literal("trigger.fired"),
+    job_id: z.string().min(1).nullable(),
+    properties: TriggerFired,
+  }),
+  z.object({
+    ...envelope,
+    event: z.literal("trigger.routed"),
+    job_id: z.string().min(1).nullable(),
+    properties: TriggerRouted,
+  }),
+  z.object({
+    ...envelope,
+    event: z.literal("trigger.failed"),
+    job_id: z.string().min(1).nullable(),
+    properties: TriggerFailed,
+  }),
+  z.object({
+    ...envelope,
+    event: z.literal("trigger.skipped"),
+    job_id: z.string().min(1).nullable(),
+    properties: TriggerSkipped,
   }),
 ]);
 

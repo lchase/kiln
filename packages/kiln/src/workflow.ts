@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, sep } from "node:path";
 import { jobBasename, packageRoot } from "./paths.js";
 
@@ -14,7 +14,11 @@ const PROMPT_COUNTS: Record<string, number> = {
   feature: FEATURE_PROMPTS,
   investigation: INVESTIGATION_PROMPTS,
   fix: FIX_PROMPTS,
+  review: 1,
 };
+
+/** Workflow name for a draft pull-request review. It ends at a gate and does not open a pull request. */
+export const REVIEW_WORKFLOW = "review";
 
 export interface LaunchInput {
   title: string;
@@ -77,7 +81,17 @@ export function assertWorkflowName(name: string): string {
  * is combined with that factory body. A prompt without that directive is
  * stored as itself. `prompts/kiln/investigation.md` uses the second form.
  */
-export function materializeWorkflow(kilnDir: string, jobId: string, workflowName: string): string {
+export interface MaterializeOptions {
+  /** Absolute file that replaces `prompts/kiln/review.md`. The operator's own review prompt. */
+  reviewPrompt?: string;
+}
+
+export function materializeWorkflow(
+  kilnDir: string,
+  jobId: string,
+  workflowName: string,
+  options: MaterializeOptions = {},
+): string {
   const sourcePath = assertWorkflowName(workflowName);
   const source = readFileSync(sourcePath, "utf8");
   const destDir = join(kilnDir, "rendered", jobBasename(jobId));
@@ -87,7 +101,8 @@ export function materializeWorkflow(kilnDir: string, jobId: string, workflowName
   const rendered = source.replace(/file: prompts\/kiln\/([a-z0-9-]+)\.md/g, (_full, name: string) => {
     count += 1;
     const rel = `prompts/kiln/${name}.md`;
-    const absolute = writeCombinedPrompt(rel, destDir);
+    const override = name === "review" ? options.reviewPrompt : undefined;
+    const absolute = writeCombinedPrompt(rel, destDir, override);
     return `file: ${yamlDoubleQuote(absolute)}`;
   });
   const expected = PROMPT_COUNTS[workflowName];
@@ -206,8 +221,18 @@ function declaredInputProperties(yaml: string): string[] {
   return names;
 }
 
-function writeCombinedPrompt(preambleRel: string, destDir: string): string {
+function writeCombinedPrompt(preambleRel: string, destDir: string, overridePath?: string): string {
   const root = packageRoot();
+  if (overridePath) {
+    if (!existsSync(overridePath) || !statSync(overridePath).isFile()) {
+      throw new Error("Review prompt file was not found.");
+    }
+    const combined = `${readFileSync(overridePath, "utf8").trimEnd()}\n`;
+    const digest = createHash("sha256").update(combined).digest("hex").slice(0, 16);
+    const outPath = join(destDir, `${basename(preambleRel, ".md")}-${digest}.md`);
+    writeFileSync(outPath, combined);
+    return outPath;
+  }
   const preamblePath = join(root, preambleRel);
   const preamble = readFileSync(preamblePath, "utf8");
   const directive = preamble.match(FACTORY_DIRECTIVE);

@@ -148,8 +148,52 @@ const maxFixRounds = z
 /**
  * The subset `kiln serve` settings can edit. The file schema below uses these
  * same field validators. Settings does not accept jira, tokens, adapter,
- * workflows, or sandbox image.
+ * workflows, or sandbox image. Trigger edits are enable/disable only.
  */
+const TRIGGER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * One trigger in `kiln.config.json`. `enabled` defaults to true.
+ * `schedule` uses `cron` (5 fields, local time). `jira` uses `jql` or
+ * `label` / `status` (compiled to JQL) and `every` (default `5m`).
+ * `pr` is the built-in Kiln-owned pull request source.
+ */
+export const TriggerConfigSchema = z
+  .object({
+    id: z.string().regex(TRIGGER_ID, "Trigger id must start with a letter or digit."),
+    enabled: z.boolean().optional(),
+    kind: z.enum(["schedule", "jira", "pr"]),
+    cron: z.string().min(1).optional(),
+    every: z.string().min(1).optional(),
+    repo: z.string().regex(REPO_NAME).optional(),
+    jql: z.string().min(1).optional(),
+    label: z.string().min(1).optional(),
+    status: z.string().min(1).optional(),
+  })
+  .strict();
+export type TriggerConfig = z.infer<typeof TriggerConfigSchema>;
+
+/** Maps a trigger id to create a job or attach to one. Hot-reloaded with the config. */
+export const RouteConfigSchema = z
+  .object({
+    id: z.string().regex(TRIGGER_ID, "Route id must start with a letter or digit."),
+    trigger: z.string().regex(TRIGGER_ID),
+    action: z.enum(["create", "attach"]),
+    workflow: z.string().min(1).optional(),
+    repo: z.string().regex(REPO_NAME).optional(),
+  })
+  .strict();
+export type RouteConfig = z.infer<typeof RouteConfigSchema>;
+
+/** Settings API body for enable/disable. Other trigger fields stay in the file. */
+export const TriggerToggleSchema = z
+  .object({
+    id: z.string().regex(TRIGGER_ID),
+    enabled: z.boolean(),
+  })
+  .strict();
+export type TriggerToggle = z.infer<typeof TriggerToggleSchema>;
+
 export const EditableKilnSettingsSchema = z.object({
   repos: KilnReposSchema,
   stallTimeoutMs,
@@ -158,6 +202,7 @@ export const EditableKilnSettingsSchema = z.object({
   maxSameFingerprint,
   dailyDollarCap,
   sandbox: EditableSandboxSchema.optional(),
+  triggers: z.array(TriggerToggleSchema).optional(),
 });
 export type EditableKilnSettings = z.infer<typeof EditableKilnSettingsSchema>;
 
@@ -180,16 +225,26 @@ export const KilnConfigFileSchema = z.object({
   workflows: z.record(z.string().regex(WORKFLOW_KEY), z.object({ sandbox: SandboxSettingsSchema.optional() })).optional(),
   repos: KilnReposSchema,
   jira: JiraConfigSchema.optional(),
+  /** Clock, Jira poll, and pull-request sources. Omitted entries use the built-ins. */
+  triggers: z.array(TriggerConfigSchema).optional(),
+  /** Trigger id → create a job or attach to an existing one. */
+  routes: z.array(RouteConfigSchema).optional(),
+  /**
+   * Reviewer prompt file. Relative paths resolve from the config directory.
+   * Omitted uses the packaged `prompts/kiln/review.md`.
+   */
+  reviewPrompt: z.string().min(1).optional(),
 });
 export type KilnConfigFile = z.infer<typeof KilnConfigFileSchema>;
 
 /**
  * Where a job came from. Adapters set this; tick and reconcile do not branch on it.
  * `ref` is an absolute spec path (`file`), `inline` or `stdin` (`prompt`), the
- * absolute ticket path (`tickets`), or the issue key (`jira`, such as `PROJ-123`).
+ * absolute ticket path (`tickets`), the issue key (`jira`, such as `SAMPLE-1`),
+ * or the trigger dedupe key (`trigger`).
  */
 export const JobSourceSchema = z.object({
-  kind: z.enum(["file", "prompt", "tickets", "jira"]),
+  kind: z.enum(["file", "prompt", "tickets", "jira", "trigger"]),
   ref: z.string().min(1),
 });
 export type JobSource = z.infer<typeof JobSourceSchema>;

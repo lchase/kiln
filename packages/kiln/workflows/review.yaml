@@ -1,0 +1,64 @@
+# Draft review of one pull request, run by yak (@lchase/yak).
+#
+# The agent returns findings (severity, file, line, suggested comment).
+# A person approves or rejects the draft in the Inbox. Approving does not
+# post, approve, or merge on GitHub: Kiln has no gated posting path for a
+# review comment, so the draft stops here.
+#
+# `reviewPrompt` in the kiln config replaces prompts/kiln/review.md.
+# The packaged file is the generic default.
+#
+# `adapter: "mock"` reads `test/fixtures/kiln-review/draft.json` from the checkout.
+name: kiln-review
+version: "1"
+inputSchema:
+  inline:
+    type: object
+    additionalProperties: false
+    properties:
+      title: { type: string }
+      spec: { type: string }
+      runNonce: { type: string }
+      baseRef: { type: string }
+    required: [title, spec, runNonce, baseRef]
+steps:
+  - id: draft
+    needs: [input]
+    agent:
+      model: opus
+      prompt:
+        file: prompts/kiln/review.md
+      schema:
+        inline:
+          type: object
+          additionalProperties: false
+          properties:
+            markdown: { type: string, minLength: 1 }
+            findings:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  severity: { type: string, enum: [note, nit, warning, blocking] }
+                  file: { type: string, minLength: 1 }
+                  line: { type: integer, minimum: 1 }
+                  comment: { type: string, minLength: 1 }
+                required: [severity, file, line, comment]
+          required: [markdown, findings]
+      tools: [Read, Grep, Glob, Bash]
+    produces: draft
+
+  - id: approve
+    needs: [input, draft]
+    gate:
+      schema:
+        inline:
+          type: object
+          additionalProperties: false
+          properties:
+            decision: { type: string, enum: [approve, reject] }
+          required: [decision]
+      render:
+        inline: "Draft review for \"{{input.title}}\"?\n\nApproving keeps this draft. Kiln does not post it to GitHub.\n\n{{draft.markdown}}"
+    produces: approval

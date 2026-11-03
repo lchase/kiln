@@ -6,7 +6,7 @@ import { appendEvent } from "./events.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import { jobBasename } from "./paths.js";
 import { JobSchema, parseIssueKey, type Job, type JobSource } from "./schemas.js";
-import { assertWorkflowName } from "./workflow.js";
+import { assertWorkflowName, REVIEW_WORKFLOW } from "./workflow.js";
 
 export function newJobId(now = new Date()): string {
   const stamp = now.toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
@@ -179,9 +179,10 @@ export function assertCanStack(
   }
   const upstreamId = dependsOn[0];
   const upstream = known.find((job) => job.id === upstreamId);
-  if (upstream?.workflow === INVESTIGATION_WORKFLOW) {
+  if (upstream?.workflow === INVESTIGATION_WORKFLOW || upstream?.workflow === REVIEW_WORKFLOW) {
+    const kind = upstream.workflow === INVESTIGATION_WORKFLOW ? "investigation" : "review";
     throw new Error(
-      `stack cannot target investigation job ${upstreamId}. An investigation does not land a branch.`,
+      `stack cannot target ${kind} job ${upstreamId}. ${kind === "investigation" ? "An investigation" : "A review"} does not land a branch.`,
     );
   }
   if (upstream && upstream.repo !== repo) {

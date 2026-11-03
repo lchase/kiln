@@ -11,10 +11,13 @@ import {
   DEFAULT_STALL_TIMEOUT_MS,
   KilnConfigFileSchema,
   SettingsWriteSchema,
+  TriggerConfigSchema,
   type EditableKilnSettings,
   type KilnConfigFile,
   type RepoEntry,
+  type TriggerConfig,
 } from "./schemas.js";
+import { applyTriggerToggles, effectiveTriggers, knownTrigger } from "./triggers.js";
 import type { ZodError } from "zod";
 
 /**
@@ -36,6 +39,21 @@ export interface SettingsDocument {
     mode?: "off" | "docker";
     allowDomains?: string[];
   };
+  /**
+   * Effective triggers, including built-ins. A PUT sends `{ id, enabled }`
+   * toggles; cron, JQL, and repo stay on the file.
+   */
+  triggers: {
+    id: string;
+    kind: "schedule" | "jira" | "pr";
+    enabled: boolean;
+    cron?: string;
+    every?: string;
+    repo?: string;
+    jql?: string;
+    label?: string;
+    status?: string;
+  }[];
   /** Shown when a field is omitted. Not written back. */
   defaults: {
     deliver: "local";
@@ -105,6 +123,8 @@ export function saveSettings(configPath: string, body: unknown, home = homedir()
 
   const { revision: _revision, ...editable } = parsed.data;
   const fields = checkoutFields(dirname(configPath), editable, home);
+  const triggerFields = triggerToggleFields(read.raw, editable);
+  Object.assign(fields, triggerFields);
   if (Object.keys(fields).length > 0) return fail(400, "Settings are invalid.", fields);
 
   const next = mergeSettings(read.raw, editable);
@@ -133,6 +153,7 @@ function project(path: string, revision: string, file: KilnConfigFile): Settings
     ...(file.maxSameFingerprint !== undefined ? { maxSameFingerprint: file.maxSameFingerprint } : {}),
     ...(file.dailyDollarCap !== undefined ? { dailyDollarCap: file.dailyDollarCap } : {}),
     ...(sandbox ? { sandbox } : {}),
+    triggers: effectiveTriggers(file.triggers).map(triggerView),
     defaults: DEFAULTS,
   };
 }
@@ -170,6 +191,7 @@ function mergeSettings(raw: Record<string, unknown>, settings: EditableKilnSetti
   setOptional(next, "maxFixRounds", settings.maxFixRounds);
   setOptional(next, "maxSameFingerprint", settings.maxSameFingerprint);
   setOptional(next, "dailyDollarCap", settings.dailyDollarCap);
+  if (settings.triggers) next.triggers = applyTriggerToggles(storedTriggers(raw.triggers), settings.triggers);
   if (settings.sandbox) {
     const prior = isRecord(raw.sandbox) ? { ...raw.sandbox } : {};
     setOptional(prior, "mode", settings.sandbox.mode);
@@ -178,6 +200,39 @@ function mergeSettings(raw: Record<string, unknown>, settings: EditableKilnSetti
     else next.sandbox = prior;
   }
   return next;
+}
+
+function triggerView(trigger: TriggerConfig): SettingsDocument["triggers"][number] {
+  return {
+    id: trigger.id,
+    kind: trigger.kind,
+    enabled: trigger.enabled !== false,
+    ...(trigger.cron ? { cron: trigger.cron } : {}),
+    ...(trigger.every ? { every: trigger.every } : {}),
+    ...(trigger.repo ? { repo: trigger.repo } : {}),
+    ...(trigger.jql ? { jql: trigger.jql } : {}),
+    ...(trigger.label ? { label: trigger.label } : {}),
+    ...(trigger.status ? { status: trigger.status } : {}),
+  };
+}
+
+function storedTriggers(value: unknown): TriggerConfig[] {
+  if (!Array.isArray(value)) return [];
+  const out: TriggerConfig[] = [];
+  for (const item of value) {
+    const parsed = TriggerConfigSchema.safeParse(item);
+    if (parsed.success) out.push(parsed.data);
+  }
+  return out;
+}
+
+function triggerToggleFields(raw: Record<string, unknown>, settings: EditableKilnSettings): Record<string, string> {
+  const fields: Record<string, string> = {};
+  const file = storedTriggers(raw.triggers);
+  for (const toggle of settings.triggers ?? []) {
+    if (!knownTrigger(toggle.id, file)) fields[`triggers.${toggle.id}`] = `Unknown trigger ${toggle.id}.`;
+  }
+  return fields;
 }
 
 function checkoutFields(configDir: string, settings: EditableKilnSettings, home: string): Record<string, string> {

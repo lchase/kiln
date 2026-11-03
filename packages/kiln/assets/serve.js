@@ -911,6 +911,54 @@
       .catch(function () { showSettingsError("Could not load settings."); });
   }
 
+  function toggleTrigger(button) {
+    var id = button.getAttribute("data-trigger-toggle");
+    var enabled = button.getAttribute("data-enabled") !== "true";
+    var error = document.getElementById("trigger-error");
+    if (error) error.hidden = true;
+    button.disabled = true;
+    fetch("/api/settings", { cache: "no-store", headers: { Accept: "application/json" } })
+      .then(function (response) { return response.json().then(function (data) { return { ok: response.ok, data: data }; }); })
+      .then(function (result) {
+        if (!result.ok) throw new Error((result.data && result.data.error) || "Could not load settings.");
+        var data = result.data;
+        var toggles = [];
+        var buttons = document.querySelectorAll("[data-trigger-toggle]");
+        for (var i = 0; i < buttons.length; i++) {
+          var buttonId = buttons[i].getAttribute("data-trigger-toggle");
+          var on = buttons[i].getAttribute("data-enabled") === "true";
+          if (buttonId === id) on = enabled;
+          toggles.push({ id: buttonId, enabled: on });
+        }
+        var body = { revision: data.revision, repos: data.repos || {}, triggers: toggles };
+        ["stallTimeoutMs", "maxAttempts", "maxFixRounds", "maxSameFingerprint", "dailyDollarCap"].forEach(function (key) {
+          if (data[key] !== undefined && data[key] !== null) body[key] = data[key];
+        });
+        if (data.sandbox) body.sandbox = data.sandbox;
+        return fetch("/api/settings", {
+          method: "PUT",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "X-Kiln-CSRF": document.body.getAttribute("data-csrf") || "",
+          },
+          body: JSON.stringify(body),
+        });
+      })
+      .then(function (response) { return response.json().then(function (data) { return { ok: response.ok, data: data }; }); })
+      .then(function (result) {
+        if (!result.ok) throw new Error((result.data && result.data.error) || "Could not save settings.");
+        location.reload();
+      })
+      .catch(function (err) {
+        button.disabled = false;
+        if (error) {
+          error.hidden = false;
+          error.textContent = err && err.message ? err.message : "Could not update the trigger.";
+        }
+      });
+  }
+
   function saveSettings() {
     if (settingsSaving) return;
     if (!flushEditor()) return;
@@ -1011,6 +1059,11 @@
   document.addEventListener("click", function (event) {
     var target = event.target;
     if (!target || !target.closest) return;
+    var triggerToggle = target.closest("[data-trigger-toggle]");
+    if (triggerToggle) {
+      toggleTrigger(triggerToggle);
+      return;
+    }
     var settingsControl = target.closest("#open-settings");
     if (settingsControl) {
       if (settingsControl.tagName !== "A") openSettings();

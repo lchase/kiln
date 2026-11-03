@@ -13,6 +13,7 @@ import {
 import { packageRoot } from "./paths.js";
 import type { StatusJobView } from "./report.js";
 import { formatSpend, type SpendSnapshot } from "./rails.js";
+import type { TriggerRow } from "./triggers.js";
 import { listWorkflowNames } from "./workflow.js";
 
 export interface ServeRepoOption {
@@ -20,7 +21,7 @@ export interface ServeRepoOption {
   path: string;
 }
 
-export type AppSection = "inbox" | "hand" | "repos" | "history" | "stats" | "report" | "settings" | "job";
+export type AppSection = "inbox" | "hand" | "repos" | "history" | "stats" | "report" | "settings" | "job" | "triggers";
 
 export interface ServePageOptions {
   csrf: string;
@@ -45,6 +46,7 @@ export interface AppModel {
   report?: DayReport;
   detail?: JobDetail;
   tab?: "overview" | "changes" | "timeline";
+  triggers?: TriggerRow[];
 }
 
 const LIVE_SCRIPT = readFileSync(join(packageRoot(), "assets", "serve.js"), "utf8");
@@ -159,6 +161,7 @@ ${repos}
 ${item("/history", "history", "History", "history", board.history.length)}
 ${item("/stats", "stats", "Stats", "stats")}
 ${item("/report", "report", "Today", "report")}
+${item("/triggers", "triggers", "Triggers", "triggers")}
 ${item("/settings", "open-settings", "Settings", "settings")}
 </nav>`;
 }
@@ -177,7 +180,44 @@ function mainHtml(model: AppModel, page: ServePageOptions): string {
   if (model.section === "job" && model.detail) {
     return `${error}<main class="main detail">${detailHtml(model.detail, model.tab ?? "overview", page.csrf)}</main>`;
   }
+  if (model.section === "triggers") {
+    return `${error}<main class="main">${triggersHtml(model.triggers ?? [])}</main>`;
+  }
   return `${error}<main class="main">${listHtml(model, page.csrf)}</main>`;
+}
+
+function triggersHtml(rows: readonly TriggerRow[]): string {
+  const body =
+    rows.length === 0
+      ? `<p class="empty">No triggers.</p>`
+      : rows.map((row) => triggerCard(row)).join("\n");
+  return `<header class="list-head"><h2>Triggers</h2><p class="meta">The clock, Jira, and pull request activity can start work. Kiln does not post, approve, or merge.</p><p class="form-error" id="trigger-error" role="alert" hidden></p></header>${body}`;
+}
+
+function triggerCard(row: TriggerRow): string {
+  const on = row.enabled;
+  const bits = [row.kind, row.schedule, on ? "enabled" : "disabled"];
+  const next = row.nextFire ? `<p class="meta">next <time datetime="${escapeHtml(row.nextFire)}" data-time>${escapeHtml(row.nextFire)}</time></p>` : "";
+  const last = row.lastFire ? `<p class="meta">last fire <time datetime="${escapeHtml(row.lastFire)}" data-time>${escapeHtml(row.lastFire)}</time></p>` : `<p class="meta">last fire none</p>`;
+  const error = row.lastError
+    ? `<p class="err">last error${row.lastErrorAt ? ` <time datetime="${escapeHtml(row.lastErrorAt)}" data-time>${escapeHtml(row.lastErrorAt)}</time>` : ""}: ${escapeHtml(row.lastError)}</p>`
+    : "";
+  const recent =
+    row.recent.length === 0
+      ? `<p class="empty">No routed events yet.</p>`
+      : `<ul class="recent">${row.recent
+          .map(
+            (item) =>
+              `<li><time datetime="${escapeHtml(item.ts)}" data-time>${escapeHtml(item.ts)}</time> <span class="ev">${escapeHtml(item.event)}</span> ${escapeHtml(item.summary)}</li>`,
+          )
+          .join("")}</ul>`;
+  return `<article class="trigger" id="trigger-${escapeHtml(row.id)}">
+<h3>${escapeHtml(row.id)}</h3>
+<p class="meta">${escapeHtml(bits.join(" · "))}</p>
+${next}${last}${error}
+<button type="button" data-trigger-toggle="${escapeHtml(row.id)}" data-enabled="${on ? "true" : "false"}">${on ? "Disable" : "Enable"}</button>
+${recent}
+</article>`;
 }
 
 function listHtml(model: AppModel, csrf: string): string {
