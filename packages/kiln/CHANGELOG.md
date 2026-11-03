@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/lchase/kiln/compare/kiln-v0.10.0...kiln-v0.11.0) (2026-11-03)
+
+
+### Features
+
+* replace the kanban with a sidebar board ([#46](https://github.com/lchase/kiln/issues/46)) ([bb8d6af](https://github.com/lchase/kiln/commit/bb8d6afe91d9a523576f426941a3567c4131e48a))
+
 ## [0.10.0](https://github.com/lchase/kiln/compare/kiln-v0.9.0...kiln-v0.10.0) (2026-11-03)
 
 
