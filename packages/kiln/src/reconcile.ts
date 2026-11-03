@@ -1,5 +1,6 @@
 import type { FeedbackPlan, FeedbackRound } from "./feedback.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
+import { REVIEW_WORKFLOW } from "./workflow.js";
 import type { JobSource, JobState } from "./schemas.js";
 
 /**
@@ -317,15 +318,19 @@ export function isLanded(job: ObservedJob): boolean {
  * `deliver=local`: landed. `deliver=pr`: landed and the pull request has merged.
  * An investigation is done once the gate says approve. There is no pull request.
  */
+function noPullRequest(workflow: string): boolean {
+  return workflow === INVESTIGATION_WORKFLOW || workflow === REVIEW_WORKFLOW;
+}
+
 export function isDone(job: ObservedJob): boolean {
   if (!isLanded(job)) return false;
-  if (job.workflow === INVESTIGATION_WORKFLOW) return true;
+  if (noPullRequest(job.workflow)) return true;
   if ((job.deliver ?? "local") !== "pr") return true;
   return job.delivery?.merged === true || job.delivery?.prState === "MERGED";
 }
 
 function landedState(job: ObservedJob): JobState {
-  if (job.workflow === INVESTIGATION_WORKFLOW) return "done";
+  if (noPullRequest(job.workflow)) return "done";
   if ((job.deliver ?? "local") !== "pr") return "done";
   const delivery = job.delivery;
   if (delivery?.merged || delivery?.prState === "MERGED") return "done";
@@ -337,7 +342,7 @@ function landedState(job: ObservedJob): JobState {
 
 function needsDelivery(job: ObservedJob): boolean {
   if (job.error) return false;
-  if (job.workflow === INVESTIGATION_WORKFLOW) return false;
+  if (noPullRequest(job.workflow)) return false;
   if ((job.deliver ?? "local") !== "pr") return false;
   if (!isLanded(job)) return false;
   if (job.delivery?.merged || job.delivery?.prState === "MERGED") return false;

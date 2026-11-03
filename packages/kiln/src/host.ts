@@ -74,17 +74,92 @@ export interface AgentStart {
   logFd: number;
 }
 
+export interface ReviewRequest {
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  headSha: string;
+}
+
+export interface ReviewRequestSource {
+  /**
+   * Open pull requests where the authenticated user's review is requested.
+   * Read-only. Uses the operator's gh auth. Does not post, approve, or merge.
+   */
+  list(repos: readonly { name: string; path: string }[]): ReviewRequest[];
+}
+
 export interface KilnHost {
   github: GitHubHost;
   git: GitRemote;
   /** Read-only pull request feedback. Absent means this tick does not watch. */
   feedback?: PullRequestFeedbackSource;
+  /**
+   * Review-request listing. Absent means the hourly review trigger does not run.
+   * `kiln tick` and `kiln serve` set this. Tests leave it off unless they stub it.
+   */
+  reviews?: ReviewRequestSource;
   /** Test seam for `yak run`. Absent means Kiln spawns yak. */
   startAgent?(spec: AgentStart): { pid: number };
 }
 
 export function defaultHost(): KilnHost {
   return { github: realGitHub, git: realGitRemote, feedback: realPullRequestFeedback };
+}
+
+/** `kiln tick` and `kiln serve`. Review requests use the operator's gh auth. */
+export function productionHost(): KilnHost {
+  return { ...defaultHost(), reviews: { list: listReviewRequests } };
+}
+
+/**
+ * Open pull requests awaiting the authenticated user's review, per registered repo.
+ * A remote that is not GitHub is skipped, so a local test origin does not call gh.
+ */
+export function listReviewRequests(repos: readonly { name: string; path: string }[]): ReviewRequest[] {
+  const found: ReviewRequest[] = [];
+  for (const repo of repos) {
+    if (!githubRemote(repo.path)) continue;
+    const result = spawnSync(
+      ghBin(),
+      ["pr", "list", "--search", "review-requested:@me", "--state", "open", "--limit", "50", "--json", "number,title,url,headRefOid"],
+      {
+        cwd: repo.path,
+        encoding: "utf8",
+        timeout: 20_000,
+        env: { ...process.env, GH_PROMPT_DISABLED: "1", GIT_TERMINAL_PROMPT: "0" },
+      },
+    );
+    if (result.error || result.status !== 0) {
+      throw new HostError(`Could not list review requests for ${repo.name}.`);
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(result.stdout || "[]");
+    } catch {
+      throw new HostError("gh pr list returned data that is not JSON.");
+    }
+    if (!Array.isArray(parsed)) throw new HostError("gh pr list returned data that is not a list.");
+    for (const item of parsed) {
+      if (typeof item !== "object" || item === null) continue;
+      const record = item as { number?: unknown; title?: unknown; url?: unknown; headRefOid?: unknown };
+      const number = typeof record.number === "number" ? record.number : Number.NaN;
+      const sha = typeof record.headRefOid === "string" ? record.headRefOid.trim().toLowerCase() : "";
+      if (!Number.isInteger(number) || number <= 0 || !/^[0-9a-f]{7,64}$/.test(sha)) continue;
+      const title = typeof record.title === "string" && record.title.trim() ? record.title.trim() : `PR ${number}`;
+      const url = typeof record.url === "string" ? record.url : "";
+      found.push({ repo: repo.name, number, title, url, headSha: sha });
+    }
+  }
+  return found;
+}
+
+function githubRemote(checkout: string): boolean {
+  const result = gitResult(checkout, ["remote", "get-url", "origin"]);
+  if (result.status !== 0) return false;
+  const url = result.stdout.trim();
+  return /github\.com[:/]/i.test(url);
 }
 
 const YAK_BRANCH = /^yak\/[A-Za-z0-9._-]+$/;

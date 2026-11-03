@@ -254,6 +254,33 @@ By default, serve runs `kiln tick` once when it starts and then every 30 seconds
 
 The Jira API token is not rendered. Do not commit checkout paths or job files.
 
+## Triggers
+
+A trigger starts work without `kiln add`. `kiln serve` evaluates triggers on each tick. `kiln tick` does the same pass once. Config is the `triggers` and `routes` arrays in `kiln.config.json`, re-read when the file changes.
+
+Two triggers are built in. `review-requests` is a schedule, cron `0 * * * *` (minute 0 of every hour, local time). `pr-activity` reads Kiln-owned pull requests from the same snapshot the fix loop already fetched. It does not poll a second time. Add a Jira trigger per repo when you want one:
+
+```json
+{
+  "triggers": [
+    { "id": "sample-ready", "kind": "jira", "repo": "web", "every": "5m", "label": "sample", "status": "Ready" }
+  ],
+  "routes": [
+    { "id": "sample-ready", "trigger": "sample-ready", "action": "create", "workflow": "feature", "repo": "web" }
+  ]
+}
+```
+
+`every` defaults to `5m` (`30s`, `5m`, `1h`). `label` and `status` compile to JQL. A `jql` string replaces them. `enabled` defaults to true. The Triggers page and `PUT /api/settings` send `{ "triggers": [{ "id", "enabled" }] }` and leave cron, JQL, and repo on the file.
+
+A cron fires once per slot. While serve was down, startup fires the latest missed slot once and does not replay the ones behind it. A Jira poll that was missed does the same: one search, not one per skipped interval. The router writes `trigger.routed` with a `dedupe` property (`review:<repo>:<number>:<head sha>`, `jira:<trigger>:<issue>`, `pr:<job>:<comment>`). A later tick that sees that value does not create another job. Comments and commits from `kiln`, a `[bot]` login, a `kiln:` subject, or a `Kiln-Job` trailer are ignored.
+
+A failed fire stores `last_error` and `lastErrorAt` under `<kiln-home>/triggers/state.json`, appends `trigger.failed`, and waits for the next slot. It does not retry on the next tick. Pause and the daily dollar cap append `trigger.skipped` with reason `paused` or `capped` and do not queue the fire.
+
+`review-requests` lists open pull requests where your `gh` user is the requested reviewer (`gh pr list --search review-requested:@me` in each registered GitHub repo). A pull request already drafted at that head SHA is skipped. The `review` workflow returns findings (severity, file, line, suggested comment) and stops on a gate in the Inbox. Approving the gate does not post, approve, or merge. There is no gated posting path for a review comment yet, so the draft stops there. `reviewPrompt` is a path to your own prompt file. Omitted, Kiln uses `prompts/kiln/review.md`.
+
+Jira search sends `JIRA_API_TOKEN` only as a Basic header in a child process. The token is not written into the job, the spec, or the event log. Polling is the only Jira ingress. A webhook can later call the same issue-to-event function.
+
 ## Tick, status, approve
 
 ```bash

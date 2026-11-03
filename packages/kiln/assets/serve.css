@@ -257,6 +257,26 @@ body.open .drawer { transform: none; }
 .repo-row .num { font-family: var(--mono); font-size: 13px; }
 .repo-row .d-actions { margin-top: 0; flex: none; }
 #settings-error { white-space: pre-wrap; }
+.trigger {
+  border: 1px solid var(--line);
+  background: var(--card);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 0 0 12px;
+}
+.trigger h3 { margin: 0 0 4px; color: var(--ink); font-size: 15px; letter-spacing: 0; text-transform: none; }
+.trigger .err { margin: 6px 0 0; color: var(--human); font-family: var(--mono); font-size: 12px; line-height: 16px; }
+.trigger button {
+  margin-top: 10px;
+  background: var(--card-hover);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.trigger .recent { list-style: none; margin: 10px 0 0; padding: 0; }
+.trigger .recent li { margin: 4px 0; font-size: 12px; line-height: 16px; color: var(--muted); }
+.trigger .ev { font-family: var(--mono); color: var(--ink); }
 
 @media (max-width: 960px) {
   .shell { grid-template-columns: 1fr; }

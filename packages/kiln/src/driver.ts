@@ -107,7 +107,20 @@ import {
   type SandboxFacts,
 } from "./sandbox.js";
 import { JobSchema, type Job } from "./schemas.js";
-import { leafStepIds, materializeWorkflow, workflowInputs, workflowNeedsTestCommand, workflowStepPlan } from "./workflow.js";
+import {
+  ensureReviewHead,
+  evaluateTriggers,
+  recordOwnedPullRequest,
+  reviewHeadOf,
+} from "./triggers.js";
+import {
+  leafStepIds,
+  materializeWorkflow,
+  REVIEW_WORKFLOW,
+  workflowInputs,
+  workflowNeedsTestCommand,
+  workflowStepPlan,
+} from "./workflow.js";
 
 interface JournalEvent {
   t: string;
@@ -161,6 +174,11 @@ export interface TickOptions {
   startup?: boolean;
   /** Clock for stall detection and retry backoff. Defaults to the current time. */
   now?: Date;
+  /**
+   * First trigger pass in this process. A missed cron slot fires once.
+   * Defaults to `startup`. `kiln serve` passes true only on its first tick.
+   */
+  triggerStartup?: boolean;
   /** Docker, image, yak, and credential facts. Tests pass this; tick probes otherwise. */
   sandboxFacts?: SandboxFacts;
 }
@@ -184,8 +202,14 @@ export function runTick(
     const midway = observe(config, host, now);
     bindOpenFixRuns(config, midway);
     const published = publishReadyFixes(config, host, midway);
+    evaluateTriggers({
+      config,
+      now,
+      startup: options.triggerStartup ?? startup,
+      ...(host.reviews ? { reviews: host.reviews } : {}),
+    });
     const world = observe(config, host, now);
-    const feedbackNotes = watchPullRequests(config, world, host);
+    const feedbackNotes = watchPullRequests(config, world, host, now);
     const actions = decide(world.observation, now);
     if (world.observation.spendBlocked) {
       recordDailyCap(config.kilnDir, spendSnapshot(readEvents(config.kilnDir, { warn: () => {} }), config.dailyDollarCap, now), now);
@@ -922,7 +946,7 @@ function gateEdit(checkout: string, runId: string, stepId: string): { note?: str
  * Read each open pull request once per tick and attach a plan.
  * `readStatus` does not call this. A host with no feedback reader does not watch.
  */
-function watchPullRequests(config: LoadedKilnConfig, world: World, host: KilnHost): string[] {
+function watchPullRequests(config: LoadedKilnConfig, world: World, host: KilnHost, now: Date): string[] {
   const notes: string[] = [];
   if (!host.feedback) return notes;
   for (const job of world.observation.jobs) {
@@ -944,12 +968,33 @@ function watchPullRequests(config: LoadedKilnConfig, world: World, host: KilnHos
       ledger,
       snapshot,
     });
+    recordOwnedPullRequest(
+      config,
+      {
+        jobId: job.jobId,
+        repo: job.repo,
+        prNumber: job.delivery?.prNumber ?? 0,
+        headSha: snapshot.headSha,
+        comments: snapshot.comments.map((comment) => ({
+          id: comment.id,
+          author: comment.author,
+          body: comment.body,
+          resolved: comment.resolved,
+        })),
+        reviews: snapshot.reviews.map((review) => ({
+          id: review.id,
+          author: review.author,
+          body: review.body,
+        })),
+      },
+      now,
+    );
   }
   return notes;
 }
 
 function shouldWatch(job: ObservedJob): boolean {
-  if (job.deliver !== "pr" || job.workflow === INVESTIGATION_WORKFLOW) return false;
+  if (job.deliver !== "pr" || job.workflow === INVESTIGATION_WORKFLOW || job.workflow === REVIEW_WORKFLOW) return false;
   if (job.error || job.feedbackLedgerError || job.feedbackExhausted || job.feedbackAmbiguous) return false;
   if (job.fixInProgress || job.fixAwaitingPublish || job.launching) return false;
   if (!job.delivery?.prNumber) return false;
@@ -1266,7 +1311,9 @@ function launchJob(
       `Repo ${job.repo} has no test command. Set repos.${job.repo}.test. The feature workflow refuses to run an empty KILN_TEST.`,
     );
   }
-  const workflow = materializeWorkflow(config.kilnDir, job.id, job.workflow);
+  const workflow = materializeWorkflow(config.kilnDir, job.id, job.workflow, {
+    ...(config.reviewPrompt ? { reviewPrompt: config.reviewPrompt } : {}),
+  });
   const logPath = join(config.kilnDir, "logs", `${jobBasename(job.id)}.log`);
   mkdirSync(dirname(logPath), { recursive: true });
   ensureCheckoutExcludes(repo.path);
@@ -1278,14 +1325,21 @@ function launchJob(
     const blocked = commitAgentSandbox(config, job.id, job.workflow, workflow, logPath, sandboxFacts);
     if (blocked) return { jobId: job.id, repo: job.repo, output: blocked };
     assertStackTarget(world, job);
-    baseSha = resolveLaunchBase({
-      checkout: repo.path,
-      deliver: repo.deliver,
-      stack: job.stack === true,
-      ...(repo.base ? { configuredBase: repo.base } : {}),
-      ...(job.stack ? { upstreamBranch: upstreamLocalBranch(world, job) } : {}),
-      git: host.git,
-    });
+    const pinned = reviewHeadOf(job);
+    if (pinned) {
+      const number = Number(job.source?.ref.split(":")[2]);
+      if (Number.isInteger(number) && number > 0) ensureReviewHead(repo.path, number, pinned);
+      baseSha = resolveCommit(host, repo.path, pinned);
+    } else {
+      baseSha = resolveLaunchBase({
+        checkout: repo.path,
+        deliver: repo.deliver,
+        stack: job.stack === true,
+        ...(repo.base ? { configuredBase: repo.base } : {}),
+        ...(job.stack ? { upstreamBranch: upstreamLocalBranch(world, job) } : {}),
+        git: host.git,
+      });
+    }
     specText = specHandedToYak(config, world, job);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

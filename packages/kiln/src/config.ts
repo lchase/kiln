@@ -11,7 +11,9 @@ import {
   REPO_NAME,
   type JiraConfig,
   type RepoEntry,
+  type RouteConfig,
   type SandboxSettings,
+  type TriggerConfig,
 } from "./schemas.js";
 
 export interface LoadedKilnConfig {
@@ -76,6 +78,12 @@ export interface LoadedKilnConfig {
    * Environment variables override these at intake time. Absent when unset.
    */
   jira?: JiraConfig;
+  /** File triggers. Built-ins are merged in when a tick evaluates them. */
+  triggers: TriggerConfig[];
+  /** File routes. Built-in review and pull-request routes are merged in at evaluation. */
+  routes: RouteConfig[];
+  /** Absolute path of the reviewer prompt, when the config sets one. */
+  reviewPrompt?: string;
 }
 
 export interface LoadKilnConfigOptions {
@@ -147,6 +155,11 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
     sandbox: parsed.data.sandbox ?? {},
     workflowSandbox: workflowSandboxFrom(parsed.data.workflows),
     ...(jira ? { jira } : {}),
+    triggers: parsed.data.triggers ?? [],
+    routes: parsed.data.routes ?? [],
+    ...(parsed.data.reviewPrompt
+      ? { reviewPrompt: resolveConfiguredPath(configDir, parsed.data.reviewPrompt, home) }
+      : {}),
   };
 }
 

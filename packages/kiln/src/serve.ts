@@ -22,7 +22,7 @@ import {
 } from "./board-view.js";
 import { appendEvent, eventsForJob, readEvents } from "./events.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
-import { defaultHost } from "./host.js";
+import { productionHost } from "./host.js";
 import { intakeJobs } from "./intake-http.js";
 import { jobBasename, packageRoot } from "./paths.js";
 import { SANDBOX_PREFLIGHT_PREFIX } from "./sandbox.js";
@@ -30,6 +30,7 @@ import type { StatusJobView } from "./report.js";
 import { renderApp, type AppSection, type ServePageOptions, renderMessagePage, renderTextPage } from "./serve-page.js";
 import { isPaused, pauseFactory, resumeFactory, spendFor } from "./rails.js";
 import { readSettings, saveSettings } from "./settings.js";
+import { triggerRows } from "./triggers.js";
 import { listWorkflowNames } from "./workflow.js";
 
 export interface ServeOptions {
@@ -83,6 +84,7 @@ export function startServe(options: ServeOptions): Promise<void> {
     let stopped = false;
     let timer: NodeJS.Timeout | undefined;
     let firstTick: NodeJS.Timeout | undefined;
+    let triggerStartup = true;
 
     const shutdown = (): void => {
       if (stopped) return;
@@ -106,8 +108,10 @@ export function startServe(options: ServeOptions): Promise<void> {
       if (options.tickSeconds === undefined) return;
       const tick = (): void => {
         if (stopped) return;
+        const startup = triggerStartup;
+        triggerStartup = false;
         refreshLiveConfig(state);
-        safeTick(state.config, state.secrets, false);
+        safeTick(state.config, state.secrets, startup);
       };
       firstTick = setTimeout(tick, 0);
       timer = setInterval(tick, options.tickSeconds * 1000);
@@ -123,9 +127,9 @@ export function loadServeCss(): string {
   return readFileSync(path, "utf8");
 }
 
-function safeTick(config: LoadedKilnConfig, secrets: string[], startup: boolean): void {
+function safeTick(config: LoadedKilnConfig, secrets: string[], triggerStartup: boolean): void {
   try {
-    const report = runTick(config, defaultHost(), { startup });
+    const report = runTick(config, productionHost(), { startup: false, triggerStartup });
     if (report.startsWith(SANDBOX_PREFLIGHT_PREFIX) || report.startsWith(AUTH_PREFLIGHT_PREFIX)) {
       const tickAt = report.indexOf("\ntick ");
       const head = tickAt === -1 ? report : report.slice(0, tickAt);
@@ -800,6 +804,7 @@ function listSection(path: string): AppSection | undefined {
   if (path === "/stats") return "stats";
   if (path === "/report") return "report";
   if (path === "/settings") return "settings";
+  if (path === "/triggers") return "triggers";
   return undefined;
 }
 
@@ -824,6 +829,9 @@ function renderShell(
     ...(section === "stats" && extra.window ? { stats: statsDocument(state, extra.window) } : {}),
     ...(section === "report" ? { report: reportDocument(state) } : {}),
     ...(extra.detail ? { detail: extra.detail, tab: extra.tab ?? "overview" } : {}),
+    ...(section === "triggers"
+      ? { triggers: triggerRows(state.config, readEvents(state.config.kilnDir, { warn: () => {} })) }
+      : {}),
   });
 }
 
