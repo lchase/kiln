@@ -12,7 +12,7 @@ feat!: rename loop.maxIterations to loop.budget
 BREAKING CHANGE: workflows using maxIterations must rename the field
 ```
 
-This isn't a style preference — `release-please` (`.github/workflows/release-please.yml`)
+This isn't a style preference — `release-please` (repo-root `.github/workflows/release-please.yml`)
 parses these prefixes to decide whether a release is needed and what
 version bump it gets. A commit with no recognized prefix is silently
 excluded from the changelog and doesn't trigger a release.
@@ -27,14 +27,18 @@ excluded from the changelog and doesn't trigger a release.
 Nothing is done by hand. The flow:
 
 1. Merge Conventional Commits to `main` as normal.
-2. `release-please` opens (or updates) a standing "Release PR" that bumps
-   `package.json`/`.release-please-manifest.json` and writes `CHANGELOG.md`,
-   based on every unreleased commit since the last release.
+2. `release-please` opens (or updates) a Release PR that bumps
+   `packages/yak/package.json`, the `packages/yak` version in the root
+   `package-lock.json`, and repo-root `.release-please-manifest.json`, and
+   writes `packages/yak/CHANGELOG.md`, based on every unreleased commit
+   since the last release.
 3. Merge that PR when you want to ship. The merge itself creates the git
-   tag and GitHub Release.
-4. That tag push triggers `.github/workflows/publish.yml`, which builds,
-   tests, and runs `npm publish` via npm's trusted publishing (OIDC) — no
-   stored token, no manual `npm version`/`git tag`/OTP.
+   tag (`yak-v*`) and GitHub Release.
+4. That tag push does not publish. `.github/workflows/publish-yak.yml` at
+   the repo root is manual `workflow_dispatch` only, until the npm trusted
+   publisher for `@lchase/yak` points at this repo and that workflow. It
+   builds, tests, and runs `npm publish` via npm's trusted publishing
+   (OIDC) — no stored token, no manual `npm version`/`git tag`/OTP.
 
 If release-please reports "no user facing commits found — skipping," it
 means nothing since the last release used a recognized prefix — expected,

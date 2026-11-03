@@ -22,6 +22,8 @@ If `./.kiln/kiln.config.json` is still in the working directory and the home con
 
 ## Develop from a checkout
 
+From `packages/kiln`:
+
 ```bash
 npm install
 npm run build

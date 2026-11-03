@@ -1,0 +1,16 @@
+{
+  "name": "kiln",
+  "private": true,
+  "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "postinstall": "node scripts/link-workspace-bins.mjs",
+    "test": "npm run build -w @lchase/yak && npm test -w @lchase/kiln && npm test -w @lchase/yak",
+    "typecheck": "npm run typecheck -w @lchase/kiln && npm run typecheck -w @lchase/yak"
+  }
+}

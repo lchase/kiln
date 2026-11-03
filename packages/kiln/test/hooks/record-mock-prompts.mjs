@@ -5,7 +5,13 @@
 const NEEDLE = "async run(_req) {";
 
 export async function load(url, context, nextLoad) {
-  if (typeof url !== "string" || !url.includes("/@lchase/yak/dist/index.js")) {
+  // npm installs the bundle at node_modules/@lchase/yak/dist/index.js.
+  // The workspace links that path at packages/yak/dist/index.js, and Node
+  // loads the realpath.
+  if (
+    typeof url !== "string" ||
+    (!url.includes("/@lchase/yak/dist/index.js") && !url.includes("/packages/yak/dist/index.js"))
+  ) {
     return nextLoad(url, context);
   }
   const loaded = await nextLoad(url, context);

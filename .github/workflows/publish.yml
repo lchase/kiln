@@ -1,6 +1,6 @@
 name: Publish to npm
 
-# Dispatched by release-please.yml right after it cuts a release (and
+# Dispatched by release-please.yml right after it cuts a kiln release (and
 # available manually for recovery). Not triggered by the release tag
 # itself — release-please tags with GITHUB_TOKEN, which cannot trigger
 # workflows, and the tag is `kiln-v*` anyway.
@@ -25,8 +25,11 @@ jobs:
 
       - run: npm install -g npm@latest # trusted publishing (OIDC) needs npm >=11.5.1
       - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
+      # Kiln tests read the installed @lchase/yak bundle. The workspace
+      # links the source package, which has no dist until it is built.
+      - run: npm run build -w @lchase/yak
+      - run: npm run typecheck -w @lchase/kiln
+      - run: npm test -w @lchase/kiln
+      - run: npm run build -w @lchase/kiln
 
-      - run: npm publish --provenance --access public
+      - run: npm publish -w @lchase/kiln --provenance --access public

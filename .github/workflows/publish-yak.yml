@@ -1,0 +1,38 @@
+name: Publish yak to npm
+
+# Not dispatched by release-please. Publishing @lchase/yak from this
+# repository fails until the npm trusted publisher for that package is
+# changed to repo lchase/kiln and workflow publish-yak.yml. workflow_dispatch
+# only, and the job runs only when confirm is exactly "publish".
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type publish to publish @lchase/yak'
+        required: true
+        type: string
+
+jobs:
+  publish:
+    if: ${{ github.event.inputs.confirm == 'publish' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - run: npm install -g npm@latest # trusted publishing (OIDC) needs npm >=11.5.1
+      - run: npm ci
+      - run: npm run typecheck -w @lchase/yak
+      - run: npm test -w @lchase/yak
+      - run: npm run build -w @lchase/yak
+
+      - run: npm publish -w @lchase/yak --provenance --access public
