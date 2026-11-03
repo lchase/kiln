@@ -16,7 +16,8 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lchase/kiln.git"
+    "url": "git+https://github.com/lchase/kiln.git",
+    "directory": "packages/kiln"
   },
   "publishConfig": {
     "access": "public"

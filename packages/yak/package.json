@@ -14,7 +14,8 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lchase/yak.git"
+    "url": "git+https://github.com/lchase/kiln.git",
+    "directory": "packages/yak"
   },
   "publishConfig": {
     "access": "public"
