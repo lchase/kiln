@@ -7,14 +7,27 @@ import { AUTH_PREFLIGHT_PREFIX } from "./auth.js";
 import { loadKilnConfig, type LoadedKilnConfig } from "./config.js";
 import { answerJob, readStatus, retryJob, reviseJob, runTick, startupRecovery } from "./driver.js";
 import { browse } from "./fs-browse.js";
-import { appendEvent, eventsForJob } from "./events.js";
+import {
+  branchOf,
+  buildBoard,
+  dayReport,
+  jobDetail,
+  parseSeenQuery,
+  parseStatsWindow,
+  readBranchCommits,
+  readDiffStat,
+  statsFor,
+  unseenChanges,
+  type StatWindow,
+} from "./board-view.js";
+import { appendEvent, eventsForJob, readEvents } from "./events.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import { defaultHost } from "./host.js";
 import { intakeJobs } from "./intake-http.js";
-import { packageRoot } from "./paths.js";
+import { jobBasename, packageRoot } from "./paths.js";
 import { SANDBOX_PREFLIGHT_PREFIX } from "./sandbox.js";
 import type { StatusJobView } from "./report.js";
-import { renderConsole, type ServePageOptions, renderMessagePage, renderTextPage } from "./serve-page.js";
+import { renderApp, type AppSection, type ServePageOptions, renderMessagePage, renderTextPage } from "./serve-page.js";
 import { isPaused, pauseFactory, resumeFactory, spendFor } from "./rails.js";
 import { readSettings, saveSettings } from "./settings.js";
 import { listWorkflowNames } from "./workflow.js";
@@ -242,12 +255,29 @@ async function handle(
     return;
   }
 
-  if (path === "/" || path === "" || path === "/board") {
-    sendHtml(res, 200, renderConsole(css, readStatus(config).attention, pageOptions(state, csrf)), secrets);
-    return;
-  }
   if (path === "/api/jobs" || path === "/api/status") {
     sendJson(res, 200, statusDocument(state), secrets);
+    return;
+  }
+  if (path === "/api/board") {
+    sendJson(res, 200, boardPayload(state), secrets);
+    return;
+  }
+  if (path === "/api/stats") {
+    const window = parseStatsWindow(url.searchParams.get("window"));
+    if (!window) {
+      sendJson(res, 400, { error: "window must be today, 7d, or 30d." }, secrets);
+      return;
+    }
+    sendJson(res, 200, statsDocument(state, window), secrets);
+    return;
+  }
+  if (path === "/api/report") {
+    sendJson(res, 200, reportDocument(state), secrets);
+    return;
+  }
+  if (path === "/api/unseen") {
+    sendJson(res, 200, unseenDocument(state, url.searchParams.getAll("seen")), secrets);
     return;
   }
   if (path === "/api/events") {
@@ -260,6 +290,18 @@ async function handle(
     return;
   }
 
+  const apiDetail = /^\/api\/jobs\/([^/]+)\/detail$/.exec(path);
+  if (apiDetail?.[1]) {
+    const jobId = parseJobId(apiDetail[1]);
+    const job = jobId ? findJob(config, jobId) : undefined;
+    if (!job) {
+      sendJson(res, 404, { error: jobId ? `No job ${jobId}.` : "Not found." }, secrets);
+      return;
+    }
+    sendJson(res, 200, detailDocument(state, job), secrets);
+    return;
+  }
+
   const apiJob = /^\/api\/jobs\/([^/]+)$/.exec(path);
   if (apiJob?.[1]) {
     const jobId = parseJobId(apiJob[1]);
@@ -269,6 +311,56 @@ async function handle(
       return;
     }
     sendJson(res, 200, job, secrets);
+    return;
+  }
+
+  const listed = listSection(path);
+  if (listed) {
+    if (listed === "stats") {
+      const window = parseStatsWindow(url.searchParams.get("window"));
+      if (!window) {
+        sendHtml(res, 400, renderMessagePage(css, "Stats", "window must be today, 7d, or 30d."), secrets);
+        return;
+      }
+      sendHtml(res, 200, renderShell(state, css, csrf, "stats", { window }), secrets);
+      return;
+    }
+    sendHtml(res, 200, renderShell(state, css, csrf, listed), secrets);
+    return;
+  }
+
+  const repoPage = /^\/repos\/([^/]+)$/.exec(path);
+  if (repoPage?.[1]) {
+    let name: string;
+    try {
+      name = decodeURIComponent(repoPage[1]);
+    } catch {
+      sendHtml(res, 404, renderMessagePage(css, "Not found", "Not found."), secrets);
+      return;
+    }
+    if (!state.config.repos[name]) {
+      sendHtml(res, 404, renderMessagePage(css, "Not found", `No repo ${name}.`), secrets);
+      return;
+    }
+    sendHtml(res, 200, renderShell(state, css, csrf, "repos", { repo: name }), secrets);
+    return;
+  }
+
+  const jobPage = /^\/jobs\/([^/]+)$/.exec(path);
+  if (jobPage?.[1]) {
+    const jobId = parseJobId(jobPage[1]);
+    const job = jobId ? findJob(config, jobId) : undefined;
+    if (!job) {
+      sendHtml(res, 404, renderMessagePage(css, "Not found", jobId ? `No job ${jobId}.` : "Not found."), secrets);
+      return;
+    }
+    const tabRaw = url.searchParams.get("tab");
+    if (tabRaw && tabRaw !== "overview" && tabRaw !== "changes" && tabRaw !== "timeline") {
+      sendHtml(res, 400, renderMessagePage(css, "Job", "tab must be overview, changes, or timeline."), secrets);
+      return;
+    }
+    const tab = tabRaw === "changes" || tabRaw === "timeline" ? tabRaw : "overview";
+    sendHtml(res, 200, renderShell(state, css, csrf, "job", { detail: detailDocument(state, job), tab }), secrets);
     return;
   }
 
@@ -462,11 +554,11 @@ function redirectTarget(req: IncomingMessage): string {
   if (typeof referer !== "string") return "/";
   try {
     const url = new URL(referer);
-    if (url.pathname === "/board") return "/board";
+    if (!url.pathname.startsWith("/") || url.pathname.startsWith("//")) return "/";
+    return `${url.pathname}${url.search}`;
   } catch {
     return "/";
   }
-  return "/";
 }
 
 function wantsJson(req: IncomingMessage): boolean {
@@ -696,8 +788,109 @@ function statusDocument(state: LiveConfig): unknown {
     repos: repoList(state.config),
     configError: state.configError ?? null,
     paused: isPaused(state.config.kilnDir),
-    spend: { day: spend.day, usd: spend.usd, cap: spend.cap },
+    spend: { day: spend.day, usd: spend.usd, cap: spend.cap, blocked: spend.blocked },
   };
+}
+
+function listSection(path: string): AppSection | undefined {
+  if (path === "/" || path === "" || path === "/board" || path === "/inbox") return "inbox";
+  if (path === "/hand") return "hand";
+  if (path === "/repos") return "repos";
+  if (path === "/history") return "history";
+  if (path === "/stats") return "stats";
+  if (path === "/report") return "report";
+  if (path === "/settings") return "settings";
+  return undefined;
+}
+
+function renderShell(
+  state: LiveConfig,
+  css: string,
+  csrf: string,
+  section: AppSection,
+  extra: { window?: StatWindow; repo?: string; detail?: ReturnType<typeof detailDocument>; tab?: "overview" | "changes" | "timeline" } = {},
+): string {
+  const status = readStatus(state.config);
+  const events = readEvents(state.config.kilnDir, { warn: () => {} });
+  const board = buildBoard(status.jobs, events);
+  const page = pageOptions(state, csrf);
+  return renderApp({
+    css,
+    section,
+    board,
+    attention: status.attention,
+    page: extra.repo ? { ...page, repo: extra.repo } : page,
+    ...(extra.repo ? { repo: extra.repo } : {}),
+    ...(section === "stats" && extra.window ? { stats: statsDocument(state, extra.window) } : {}),
+    ...(section === "report" ? { report: reportDocument(state) } : {}),
+    ...(extra.detail ? { detail: extra.detail, tab: extra.tab ?? "overview" } : {}),
+  });
+}
+
+function boardPayload(state: LiveConfig): unknown {
+  const status = readStatus(state.config);
+  const events = readEvents(state.config.kilnDir, { warn: () => {} });
+  const spend = spendFor(state.config.kilnDir, state.config.dailyDollarCap);
+  return {
+    ...buildBoard(status.jobs, events),
+    paused: isPaused(state.config.kilnDir),
+    spend,
+    configError: state.configError ?? null,
+  };
+}
+
+function statsDocument(state: LiveConfig, window: StatWindow) {
+  const events = readEvents(state.config.kilnDir, { warn: () => {} });
+  return statsFor(events, {
+    window,
+    ...(state.config.dailyDollarCap !== undefined ? { cap: state.config.dailyDollarCap } : {}),
+  });
+}
+
+function reportDocument(state: LiveConfig) {
+  const events = readEvents(state.config.kilnDir, { warn: () => {} });
+  return dayReport(events, state.config.dailyDollarCap !== undefined ? { cap: state.config.dailyDollarCap } : {});
+}
+
+function unseenDocument(state: LiveConfig, seenValues: string[]) {
+  const events = readEvents(state.config.kilnDir, { warn: () => {} });
+  const board = buildBoard(readStatus(state.config).jobs, events);
+  return unseenChanges(events, parseSeenQuery(seenValues), new Set(board.inbox.map((job) => job.jobId)));
+}
+
+function detailDocument(state: LiveConfig, job: StatusJobView) {
+  const events = readEvents(state.config.kilnDir, { warn: () => {} });
+  const repo = state.config.repos[job.repo];
+  const branch = branchOf(job, events);
+  const base = prBase(events, job.jobId);
+  const commits = repo && branch ? readBranchCommits(repo.path, branch) : [];
+  const diff = repo && branch && base ? readDiffStat(repo.path, base, branch) : undefined;
+  const issue = jobIssue(state.config, job.jobId);
+  return jobDetail({
+    job,
+    events,
+    maxFixRounds: repo?.maxFixRounds ?? state.config.maxFixRounds,
+    commits,
+    ...(issue ? { issue } : {}),
+    ...(diff ? { diffStat: diff } : {}),
+  });
+}
+
+function prBase(events: ReturnType<typeof readEvents>, jobId: string): string | undefined {
+  let base: string | undefined;
+  for (const event of events) {
+    if (event.job_id === jobId && event.event === "pr.opened") base = event.properties.base;
+  }
+  return base;
+}
+
+function jobIssue(config: LoadedKilnConfig, jobId: string): string | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(join(config.jobsDir, `${jobBasename(jobId)}.json`), "utf8")) as { issue?: unknown };
+    return typeof raw.issue === "string" ? raw.issue : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function statusCode(error: unknown): number | undefined {

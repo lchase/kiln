@@ -208,9 +208,11 @@ describe("serve settings", () => {
     const { cwd, home, configPath } = workDir("kiln-settings-ok-");
     const server = await startServe({ cwd, home });
     try {
-      const page = await text(`${server.url}/`);
+      const homePage = await text(`${server.url}/`);
+      assert.equal(homePage.status, 200);
+      assert.match(homePage.body, /id="open-settings"/);
+      const page = await text(`${server.url}/settings`);
       assert.equal(page.status, 200);
-      assert.match(page.body, /id="open-settings"/);
       assert.match(page.body, /id="settings"/);
       assert.match(page.body, /id="repo-add"/);
       assert.match(page.body, /renders as \[ABC-123\] Title/);

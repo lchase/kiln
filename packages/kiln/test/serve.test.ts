@@ -216,8 +216,8 @@ function viewJob(overrides: Partial<StatusJobView> & Pick<StatusJobView, "jobId"
   };
 }
 
-function page(jobs: StatusJobView[]): string {
-  return renderConsole("/* kiln-serve */", buildAttention(jobs));
+function page(jobs: StatusJobView[], section: "inbox" | "hand" | "repos" | "history" = "inbox"): string {
+  return renderConsole("/* kiln-serve */", buildAttention(jobs), { csrf: "", repos: [], workflows: [], section });
 }
 
 function exited(child: ChildProcess): Promise<void> {
@@ -263,22 +263,21 @@ describe("serve pages", () => {
     ]);
     assert.match(html, /\/\* kiln-serve \*\//);
     assert.match(html, /\(1\) Kiln/);
-    assert.match(html, /Needs human/);
+    assert.match(html, /Needs a hand/);
     assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
     assert.match(html, /&lt;b&gt;Approve\?&lt;\/b&gt;/);
     assert.doesNotMatch(html, /<script>alert/);
     assert.match(html, /action="\/api\/jobs\/job-1\/approve"/);
 
-    const settled = page([viewJob({ jobId: "job-1", state: "done", title: "Done", prUrl: "javascript:alert(1)" })]);
+    const settled = page([viewJob({ jobId: "job-1", state: "done", title: "Done", prUrl: "javascript:alert(1)" })], "history");
     assert.match(settled, /javascript:alert\(1\)/);
     assert.doesNotMatch(settled, /href="javascript:/);
-    assert.match(settled, /id="col-merged"/);
     assert.match(settled, /landed locally/);
     assert.doesNotMatch(settled, /Show more/);
   });
 
-  it("shows attempt, reason, and next retry on a Needs human card for a dead job", () => {
-    const html = page([
+  it("shows attempt, reason, and next retry on a Needs a hand row for a dead job", () => {
+    const jobs = [
       viewJob({
         jobId: "dead-1",
         state: "dead",
@@ -307,61 +306,56 @@ describe("serve pages", () => {
         canApprove: true,
         canRevise: true,
       }),
-    ]);
-    const column = (id: string) => {
-      const start = html.indexOf(`id="col-${id}"`);
-      assert.ok(start >= 0, id);
-      const next = html.indexOf('<section class="col', start + 1);
-      return html.slice(start, next === -1 ? html.indexOf("</main>") : next);
-    };
-    const human = column("needs-human");
-    const build = column("build");
-    assert.match(html, /\(2\) Kiln/);
-    assert.match(human, /id="job-dead-1"/);
-    assert.match(human, /your call/);
-    assert.match(human, /attempt 3\/3 · stalled/);
-    assert.doesNotMatch(human, /id="job-fail-1"/);
-    assert.match(build, /id="job-fail-1"/);
-    assert.match(build, /class="card retrying"/);
-    assert.match(build, /retrying <time datetime="2026-10-26T03:00:00.000Z" data-time="clock">/);
-    assert.match(build, /attempt 1\/3 · orphaned/);
-    assert.doesNotMatch(build, /your call/);
-    assert.doesNotMatch(build, /next retry /);
-    const gateStart = html.indexOf('id="job-gate-1"');
-    const gateEnd = html.indexOf('id="job-', gateStart + 1);
-    const gate = html.slice(gateStart, gateEnd === -1 ? undefined : gateEnd);
+    ];
+    const hand = page(jobs, "hand");
+    const repos = page(jobs, "repos");
+    const inbox = page(jobs, "inbox");
+    assert.match(inbox, /\(1\) Kiln/);
+    assert.match(hand, /id="job-dead-1"/);
+    assert.match(hand, /your call/);
+    assert.match(hand, /attempt 3\/3 · stalled/);
+    assert.doesNotMatch(hand, /id="job-fail-1"/);
+    assert.match(repos, /id="job-fail-1"/);
+    assert.match(repos, /class="job retrying"/);
+    assert.match(repos, /retrying <time datetime="2026-10-26T03:00:00.000Z" data-time="clock">/);
+    assert.match(repos, /attempt 1\/3 · orphaned/);
+    const failStart = repos.indexOf('id="job-fail-1"');
+    const failEnd = repos.indexOf('id="job-', failStart + 1);
+    const fail = repos.slice(failStart, failEnd === -1 ? undefined : failEnd);
+    assert.doesNotMatch(fail, /your call/);
+    assert.doesNotMatch(fail, /next retry /);
+    const gateStart = inbox.indexOf('id="job-gate-1"');
+    const gateEnd = inbox.indexOf('id="job-', gateStart + 1);
+    const gate = inbox.slice(gateStart, gateEnd === -1 ? undefined : gateEnd);
     assert.doesNotMatch(gate, /attempt /);
     assert.match(gate, /your call/);
-    assert.match(html, /action="\/api\/jobs\/dead-1\/retry"/);
+    assert.match(hand, /action="\/api\/jobs\/dead-1\/retry"/);
   });
 
   it("puts queued and blocked jobs in Queued, and does not format the clock as UTC", () => {
-    const html = page([
-      viewJob({ jobId: "q", state: "queued", title: "Wait", logTail: "started 2026-10-26T05:01:22.000Z" }),
-      viewJob({
-        jobId: "b",
-        state: "blocked",
-        title: "Hold",
-        dependsOn: [{ jobId: "q", state: "queued" }],
-      }),
-      viewJob({
-        jobId: "spec-run",
-        state: "running",
-        title: "Writing the spec",
-        steps: [{ id: "spec", phase: "current" }],
-      }),
-    ]);
-    const between = (id: string, next: string) => html.slice(html.indexOf(`id="col-${id}"`), html.indexOf(`id="col-${next}"`));
-    const queued = between("queued", "spec");
-    assert.match(queued, /id="job-q"/);
-    assert.match(queued, /id="job-b"/);
-    assert.match(queued, /depends on/);
-    assert.match(queued, /href="#job-q"/);
-    assert.match(queued, /waiting · deps/);
-    const spec = between("spec", "build");
-    assert.match(spec, /id="job-spec-run"/);
-    assert.doesNotMatch(spec, /id="job-q"/);
-    assert.doesNotMatch(spec, /id="job-b"/);
+    const html = page(
+      [
+        viewJob({ jobId: "q", state: "queued", title: "Wait", logTail: "started 2026-10-26T05:01:22.000Z" }),
+        viewJob({
+          jobId: "b",
+          state: "blocked",
+          title: "Hold",
+          dependsOn: [{ jobId: "q", state: "queued" }],
+        }),
+        viewJob({
+          jobId: "spec-run",
+          state: "running",
+          title: "Writing the spec",
+          steps: [{ id: "spec", phase: "current" }],
+        }),
+      ],
+      "repos",
+    );
+    assert.match(html, /id="job-q"/);
+    assert.match(html, /id="job-b"/);
+    assert.match(html, /depends on/);
+    assert.match(html, /href="\/jobs\/q"/);
+    assert.match(html, /id="job-spec-run"/);
     assert.match(html, /2026-10-26T05:01:22\.000Z/);
     assert.match(html, /toLocaleTimeString\(\)/);
     assert.match(html, /toLocaleString\(\)/);
@@ -379,12 +373,10 @@ describe("serve pages", () => {
         finishedAt: `2026-10-2${index}T00:00:00.000Z`,
       }),
     );
-    const html = page(jobs);
+    const html = page(jobs, "history");
     assert.doesNotMatch(html, /id="graph-panel"/);
     assert.doesNotMatch(html, /Show more/);
     for (const index of jobs.keys()) assert.match(html, new RegExp(`id="job-done-${index}"`));
-    assert.match(html, /id="col-done"/);
-    assert.doesNotMatch(html, /id="col-merged"/);
   });
 
   it("links findings for an investigation and keeps a failed job's retry", () => {
@@ -412,15 +404,16 @@ describe("serve pages", () => {
       launchError: "builder exploded",
       logTail: "verify: expected 1 received 0",
     });
-    const html = page([probe, feature]);
-    assert.match(html, /href="\/jobs\/probe-1\/findings"/);
-    assert.match(html, />Findings</);
-    assert.match(html, /Which runner\?/);
-    assert.doesNotMatch(html, /href="\/jobs\/feat-1\/findings"/);
-    assert.match(html, /action="\/api\/jobs\/feat-1\/retry"/);
-    assert.match(html, /builder exploded/);
-    assert.match(html, /Failed: builder exploded/);
-    assert.match(html, /\(2\) Kiln/);
+    const inbox = page([probe, feature]);
+    const hand = page([probe, feature], "hand");
+    assert.match(inbox, /href="\/jobs\/probe-1\/findings"/);
+    assert.match(inbox, />Findings</);
+    assert.match(inbox, /Which runner\?/);
+    assert.doesNotMatch(inbox, /href="\/jobs\/feat-1\/findings"/);
+    assert.match(hand, /action="\/api\/jobs\/feat-1\/retry"/);
+    assert.match(hand, /builder exploded/);
+    assert.match(hand, /Failed: builder exploded/);
+    assert.match(inbox, /\(1\) Kiln/);
   });
 });
 
@@ -458,7 +451,7 @@ describe("kiln serve", () => {
       const homePage = await text(server.url);
       assert.equal(homePage.status, 200);
       assert.match(homePage.body, /kiln-serve/);
-      assert.match(homePage.body, /Needs human/);
+      assert.match(homePage.body, /Needs a hand/);
       assert.match(homePage.body, /\(0\) Kiln/);
       assert.doesNotMatch(homePage.body, new RegExp(TOKEN));
 
@@ -545,19 +538,22 @@ describe("kiln serve", () => {
 
       const board = await text(`${server.url}/board`);
       assert.equal(board.status, 200);
-      assert.match(board.body, /Needs human/);
-      assert.match(board.body, /Queued/);
+      assert.match(board.body, /Needs a hand/);
+      assert.match(board.body, /Inbox/);
       assert.match(board.body, /id="drawer"/);
-      const queuedCol = board.body.slice(board.body.indexOf('id="col-queued"'), board.body.indexOf('id="col-spec"'));
-      assert.match(queuedCol, new RegExp(`id="job-${downstream}"`));
-      const specCol = board.body.slice(board.body.indexOf('id="col-spec"'), board.body.indexOf('id="col-build"'));
-      assert.doesNotMatch(specCol, new RegExp(`id="job-${downstream}"`));
       assert.doesNotMatch(board.body, /id="graph-panel"/);
-      assert.match(board.body, new RegExp(`id="job-${downstream}"`));
-      assert.match(board.body, new RegExp(`href="#job-${upstream}"`));
-      assert.match(board.body, /List the weekly summary/);
-      assert.match(board.body, /depends on/);
-      assert.match(board.body, new RegExp(`Waiting on ${upstream} \\(needs-human\\)`));
+      const repos = await text(`${server.url}/repos`);
+      assert.equal(repos.status, 200);
+      assert.match(repos.body, new RegExp(`id="job-${downstream}"`));
+      assert.match(repos.body, new RegExp(`href="/jobs/${upstream}"`));
+      assert.match(repos.body, /List the weekly summary/);
+      assert.match(repos.body, /depends on/);
+      assert.match(repos.body, new RegExp(`Waiting on ${upstream} \\(needs-human\\)`));
+      const detail = await text(`${server.url}/jobs/${upstream}`);
+      assert.equal(detail.status, 200);
+      assert.match(detail.body, /Overview/);
+      assert.match(detail.body, /Timeline/);
+      assert.match(detail.body, /Show the weekly summary/);
 
       const listed = JSON.parse((await text(`${server.url}/api/jobs`)).body) as {
         jobs: { jobId: string; state: string; dependsOn: { jobId: string; state: string }[]; stack: boolean }[];
@@ -652,7 +648,7 @@ describe("kiln serve", () => {
 
     const server = await startServe(["--port", "0", "--no-tick"], { cwd, home });
     try {
-      const board = await text(`${server.url}/board`);
+      const board = await text(`${server.url}/repos`);
       assert.equal(board.status, 200);
       assert.match(board.body, new RegExp(`href="/jobs/${id}/findings"`));
       assert.doesNotMatch(board.body, new RegExp(`href="/jobs/${featureId}/findings"`));
@@ -718,20 +714,18 @@ describe("kiln serve", () => {
         const html = await text(`${server.url}/`);
         assert.equal(html.status, 200);
         assert.match(html.body, /\(0\) Kiln/);
-        assert.match(html.body, /verify: expected 1 received 0/);
-        assert.match(html.body, new RegExp(`action="/api/jobs/${id}/retry"`));
-        const specStart = html.body.indexOf('id="col-spec"');
-        const specEnd = html.body.indexOf('<section class="col', specStart + 1);
-        const spec = html.body.slice(specStart, specEnd === -1 ? undefined : specEnd);
-        assert.match(spec, new RegExp(`id="job-${id}"`));
-        assert.match(spec, /class="card retrying"/);
-        assert.match(spec, /retrying <time /);
-        assert.match(spec, /attempt 1\/3 · failed/);
-        assert.doesNotMatch(spec, /your call/);
-        const humanStart = html.body.indexOf('id="col-needs-human"');
-        const humanEnd = html.body.indexOf("</main>");
-        const human = html.body.slice(humanStart, humanEnd === -1 ? undefined : humanEnd);
-        assert.doesNotMatch(human, new RegExp(`id="job-${id}"`));
+        const repos = await text(`${server.url}/repos`);
+        assert.match(repos.body, /verify: expected 1 received 0/);
+        assert.match(repos.body, new RegExp(`action="/api/jobs/${id}/retry"`));
+        assert.match(repos.body, new RegExp(`id="job-${id}"`));
+        assert.match(repos.body, /class="job retrying"/);
+        assert.match(repos.body, /retrying <time /);
+        assert.match(repos.body, /attempt 1\/3 · failed/);
+        const rowStart = repos.body.indexOf(`id="job-${id}"`);
+        const row = repos.body.slice(rowStart, repos.body.indexOf("</article>", rowStart));
+        assert.doesNotMatch(row, /your call/);
+        const hand = await text(`${server.url}/hand`);
+        assert.doesNotMatch(hand.body, new RegExp(`id="job-${id}"`));
 
         const denied = await text(`${server.url}/api/jobs/${id}/retry`, {
           method: "POST",

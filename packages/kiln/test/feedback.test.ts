@@ -603,23 +603,22 @@ describe("pull request feedback", { concurrency: 1 }, () => {
       ],
     });
     const open = readStatus(box.config, box.jobId, box.host);
-    const openHtml = renderConsole("", buildAttention(open.jobs));
+    const openHtml = renderConsole("", buildAttention(open.jobs), { csrf: "", repos: [], workflows: [], section: "repos" });
     assert.match(openHtml, /CI failed · pushed/);
     assert.match(openHtml, /changes requested · fixed/);
     assert.match(openHtml, /https:\/\/example\.com\/sample\/widget\/pull\/4\/checks\/sample-check/);
-    assert.match(openHtml, /data-stage="pr-review"/);
-    assert.match(openHtml, /R1 CI\.md/);
+    assert.match(openHtml, /data-state="in-review"/);
+    assert.match(openHtml, /PR review/);
     assert.doesNotMatch(openHtml, /your call/);
-    assert.doesNotMatch(openHtml, /chip[^>]*>PR review</);
 
     const ledger = readFeedbackLedger(box.config.kilnDir, box.jobId);
     assert.ok(ledger && ledger !== "corrupt");
     writeFeedbackLedger(box.config.kilnDir, { ...ledger, exhausted: true });
     const closed = readStatus(box.config, box.jobId, box.host);
-    const closedHtml = renderConsole("", buildAttention(closed.jobs));
+    const closedHtml = renderConsole("", buildAttention(closed.jobs), { csrf: "", repos: [], workflows: [], section: "hand" });
     assert.equal(closed.jobs[0]?.state, "needs-human");
     assert.match(closedHtml, /your call/);
-    assert.match(closedHtml, /data-stage="needs-human"/);
-    assert.match(closedHtml, /feedback-exhausted/);
+    assert.match(closedHtml, /data-state="needs-human"/);
+    assert.match(closedHtml, /Fix round cap/);
   });
 });

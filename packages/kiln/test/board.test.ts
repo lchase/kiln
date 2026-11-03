@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { readBoardFiles, readReviewRounds, stageOf, stagesFor, type StageJob } from "../src/board.js";
+import { readBoardFiles, readReviewRounds } from "../src/board.js";
 
 const keep: string[] = [];
 
@@ -11,112 +11,8 @@ after(() => {
   for (const dir of keep) rmSync(dir, { recursive: true, force: true });
 });
 
-function stage(overrides: Partial<StageJob> & Pick<StageJob, "state">): StageJob {
-  return { workflow: "feature", steps: [], ...overrides };
-}
-
-describe("board stages", () => {
-  it("maps kiln states and the current yak step onto factory columns", () => {
-    assert.equal(stageOf(stage({ state: "needs-human" })), "needs-human");
-    assert.equal(stageOf(stage({ state: "failed" })), "needs-human");
-    assert.equal(
-      stageOf(
-        stage({
-          state: "failed",
-          steps: [
-            { id: "spec", phase: "done" },
-            { id: "build", phase: "current" },
-          ],
-          attemptCount: 1,
-          maxAttempts: 3,
-          lastFailureReason: "stalled",
-          nextRetryAt: "2026-10-26T23:35:46.000Z",
-        }),
-      ),
-      "build",
-    );
-    assert.equal(
-      stageOf(
-        stage({
-          state: "failed",
-          steps: [{ id: "security", phase: "failed" }],
-          attemptCount: 2,
-          maxAttempts: 3,
-          lastFailureReason: "crashed",
-          nextRetryAt: "2026-10-26T23:35:46.000Z",
-        }),
-      ),
-      "review",
-    );
-    assert.equal(
-      stageOf(
-        stage({
-          state: "failed",
-          steps: [{ id: "build", phase: "current" }],
-          attemptCount: 3,
-          maxAttempts: 3,
-          lastFailureReason: "stalled",
-          nextRetryAt: "2026-10-26T23:35:46.000Z",
-        }),
-      ),
-      "needs-human",
-    );
-    assert.equal(stageOf(stage({ state: "dead" })), "needs-human");
-    assert.equal(stageOf(stage({ state: "invalid" })), "needs-human");
-    assert.equal(stageOf(stage({ state: "rejected" })), "needs-human");
-    assert.equal(stageOf(stage({ state: "in-review" })), "pr-review");
-    assert.equal(stageOf(stage({ state: "done" })), "done");
-    assert.equal(stageOf(stage({ state: "done", prUrl: "https://example.com/pull/9" })), "merged");
-    assert.equal(stageOf(stage({ state: "done", prNumber: 9 })), "merged");
-    assert.equal(stageOf(stage({ state: "queued" })), "queued");
-    assert.equal(stageOf(stage({ state: "blocked" })), "queued");
-    assert.equal(stageOf(stage({ state: "queued", workflow: "investigation" })), "queued");
-    assert.equal(stageOf(stage({ state: "blocked", workflow: "investigation" })), "queued");
-    assert.equal(stageOf(stage({ state: "running", steps: [{ id: "spec", phase: "current" }] })), "spec");
-    assert.equal(
-      stageOf(stage({ state: "running", workflow: "investigation", steps: [{ id: "explore", phase: "current" }] })),
-      "explore",
-    );
-    assert.equal(
-      stageOf(stage({ state: "running", steps: [{ id: "spec", phase: "done" }, { id: "build", phase: "current" }] })),
-      "build",
-    );
-    assert.equal(
-      stageOf(stage({ state: "running", steps: [{ id: "security", phase: "current" }] })),
-      "review",
-    );
-    assert.equal(stageOf(stage({ state: "running", steps: [{ id: "approve", phase: "current" }] })), "needs-human");
-    assert.equal(stageOf(stage({ state: "approved" })), "land");
-    assert.equal(
-      stageOf(stage({ state: "approved", steps: [{ id: "build", phase: "current" }] })),
-      "build",
-    );
-
-    const empty = stagesFor([]).map((item) => item.id);
-    assert.deepEqual(empty, ["queued", "spec", "build", "review", "approve", "land", "pr-review", "done", "needs-human"]);
-    const probe = stagesFor([stage({ state: "queued", workflow: "investigation" })]).map((item) => item.id);
-    assert.equal(probe[0], "queued");
-    assert.ok(probe.includes("explore"));
-    assert.ok(!probe.includes("spec"));
-    assert.equal(probe.at(-1), "needs-human");
-    const mixed = stagesFor([
-      stage({ state: "queued", workflow: "feature" }),
-      stage({ state: "queued", workflow: "investigation" }),
-    ]).map((item) => item.id);
-    assert.ok(mixed.includes("spec"));
-    assert.ok(mixed.includes("explore"));
-    assert.ok(mixed.includes("done"));
-    assert.ok(!mixed.includes("merged"));
-    assert.ok(mixed.indexOf("needs-human") > mixed.indexOf("done"));
-    const both = stagesFor([
-      stage({ state: "done" }),
-      stage({ state: "done", prNumber: 4 }),
-    ]).map((item) => item.id);
-    assert.ok(both.indexOf("merged") > both.indexOf("done"));
-    assert.ok(both.indexOf("needs-human") > both.indexOf("merged"));
-  });
-
-  it("reads every review iteration and the drawer files", () => {
+describe("board files", () => {
+  it("reads every review iteration and the artifact texts status still attaches", () => {
     const dir = mkdtempSync(join(tmpdir(), "kiln-board-"));
     keep.push(dir);
     const artifacts = join(dir, "artifacts");
