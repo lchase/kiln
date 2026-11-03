@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/lchase/kiln/compare/kiln-v0.7.0...kiln-v0.8.0) (2026-11-03)
+
+
+### Features
+
+* add fan-out research / fan-in synthesis pattern ([261ddcb](https://github.com/lchase/kiln/commit/261ddcb71b27537353097d8a2aa2ae8f74a55a3a))
+
 ## [0.7.0](https://github.com/lchase/kiln/compare/kiln-v0.6.1...kiln-v0.7.0) (2026-11-02)
 
 
