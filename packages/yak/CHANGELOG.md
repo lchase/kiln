@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/lchase/kiln/compare/yak-v0.8.0...yak-v0.9.0) (2026-11-03)
+
+
+### Features
+
+* add fan-out research / fan-in synthesis pattern ([261ddcb](https://github.com/lchase/kiln/commit/261ddcb71b27537353097d8a2aa2ae8f74a55a3a))
+
 ## [0.8.0](https://github.com/lchase/yak/compare/yak-v0.7.1...yak-v0.8.0) (2026-10-27)
 
 
