@@ -1,0 +1,48 @@
+name: gate-release
+version: "1"
+steps:
+  - id: implement
+    agent:
+      prompt: { file: "fixtures/release-demo/prompts/implement.md" }
+      schema:
+        inline:
+          type: object
+          properties:
+            summary: { type: string }
+          required: [summary]
+      tools: [Read, Edit]
+    produces: implementResult
+
+  - id: test
+    needs: [implementResult]
+    command:
+      run: "npx vitest run --reporter=json --root fixtures/release-demo"
+      capture: [stdout, exitCode]
+      failOn: never
+    produces: testRaw
+
+  - id: parse-test
+    needs: [testRaw]
+    transform: { fn: parseTestResult }
+    produces: testResult
+
+  - id: release-gate
+    needs: [implementResult, testResult]
+    gate:
+      schema:
+        inline:
+          type: object
+          properties:
+            decision: { type: string, enum: [approve, reject] }
+            notes: { type: string }
+          required: [decision]
+      render: { file: "fixtures/release-demo/prompts/release-gate.md" }
+    produces: releaseDecision
+
+  - id: release
+    needs: [releaseDecision]
+    skipIf: "releaseDecision.decision != 'approve'"
+    command:
+      run: "npm --prefix fixtures/release-demo version patch --no-git-tag-version"
+      capture: [stdout, stderr, exitCode]
+    produces: releaseResult

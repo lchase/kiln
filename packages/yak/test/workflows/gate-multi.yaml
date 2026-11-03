@@ -1,0 +1,26 @@
+name: gate-multi
+version: "1"
+steps:
+  - id: approve-a
+    gate:
+      schema:
+        inline:
+          type: object
+          properties:
+            decision: { type: string, enum: [approve, reject] }
+            notes: { type: string }
+          required: [decision]
+      render: { inline: "Approve A?" }
+    produces: decision-a
+
+  - id: approve-b
+    gate:
+      schema:
+        inline:
+          type: object
+          properties:
+            decision: { type: string, enum: [approve, reject] }
+            notes: { type: string }
+          required: [decision]
+      render: { inline: "Approve B?" }
+    produces: decision-b

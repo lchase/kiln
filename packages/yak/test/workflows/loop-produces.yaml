@@ -1,0 +1,30 @@
+name: loop-produces
+version: "1"
+steps:
+  - id: fix-until-green
+    produces: deliverable
+    loop:
+      until: "testresult.exitCode == 0"
+      budget:
+        maxIterations: 5
+      body:
+        - id: implement
+          command: { run: "true" }
+          produces: code
+
+        - id: test
+          needs: [code]
+          command:
+            run: >
+              n=$(cat counter 2>/dev/null || echo 0);
+              n=$((n + 1));
+              echo $n > counter;
+              if [ $n -ge 3 ]; then exit 0; else exit 1; fi
+            capture: [exitCode]
+            failOn: never
+          produces: testresult
+
+  - id: approve
+    needs: [deliverable]
+    command: { run: "true" }
+    produces: approved

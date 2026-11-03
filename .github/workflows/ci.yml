@@ -36,5 +36,7 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # `npm test` builds @lchase/yak first. Kiln tests read that bundle,
+      # and the workspace package has no dist until it is built.
       - name: Test
         run: npm test

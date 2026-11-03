@@ -1,0 +1,11 @@
+node_modules/
+dist/
+docs-site/build/
+docs-site/.docusaurus/
+.runs/
+.scratch/
+.yak/cache/
+.yak/worktrees/
+*.log
+.DS_Store
+.env

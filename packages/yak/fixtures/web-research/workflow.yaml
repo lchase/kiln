@@ -1,0 +1,39 @@
+name: web-research
+version: "1"
+steps:
+  - id: topics
+    transform: { fn: researchTopics }
+    produces: topics
+
+  - id: research
+    needs: [topics]
+    map:
+      over: topics
+      concurrency: 3
+      step:
+        id: research-one
+        needs: [topics]
+        agent:
+          prompt:
+            inline: >
+              Research this topic using WebSearch/WebFetch for current,
+              real information — don't rely on memory alone:
+              {{topics.topic}}
+
+              Summarize what you find in 2-4 sentences, and list every
+              URL you used as a source.
+          schema:
+            inline:
+              type: object
+              properties:
+                topic: { type: string }
+                summary: { type: string }
+                sourceUrls: { type: array, items: { type: string } }
+              required: [topic, summary, sourceUrls]
+          tools: [WebSearch, WebFetch]
+    produces: findings
+
+  - id: report
+    needs: [findings]
+    transform: { fn: renderResearchReport }
+    produces: report

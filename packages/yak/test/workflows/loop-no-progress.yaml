@@ -1,0 +1,20 @@
+name: loop-no-progress
+version: "1"
+steps:
+  - id: fix-until-green
+    loop:
+      until: "testresult.exitCode == 0"
+      budget:
+        maxIterations: 5
+        noProgress:
+          signal: "testresult.exitCode"
+          rounds: 2
+      body:
+        - id: implement
+          command: { run: "true" }
+          produces: code
+
+        - id: test
+          needs: [code]
+          command: { run: "exit 1", capture: [exitCode], failOn: never }
+          produces: testresult

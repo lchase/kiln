@@ -1,0 +1,23 @@
+name: loop-on-exhausted-fail
+version: "1"
+steps:
+  - id: draft-until-perfect
+    loop:
+      # Deliberately unsatisfiable — this loop is a minimal vehicle for
+      # demonstrating onExhausted, not a real convergence check, so
+      # exhaustion happens on schedule regardless of what the model writes.
+      until: "false"
+      budget:
+        maxIterations: 1
+      onExhausted: fail
+      body:
+        - id: draft
+          agent:
+            prompt: { inline: "Write one short sentence describing what mergesort does." }
+            schema:
+              inline:
+                type: object
+                properties:
+                  sentence: { type: string }
+                required: [sentence]
+          produces: draft

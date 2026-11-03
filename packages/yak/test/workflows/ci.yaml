@@ -1,0 +1,21 @@
+name: ci
+version: "1"
+steps:
+  - id: install
+    command: { run: "echo installing" }
+    produces: install-result
+
+  - id: lint
+    needs: [install-result]
+    command: { run: "sleep 0.2 && echo linted", capture: [stdout, exitCode], failOn: never }
+    produces: lint-result
+
+  - id: test
+    needs: [install-result]
+    command: { run: "sleep 0.2 && echo tested", capture: [stdout, exitCode], failOn: never }
+    produces: test-result
+
+  - id: summarize
+    needs: [lint-result, test-result]
+    transform: { fn: summarizeChecks }
+    produces: summary

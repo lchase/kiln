@@ -1,0 +1,55 @@
+{
+  "name": "@lchase/yak",
+  "version": "0.8.0",
+  "description": "An agentic workflow engine",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "yak": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lchase/yak.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsup src/cli/index.ts --format esm --target node22 --clean",
+    "dev": "tsx src/cli/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.228",
+    "@anthropic-ai/sdk": "^0.116.0",
+    "@clack/prompts": "^1.7.0",
+    "ajv": "^8.20.0",
+    "commander": "^12.1.0",
+    "ink": "^7.1.1",
+    "jexl": "^2.3.0",
+    "p-limit": "^6.1.0",
+    "picocolors": "^1.1.1",
+    "react": "^19.2.8",
+    "yaml": "^2.5.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/jexl": "^2.3.4",
+    "@types/node": "^22.7.4",
+    "@types/react": "^19.2.18",
+    "tsup": "^8.3.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  }
+}

@@ -1,0 +1,16 @@
+name: map-success
+version: "1"
+steps:
+  - id: items
+    transform: { fn: threeItems }
+    produces: items
+
+  - id: review
+    needs: [items]
+    map:
+      over: items
+      concurrency: 3
+      step:
+        id: review-one
+        command: { run: "echo item=$MAP_ITEM index=$MAP_ITEM_INDEX", capture: [stdout, exitCode] }
+    produces: findings

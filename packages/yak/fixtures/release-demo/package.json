@@ -1,0 +1,14 @@
+{
+  "name": "release-demo-fixture",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Tiny unimplemented function, for yak's human-gated release pattern",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1"
+  }
+}

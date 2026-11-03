@@ -1,0 +1,46 @@
+name: m2-acceptance-todo-app
+version: "1"
+steps:
+  - id: triage
+    agent:
+      prompt:
+        inline: >
+          Read fixtures/todo-app/src/todoList.ts and
+          fixtures/todo-app/test/todoList.test.ts. The test is failing.
+          Find the bug and summarize it.
+      schema:
+        inline:
+          type: object
+          properties:
+            summary: { type: string }
+            confidence: { type: number }
+          required: [summary, confidence]
+      tools: [Read]
+    produces: triage
+
+  - id: plan
+    agent:
+      prompt: { file: "fixtures/todo-app/prompts/plan.md" }
+      schema:
+        inline:
+          type: object
+          properties:
+            summary: { type: string }
+            steps: { type: array, items: { type: string } }
+          required: [summary, steps]
+      context: { inherit: [triage] }
+      tools: [Read, Edit]
+    produces: plan
+
+  - id: check
+    needs: [plan]
+    command:
+      run: "npx vitest run --root fixtures/todo-app"
+      capture: [stdout, exitCode]
+      failOn: never
+    produces: check-result
+
+  - id: summarize
+    needs: [plan, check-result]
+    transform: { fn: summarizeAgentFixture }
+    produces: summary

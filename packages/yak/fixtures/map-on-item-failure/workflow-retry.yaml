@@ -1,0 +1,38 @@
+name: map-on-item-failure-retry
+version: "1"
+steps:
+  - id: checks
+    transform: { fn: batchChecks }
+    produces: checks
+
+  - id: run-checks
+    needs: [checks]
+    map:
+      over: checks
+      concurrency: 3
+      onItemFailure: retry
+      step:
+        id: run-one-check
+        # Same deliberately-unsatisfiable item 2 as workflow-fail.yaml —
+        # only onItemFailure differs, so the contrast is apples to apples.
+        command:
+          run: 'echo "checking item $MAP_ITEM_INDEX: $MAP_ITEM"; [ "$MAP_ITEM_INDEX" != "2" ]'
+          capture: [stdout, stderr, exitCode]
+    produces: checkResults
+
+  - id: summarize
+    needs: [checkResults]
+    agent:
+      prompt:
+        inline: >
+          Here are the results of 3 automated checks, one per item, as a
+          JSON array (a null entry means that check never produced a
+          result): {{checkResults}}. Write one short sentence summarizing
+          how many passed.
+      schema:
+        inline:
+          type: object
+          properties:
+            summary: { type: string }
+          required: [summary]
+    produces: summary
