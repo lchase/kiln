@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/lchase/kiln/compare/kiln-v0.8.0...kiln-v0.9.0) (2026-11-03)
+
+
+### Features
+
+* append-only event log, intervention ledger, and PR evidence ([#38](https://github.com/lchase/kiln/issues/38)) ([a8e51eb](https://github.com/lchase/kiln/commit/a8e51ebe2f563730b9e1a25931f730442398d4e1))
+
 ## [0.8.0](https://github.com/lchase/kiln/compare/kiln-v0.7.0...kiln-v0.8.0) (2026-11-03)
 
 
