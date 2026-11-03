@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/lchase/kiln/compare/yak-v0.8.0...yak-v0.9.0) (2026-11-03)
+
+
+### Features
+
+* add loop breakers, caps, cost, pause, and revise with note ([#43](https://github.com/lchase/kiln/issues/43)) ([d992512](https://github.com/lchase/kiln/commit/d9925129a722256d705029770f5399e477313f13))
+
 ## [0.8.0](https://github.com/lchase/yak/compare/yak-v0.7.1...yak-v0.8.0) (2026-10-27)
 
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.10.0](https://github.com/lchase/kiln/compare/kiln-v0.9.0...kiln-v0.10.0) (2026-11-03)
+
+
+### Features
+
+* add loop breakers, caps, cost, pause, and revise with note ([#43](https://github.com/lchase/kiln/issues/43)) ([d992512](https://github.com/lchase/kiln/commit/d9925129a722256d705029770f5399e477313f13))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @lchase/yak bumped from 0.8.0 to 0.9.0
+
 ## [0.9.0](https://github.com/lchase/kiln/compare/kiln-v0.8.0...kiln-v0.9.0) (2026-11-03)
 
 
