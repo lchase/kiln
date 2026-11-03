@@ -1,20 +1,14 @@
 name: Publish yak to npm
 
-# Not dispatched by release-please. Publishing @lchase/yak from this
-# repository fails until the npm trusted publisher for that package is
-# changed to repo lchase/kiln and workflow publish-yak.yml. workflow_dispatch
-# only, and the job runs only when confirm is exactly "publish".
+# Dispatched by release-please.yml right after it cuts a yak release (and
+# available manually for recovery). Not triggered by the release tag
+# itself — release-please tags with GITHUB_TOKEN, which cannot trigger
+# workflows, and the tag is `yak-v*` anyway.
 on:
   workflow_dispatch:
-    inputs:
-      confirm:
-        description: 'Type publish to publish @lchase/yak'
-        required: true
-        type: string
 
 jobs:
   publish:
-    if: ${{ github.event.inputs.confirm == 'publish' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

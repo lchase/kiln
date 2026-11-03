@@ -7,7 +7,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  actions: write # dispatch publish.yml when a release is cut
+  actions: write # dispatch publish.yml / publish-yak.yml when a release is cut
 
 jobs:
   release-please:
@@ -23,9 +23,18 @@ jobs:
       # not trigger other workflows — so the publish job never fired on its
       # own (and the tag is `kiln-v*`, not the `v*` publish.yml used to watch).
       # Dispatch it explicitly instead, only when a kiln release was actually
-      # cut. @lchase/yak is not dispatched; publish-yak.yml stays manual.
+      # cut.
       - name: Publish the new kiln release to npm
         if: ${{ steps.release.outputs['packages/kiln--release_created'] == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run publish.yml --repo ${{ github.repository }} --ref main
+
+      # Same constraint for yak: the tag is `yak-v*`, created with
+      # GITHUB_TOKEN, so it cannot start publish-yak.yml. Dispatch that
+      # workflow only when a yak release was actually cut.
+      - name: Publish the new yak release to npm
+        if: ${{ steps.release.outputs['packages/yak--release_created'] == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run publish-yak.yml --repo ${{ github.repository }} --ref main
