@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { AUTH_PREFLIGHT_PREFIX } from "./auth.js";
 import { loadKilnConfig, type LoadedKilnConfig } from "./config.js";
-import { answerJob, readStatus, retryJob, runTick, startupRecovery } from "./driver.js";
+import { answerJob, readStatus, retryJob, reviseJob, runTick, startupRecovery } from "./driver.js";
 import { browse } from "./fs-browse.js";
 import { appendEvent, eventsForJob } from "./events.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
@@ -15,6 +15,7 @@ import { packageRoot } from "./paths.js";
 import { SANDBOX_PREFLIGHT_PREFIX } from "./sandbox.js";
 import type { StatusJobView } from "./report.js";
 import { renderConsole, type ServePageOptions, renderMessagePage, renderTextPage } from "./serve-page.js";
+import { isPaused, pauseFactory, resumeFactory, spendFor } from "./rails.js";
 import { readSettings, saveSettings } from "./settings.js";
 import { listWorkflowNames } from "./workflow.js";
 
@@ -200,8 +201,18 @@ async function handle(
       await createJob(req, res, state, raw);
       return;
     }
-    const action = /^\/api\/jobs\/([^/]+)\/(approve|reject|retry)$/.exec(path);
-    if (!action?.[1] || (action[2] !== "approve" && action[2] !== "reject" && action[2] !== "retry")) {
+    if (path === "/api/pause" || path === "/api/resume") {
+      const pausing = path === "/api/pause";
+      const changed = pausing ? pauseFactory(config.kilnDir) : resumeFactory(config.kilnDir);
+      if (wantsJson(req)) {
+        sendJson(res, 200, { ok: true, paused: pausing, changed }, secrets);
+        return;
+      }
+      redirect(res, redirectTarget(req));
+      return;
+    }
+    const action = /^\/api\/jobs\/([^/]+)\/(approve|reject|retry|revise)$/.exec(path);
+    if (!action?.[1] || (action[2] !== "approve" && action[2] !== "reject" && action[2] !== "retry" && action[2] !== "revise")) {
       sendJson(res, 404, { error: "Not found." }, secrets);
       return;
     }
@@ -212,6 +223,14 @@ async function handle(
     }
     if (action[2] === "retry") {
       await retry(req, res, config, css, secrets, jobId);
+      return;
+    }
+    if (action[2] === "revise") {
+      await revise(req, res, config, css, secrets, jobId, raw);
+      return;
+    }
+    if (action[2] !== "approve" && action[2] !== "reject") {
+      sendJson(res, 404, { error: "Not found." }, secrets);
       return;
     }
     await answer(req, res, config, css, secrets, jobId, action[2]);
@@ -308,6 +327,52 @@ async function answer(
     return;
   }
   redirect(res, redirectTarget(req));
+}
+
+async function revise(
+  req: IncomingMessage,
+  res: ServerResponse,
+  config: LoadedKilnConfig,
+  css: string,
+  secrets: string[],
+  jobId: string,
+  raw: string,
+): Promise<void> {
+  const note = noteFromBody(req, raw);
+  if (!note) {
+    const message = "A revise note is required.";
+    if (wantsJson(req)) sendJson(res, 400, { error: message }, secrets);
+    else sendHtml(res, 400, renderMessagePage(css, "Could not revise", message), secrets);
+    return;
+  }
+  try {
+    reviseJob(config, jobId, note);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = message.startsWith("No job ") ? 404 : 409;
+    if (wantsJson(req)) sendJson(res, status, { error: message }, secrets);
+    else sendHtml(res, status, renderMessagePage(css, "Could not revise", message), secrets);
+    return;
+  }
+  const job = findJob(config, jobId);
+  if (wantsJson(req)) {
+    sendJson(res, 200, { ok: true, job }, secrets);
+    return;
+  }
+  redirect(res, redirectTarget(req));
+}
+
+function noteFromBody(req: IncomingMessage, raw: string): string | undefined {
+  const type = headerValue(req.headers["content-type"]);
+  if (type.includes("application/json")) {
+    try {
+      const parsed = JSON.parse(raw) as { note?: unknown };
+      return typeof parsed.note === "string" ? parsed.note : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return new URLSearchParams(raw).get("note") ?? undefined;
 }
 
 async function retry(
@@ -613,19 +678,25 @@ function repoList(config: LoadedKilnConfig): ServeRepo[] {
 }
 
 function pageOptions(state: LiveConfig, csrf: string): ServePageOptions {
+  const spend = spendFor(state.config.kilnDir, state.config.dailyDollarCap);
   return {
     csrf,
     repos: repoList(state.config),
     workflows: listWorkflowNames(),
+    paused: isPaused(state.config.kilnDir),
+    spend,
     ...(state.configError ? { configError: state.configError } : {}),
   };
 }
 
 function statusDocument(state: LiveConfig): unknown {
+  const spend = spendFor(state.config.kilnDir, state.config.dailyDollarCap);
   return {
     ...readStatus(state.config),
     repos: repoList(state.config),
     configError: state.configError ?? null,
+    paused: isPaused(state.config.kilnDir),
+    spend: { day: spend.day, usd: spend.usd, cap: spend.cap },
   };
 }
 

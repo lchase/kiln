@@ -50,10 +50,12 @@ export async function callAgentOnce(
     signal: new AbortController().signal,
   })
 
+  const usd = response.usd
   await appendJournalEvent(ctx.runDir, ctx.runId, {
     t: 'budget.consumed',
     stepId: step.id,
     tokens: response.tokens.input + response.tokens.output,
+    ...(typeof usd === 'number' && Number.isFinite(usd) && usd >= 0 ? { usd } : {}),
   })
 
   return { output: response.output, sessionId: response.sessionId }

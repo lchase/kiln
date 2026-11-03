@@ -90,6 +90,8 @@ export interface ObservedRun {
    * That run is not an automatic retry.
    */
   sandboxError?: string;
+  /** Tokens and dollars from yak `budget.consumed`. Null when the journal reported none. */
+  cost?: { tokens: number | null; usd: number | null };
 }
 
 export interface ObservedJob {
@@ -158,8 +160,13 @@ export interface ObservedJob {
   lastFailureReason?: FailureReason;
   /** ISO time of the next automatic launch. Omitted once attempts are exhausted. */
   nextRetryAt?: string;
-  /** `attemptCount` has reached `maxAttempts` and no newer run is in flight. */
+  /** `attemptCount` has reached the attempt cap and no newer run is in flight. */
   retriesExhausted?: boolean;
+  /**
+   * Fingerprint breaker or attempt cap. Needs human, and not an automatic retry.
+   * A later manual retry clears it. Attempt cap also sets `retriesExhausted`.
+   */
+  stopReason?: "fingerprint" | "attempt-cap";
   /** The selected run is already in the attempt ledger. A newer launch may supersede it. */
   runRetired?: boolean;
   /** The attempt ledger could not be parsed. Automatic retry stays off. */
@@ -183,6 +190,8 @@ export interface ObservedJob {
   feedbackPlan?: FeedbackPlan;
   /** Agent steps for this job run inside yak's Docker sandbox. */
   sandboxed?: boolean;
+  /** Attempt cap that applies to this job (repo override or global). */
+  attemptCap?: number;
   /** The job file could not be used. Decide skips it. */
   error?: string;
 }
@@ -195,6 +204,12 @@ export interface Observation {
   jobs: ObservedJob[];
   /** Breadcrumbs whose journal has since appeared. Apply deletes the files. */
   breadcrumbsToClear: { path: string }[];
+  /** `kiln pause`. New runs do not start. In-flight runs are left alone. */
+  paused?: boolean;
+  /** Today's recorded dollars have reached `dailyDollarCap`. */
+  spendBlocked?: boolean;
+  /** Why a queued or waiting job is not starting. */
+  holdDetail?: string;
 }
 
 export type Action =
@@ -212,11 +227,32 @@ export function inFlightCount(observation: Observation): number {
 
 function inFlight(job: ObservedJob, observation: Observation): boolean {
   if (job.error || job.feedbackExhausted || job.feedbackAmbiguous) return false;
+  // A cap or fingerprint stop is waiting on a person. It does not hold a slot.
+  if (job.retriesExhausted || job.stopReason) return false;
   const state = jobState(job, observation);
   return state === "running" || state === "needs-human" || state === "approved";
 }
 
 /**
+ * The only job-state transition. First match wins.
+ *
+ * | when | state |
+ * | fix awaiting publish | in-review |
+ * | launching, and the selected run is absent, retired, or a fix | running |
+ * | feedback exhausted or ambiguous, landed, pull request merged | done |
+ * | feedback exhausted or ambiguous, landed, pull request closed | failed |
+ * | feedback exhausted or ambiguous, landed, pull request still open | needs-human |
+ * | selected run not retired | that run: landed, rejected, failed, dead, needs-human, approved, running |
+ * | retired run that landed | done, in-review, or failed from the pull request |
+ * | retired run whose gate rejected | rejected |
+ * | retired suspended run | needs-human |
+ * | attempt cap or fingerprint breaker | needs-human |
+ * | retired, failed, or dead run | failed |
+ * | launching breadcrumb | running |
+ * | dependencies unmet | blocked |
+ * | launch error | failed |
+ * | otherwise | queued |
+ *
  * `deliver=local`: `done` is a finished run whose gate says approve.
  * `deliver=pr`: that landed run is `in-review` while the pull request is open
  * (and in the gap before tick opens it) and `done` only once it has merged.
@@ -224,6 +260,7 @@ function inFlight(job: ObservedJob, observation: Observation): boolean {
  * a slot and does not unblock dependents. An ok run with no readable
  * decision is `failed`, so a missing artifact cannot unblock the next job.
  * An investigation is `done` on approve and never `in-review`.
+ * A cap or fingerprint stop is `needs-human` and does not hold a slot.
  */
 export function jobState(job: ObservedJob, observation: Observation): JobState {
   if (job.fixAwaitingPublish) return "in-review";
@@ -237,7 +274,7 @@ export function jobState(job: ObservedJob, observation: Observation): JobState {
   if (job.run && isLanded(job)) return landedState(job);
   if (job.run?.status === "ok" && job.run.gateDecision === "reject") return "rejected";
   if (job.run?.status === "suspended") return "needs-human";
-  if (job.retriesExhausted) return "dead";
+  if ((job.retriesExhausted || job.stopReason) && !job.launching) return "needs-human";
   if (job.runRetired || job.run?.status === "failed" || job.run?.status === "dead") return "failed";
   if (job.launching) return "running";
   if (!dependenciesMet(job, observation)) return "blocked";
@@ -322,7 +359,7 @@ function canStartFix(job: ObservedJob): boolean {
 
 /** A recorded transient failure whose backoff has elapsed. One retry per tick, ahead of a new job. */
 function canRetry(job: ObservedJob, observation: Observation, now: Date): boolean {
-  if (job.error || job.launching || job.retriesExhausted || job.ledgerError) return false;
+  if (job.error || job.launching || job.retriesExhausted || job.stopReason || job.ledgerError) return false;
   if (job.run && !job.runRetired) return false;
   if (!job.nextRetryAt) return false;
   const due = Date.parse(job.nextRetryAt);
@@ -358,6 +395,8 @@ export function decide(observation: Observation, now = new Date()): Action[] {
   }
 
   if (inFlightCount(observation) >= observation.maxConcurrent) return actions;
+  // Pause and the daily dollar cap stop new runs. In-flight work is not touched.
+  if (observation.paused || observation.spendBlocked) return actions;
 
   const retry = observation.jobs.find((job) => canRetry(job, observation, now));
   if (retry) {

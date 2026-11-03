@@ -426,10 +426,10 @@ describe("run reliability", () => {
     journal(checkout, runs[2]!, [{ t: "run.started", at: "2020-01-01T00:00:02.000Z", runId: runs[2], tag: `kiln:${id}`, pid: deadPid }]);
     const thirdNow = new Date(secondNow.getTime() + 20_000);
     const third = runTick(config, undefined, { startup: false, now: thirdNow });
-    assert.match(third, new RegExp(`crash ${id}  crashed  attempt 3  dead`));
+    assert.match(third, new RegExp(`crash ${id}  crashed  attempt 3  needs human`));
     assert.doesNotMatch(third, new RegExp(`retry ${id}`));
     const dead = readStatus(config, id).jobs[0];
-    assert.equal(dead?.state, "dead");
+    assert.equal(dead?.state, "needs-human");
     assert.equal(dead?.attemptCount, 3);
     assert.equal(dead?.lastFailureReason, "crashed");
     assert.equal(dead?.nextRetryAt, undefined);
@@ -591,7 +591,7 @@ describe("run reliability", () => {
       })}\n`,
     );
     const before = readStatus(config, id).jobs[0];
-    assert.equal(before?.state, "dead");
+    assert.equal(before?.state, "needs-human");
     assert.equal(before?.attemptCount, 3);
     assert.equal(before?.lastFailureReason, "crashed");
 
@@ -653,17 +653,16 @@ describe("run reliability", () => {
       { t: "run.finished", at: "2020-01-01T00:00:03.000Z", status: "failed", runId },
     ]);
     const output = runTick(config, undefined, { startup: false, now: new Date("2026-05-01T00:00:00.000Z") });
+    assert.match(output, new RegExp(`fail ${id}  failed  attempt 1`));
+    assert.match(output, /next /);
     assert.doesNotMatch(output, new RegExp(`retry ${id}`));
-    assert.doesNotMatch(output, new RegExp(`fail ${id}`));
-    assert.equal(readAttemptLedger(config.kilnDir, id), undefined);
-    const status = readStatus(config, id);
-    const job = status.jobs[0];
+    const job = readStatus(config, id).jobs[0];
     assert.equal(job?.state, "failed");
-    assert.equal(job?.nextRetryAt, undefined);
+    assert.equal(job?.attemptCount, 1);
+    assert.ok(job?.nextRetryAt);
     assert.match(job?.sandboxError ?? "", /container never started/);
-    assert.equal(job?.attemptCount, 0);
-    const item = status.attention.needsYou.find((entry) => entry.job.jobId === id);
-    assert.match(item?.reason ?? "", /^Sandbox: docker run exited 125/);
+    const events = readEvents(config.kilnDir, { warn: () => {} }).filter((event) => event.event === "run.failed");
+    assert.equal(events[0] && events[0].event === "run.failed" ? events[0].properties.class : undefined, "transient");
   });
 
   it("clears a scheduled retry when the current run failed in the sandbox", () => {

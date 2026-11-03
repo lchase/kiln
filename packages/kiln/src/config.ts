@@ -5,6 +5,7 @@ import { KilnConfigError } from "./errors.js";
 import {
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_MAX_FIX_ROUNDS,
+  DEFAULT_MAX_SAME_FINGERPRINT,
   DEFAULT_STALL_TIMEOUT_MS,
   KilnConfigFileSchema,
   REPO_NAME,
@@ -33,6 +34,10 @@ export interface LoadedKilnConfig {
       prTitle?: string;
       /** Remote branch template. The config file key is `branch`. */
       branchTemplate?: string;
+      /** Overrides `maxAttempts` for jobs in this repo. */
+      maxAttempts?: number;
+      /** Overrides `maxFixRounds` for jobs in this repo. */
+      maxFixRounds?: number;
     }
   >;
   /**
@@ -49,10 +54,17 @@ export interface LoadedKilnConfig {
    * `<= 0` disables stall detection.
    */
   stallTimeoutMs: number;
-  /** Transient failures before the job is dead. Default 3. */
+  /** Transient failures before the job needs a person. Default 3. */
   maxAttempts: number;
   /** Pull request fix rounds before needs-human. Default 2. */
   maxFixRounds: number;
+  /** Identical fingerprints before Needs human. Default 3. */
+  maxSameFingerprint: number;
+  /**
+   * Recorded dollars allowed on the local calendar day.
+   * Unset means new runs are not blocked by spend.
+   */
+  dailyDollarCap?: number;
   /** Passed to `yak run --adapter`. Default `claude-code`. */
   adapter: "mock" | "claude-code";
   /** Global sandbox settings. Every field is optional; omitted mode is off. */
@@ -111,6 +123,8 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
       ...(entry.base ? { base: entry.base } : {}),
       ...(entry.prTitle ? { prTitle: entry.prTitle } : {}),
       ...(entry.branch ? { branchTemplate: entry.branch } : {}),
+      ...(entry.maxAttempts !== undefined ? { maxAttempts: entry.maxAttempts } : {}),
+      ...(entry.maxFixRounds !== undefined ? { maxFixRounds: entry.maxFixRounds } : {}),
     };
   }
 
@@ -127,6 +141,8 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
     stallTimeoutMs: parsed.data.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS,
     maxAttempts: parsed.data.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
     maxFixRounds: parsed.data.maxFixRounds ?? DEFAULT_MAX_FIX_ROUNDS,
+    maxSameFingerprint: parsed.data.maxSameFingerprint ?? DEFAULT_MAX_SAME_FINGERPRINT,
+    ...(parsed.data.dailyDollarCap !== undefined ? { dailyDollarCap: parsed.data.dailyDollarCap } : {}),
     adapter: parsed.data.adapter ?? "claude-code",
     sandbox: parsed.data.sandbox ?? {},
     workflowSandbox: workflowSandboxFrom(parsed.data.workflows),
@@ -206,6 +222,10 @@ export function addRepo(options: AddRepoOptions): string {
   if (prTitle) entry.prTitle = prTitle;
   const branchTemplate = previousString(previous, "branch");
   if (branchTemplate) entry.branch = branchTemplate;
+  const maxAttempts = previousNumber(previous, "maxAttempts");
+  if (maxAttempts !== undefined) entry.maxAttempts = maxAttempts;
+  const maxFixRounds = previousNumber(previous, "maxFixRounds");
+  if (maxFixRounds !== undefined) entry.maxFixRounds = maxFixRounds;
   repos[options.name] = entry;
   raw.repos = repos;
 
@@ -230,6 +250,16 @@ export function addRepo(options: AddRepoOptions): string {
   lines.push(`Change delivery with: ${change}`);
   lines.push(`wrote ${configPath}`);
   return `${lines.join("\n")}\n`;
+}
+
+/** Attempt cap for one repo: the repo override, otherwise the global cap. */
+export function attemptsFor(config: LoadedKilnConfig, repo: string): number {
+  return config.repos[repo]?.maxAttempts ?? config.maxAttempts;
+}
+
+/** Fix-round cap for one repo: the repo override, otherwise the global cap. */
+export function fixRoundsFor(config: LoadedKilnConfig, repo: string): number {
+  return config.repos[repo]?.maxFixRounds ?? config.maxFixRounds;
 }
 
 export function renderRepoList(config: LoadedKilnConfig): string {
@@ -319,6 +349,12 @@ function previousString(previous: unknown, key: string): string | undefined {
   if (typeof previous !== "object" || previous === null || !(key in previous)) return undefined;
   const value = (previous as Record<string, unknown>)[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function previousNumber(previous: unknown, key: string): number | undefined {
+  if (typeof previous !== "object" || previous === null || !(key in previous)) return undefined;
+  const value = (previous as Record<string, unknown>)[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function previousDeliver(previous: unknown): "local" | "pr" | undefined {

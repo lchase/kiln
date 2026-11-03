@@ -209,6 +209,7 @@ function viewJob(overrides: Partial<StatusJobView> & Pick<StatusJobView, "jobId"
     noReadableApproval: false,
     gates: [],
     canApprove: false,
+    canRevise: false,
     canReject: false,
     steps: [],
     ...overrides,
@@ -247,6 +248,7 @@ describe("serve pages", () => {
         state: "needs-human",
         title: "<script>alert(1)</script>",
         canApprove: true,
+        canRevise: true,
         canReject: true,
         gates: [
           {
@@ -303,6 +305,7 @@ describe("serve pages", () => {
         state: "needs-human",
         title: "Waiting",
         canApprove: true,
+        canRevise: true,
       }),
     ]);
     const column = (id: string) => {
@@ -757,7 +760,7 @@ describe("kiln serve", () => {
         assert.match(state, /running|needs-human|approved|done/, last);
         const cli = runCli(["retry", id], { cwd, home });
         assert.notEqual(cli.status, 0);
-        assert.match(cli.stderr, /not failed or dead/);
+        assert.match(cli.stderr, /not failed, dead, or stopped for a person/);
       } finally {
         await stop(server.child);
         await reapLaunches(cwd);

@@ -16,8 +16,10 @@ import {
 import { dirname, join, resolve, sep } from "node:path";
 import { z } from "zod";
 import { authenticationFailureLine } from "./auth.js";
-import type { LoadedKilnConfig } from "./config.js";
-import { appendEvent } from "./events.js";
+import { attemptsFor, type LoadedKilnConfig } from "./config.js";
+import { appendEvent, readEvents } from "./events.js";
+import { decideFailure, failureFingerprint, isSandboxStartFlake } from "./failure.js";
+import { fingerprintCount } from "./rails.js";
 import { jobBasename } from "./paths.js";
 import type { FailureReason, ObservedJob } from "./reconcile.js";
 import { FAILURE_REASONS } from "./reconcile.js";
@@ -59,6 +61,8 @@ export interface ReliabilityNote {
   reason: FailureReason;
   attempt: number;
   nextRetryAt?: string;
+  /** Attempt cap or fingerprint breaker. The tick line says needs human. */
+  needsHuman?: boolean;
 }
 
 export interface RecoverOptions {
@@ -128,21 +132,19 @@ export function recoverRuns(
   options: RecoverOptions,
 ): ReliabilityNote[] {
   const notes: ReliabilityNote[] = [];
+  const events = readEvents(config.kilnDir, { warn: () => {} });
   for (const job of jobs) {
     if (job.error) continue;
     const existing = readAttemptLedger(config.kilnDir, job.jobId);
     if (existing === "corrupt") continue;
-    if (job.run?.sandboxError && job.run.status !== "alive") {
-      suppressAutomaticRetry(config.kilnDir, job.jobId);
-      continue;
-    }
     const pending = pendingFailure(job, config, options);
     if (!pending) continue;
     if (pending.killPid !== undefined && !killTree(pending.killPid)) continue;
-    const recorded = recordFailure(config, job.jobId, existing, pending, options.now);
+    const recorded = recordFailure(config, job, existing, pending, options.now, events);
     if (recorded.created) {
       appendLog(job.logPath, recorded.ledger.attempts.at(-1));
       const runId = pending.runId ?? job.run?.runId;
+      const cost = job.run?.cost ?? { tokens: null, usd: null };
       appendEvent(config.kilnDir, {
         job_id: job.jobId,
         run_id: runId ?? null,
@@ -150,15 +152,31 @@ export function recoverRuns(
         properties: {
           reason: pending.reason,
           ...(pending.detail ? { detail: pending.detail } : {}),
+          class: recorded.decision.class,
+          fingerprint: recorded.decision.fingerprint,
+          tokens: cost.tokens,
+          usd: cost.usd,
           once: runId ? `run.failed:${runId}` : `run.failed:launch:${recorded.ledger.attempts.length}`,
         },
       });
+      if (recorded.decision.needsHuman) {
+        appendEvent(config.kilnDir, {
+          job_id: job.jobId,
+          run_id: runId ?? null,
+          event: "needs-human",
+          properties: {
+            reason: recorded.decision.needsHuman,
+            once: `needs-human:${recorded.decision.needsHuman}:${runId ?? recorded.ledger.attempts.length}`,
+          },
+        });
+      }
       notes.push({
         jobId: job.jobId,
         kind: kindFor(pending.reason),
         reason: pending.reason,
         attempt: recorded.ledger.attempts.length,
         ...(recorded.ledger.nextRetryAt ? { nextRetryAt: recorded.ledger.nextRetryAt } : {}),
+        ...(recorded.decision.needsHuman ? { needsHuman: true } : {}),
       });
     }
     const checkout = job.run?.checkout ?? config.repos[job.repo]?.path;
@@ -185,18 +203,6 @@ interface PendingFailure {
   detail: string;
   /** Set only when this pass must kill a live process (stall). */
   killPid?: number;
-}
-
-/** Drop a scheduled retry so a sandbox failure stays in Needs human. */
-function suppressAutomaticRetry(kilnDir: string, jobId: string): void {
-  const existing = readAttemptLedger(kilnDir, jobId);
-  if (!existing || existing === "corrupt" || !existing.nextRetryAt) return;
-  const written: AttemptLedger = {
-    jobId: existing.jobId,
-    attempts: existing.attempts,
-    ...(existing.ignoredRunIds && existing.ignoredRunIds.length > 0 ? { ignoredRunIds: existing.ignoredRunIds } : {}),
-  };
-  writeLedger(kilnDir, written);
 }
 
 function pendingFailure(job: ObservedJob, config: LoadedKilnConfig, options: RecoverOptions): PendingFailure | undefined {
@@ -300,13 +306,30 @@ function readAuthLog(logPath: string | undefined): string | undefined {
 
 function recordFailure(
   config: LoadedKilnConfig,
-  jobId: string,
+  job: ObservedJob,
   existing: AttemptLedger | undefined,
   pending: PendingFailure,
   now: Date,
-): { ledger: AttemptLedger; created: boolean } {
-  const ledger = existing ?? { jobId, attempts: [] };
-  if (alreadyRecorded(ledger, pending)) return { ledger, created: false };
+  events: ReturnType<typeof readEvents>,
+): { ledger: AttemptLedger; created: boolean; decision: ReturnType<typeof decideFailure> } {
+  const ledger = existing ?? { jobId: job.jobId, attempts: [] };
+  const text = failureText(job, pending);
+  const decision = decideFailure({
+    text,
+    operational:
+      pending.reason === "stalled" ||
+      pending.reason === "orphaned" ||
+      pending.reason === "crashed" ||
+      pending.reason === "failed",
+    blocked:
+      pending.reason === "auth-failed" ||
+      (Boolean(job.run?.sandboxError) && !isSandboxStartFlake(text)),
+    attempt: ledger.attempts.length + 1,
+    maxAttempts: attemptsFor(config, job.repo),
+    sameFingerprint: fingerprintCount(events, job.jobId, failureFingerprint(text)) + 1,
+    maxSameFingerprint: config.maxSameFingerprint,
+  });
+  if (alreadyRecorded(ledger, pending)) return { ledger, created: false, decision };
   const attempt = {
     n: ledger.attempts.length + 1,
     at: now.toISOString(),
@@ -316,16 +339,24 @@ function recordFailure(
     detail: pending.detail,
   };
   const attempts = [...ledger.attempts, attempt];
-  const exhausted = attempts.length >= config.maxAttempts || pending.reason === "auth-failed";
-  const next = exhausted ? undefined : new Date(now.getTime() + retryDelayMs(attempts.length)).toISOString();
+  const next = decision.retry ? new Date(now.getTime() + retryDelayMs(attempts.length)).toISOString() : undefined;
   const written: AttemptLedger = {
-    jobId,
+    jobId: job.jobId,
     attempts,
     ...(next ? { nextRetryAt: next } : {}),
     ...(ledger.ignoredRunIds && ledger.ignoredRunIds.length > 0 ? { ignoredRunIds: ledger.ignoredRunIds } : {}),
   };
   writeLedger(config.kilnDir, written);
-  return { ledger: written, created: true };
+  return { ledger: written, created: true, decision };
+}
+
+function failureText(job: ObservedJob, pending: PendingFailure): string {
+  const parts = [pending.detail];
+  if (job.run?.sandboxError) parts.push(job.run.sandboxError);
+  for (const event of job.run?.stepEvents ?? []) {
+    if (event.detail) parts.push(event.detail);
+  }
+  return parts.filter((part) => part.length > 0).join("\n");
 }
 
 function alreadyRecorded(ledger: AttemptLedger, pending: PendingFailure): boolean {

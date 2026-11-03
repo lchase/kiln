@@ -605,6 +605,8 @@
         base: repo.base || "",
         prTitle: repo.prTitle || "",
         branch: repo.branch || "",
+        maxAttempts: repo.maxAttempts != null ? String(repo.maxAttempts) : "",
+        maxFixRounds: repo.maxFixRounds != null ? String(repo.maxFixRounds) : "",
       };
     }
     return out;
@@ -625,7 +627,11 @@
     var attempts = document.getElementById("hint-attempts");
     var stall = document.getElementById("hint-stall");
     var rounds = document.getElementById("hint-fix");
-    if (attempts) attempts.textContent = "Default " + (settingsDefaults.maxAttempts != null ? settingsDefaults.maxAttempts : 3) + ". Transient failures before the job is dead.";
+    if (attempts) attempts.textContent = "Default " + (settingsDefaults.maxAttempts != null ? settingsDefaults.maxAttempts : 3) + ". Transient failures before the job needs a person.";
+    var fingerprint = document.getElementById("hint-fingerprint");
+    var cap = document.getElementById("hint-cap");
+    if (fingerprint) fingerprint.textContent = "Default " + (settingsDefaults.maxSameFingerprint != null ? settingsDefaults.maxSameFingerprint : 3) + ". Identical fingerprints before the job needs a person.";
+    if (cap) cap.textContent = "Empty means no daily cap. Recorded dollars, local day.";
     if (stall) stall.textContent = "Default " + (settingsDefaults.stallTimeoutMs != null ? settingsDefaults.stallTimeoutMs : 900000) + " (15 minutes). 0 disables stall detection.";
     if (rounds) rounds.textContent = "Default " + (settingsDefaults.maxFixRounds != null ? settingsDefaults.maxFixRounds : 2) + ". Fix rounds before the job needs a person.";
     var attemptInput = document.getElementById("max-attempts");
@@ -634,6 +640,8 @@
     if (attemptInput) attemptInput.placeholder = String(settingsDefaults.maxAttempts != null ? settingsDefaults.maxAttempts : 3);
     if (stallInput) stallInput.placeholder = String(settingsDefaults.stallTimeoutMs != null ? settingsDefaults.stallTimeoutMs : 900000);
     if (roundInput) roundInput.placeholder = String(settingsDefaults.maxFixRounds != null ? settingsDefaults.maxFixRounds : 2);
+    var fingerprintInput = document.getElementById("max-same-fingerprint");
+    if (fingerprintInput) fingerprintInput.placeholder = String(settingsDefaults.maxSameFingerprint != null ? settingsDefaults.maxSameFingerprint : 3);
   }
 
   function fillGlobal(data) {
@@ -644,6 +652,10 @@
     if (attempts) attempts.value = data.maxAttempts != null ? String(data.maxAttempts) : "";
     if (stall) stall.value = data.stallTimeoutMs != null ? String(data.stallTimeoutMs) : "";
     if (rounds) rounds.value = data.maxFixRounds != null ? String(data.maxFixRounds) : "";
+    var fingerprint = document.getElementById("max-same-fingerprint");
+    var cap = document.getElementById("daily-dollar-cap");
+    if (fingerprint) fingerprint.value = data.maxSameFingerprint != null ? String(data.maxSameFingerprint) : "";
+    if (cap) cap.value = data.dailyDollarCap != null ? String(data.dailyDollarCap) : "";
     setPressed("#sandbox-mode [data-sandbox]", "data-sandbox", data.sandbox && data.sandbox.mode === "docker" ? "docker" : "off");
     var domains = document.getElementById("sandbox-domains");
     if (domains) domains.value = data.sandbox && data.sandbox.allowDomains ? data.sandbox.allowDomains.join("\n") : "";
@@ -674,12 +686,16 @@
     var baseInput = document.getElementById("repo-base");
     var titleInput = document.getElementById("repo-pr-title");
     var branchInput = document.getElementById("repo-branch");
+    var attemptsInput = document.getElementById("repo-max-attempts");
+    var roundsInput = document.getElementById("repo-max-fix-rounds");
     if (nameInput) nameInput.value = name || "";
     if (pathInput) pathInput.value = repo.path || "";
     if (testInput) testInput.value = repo.test || "";
     if (baseInput) baseInput.value = repo.base || "";
     if (titleInput) titleInput.value = repo.prTitle || "";
     if (branchInput) branchInput.value = repo.branch || "";
+    if (attemptsInput) attemptsInput.value = repo.maxAttempts != null && repo.maxAttempts !== "" ? String(repo.maxAttempts) : "";
+    if (roundsInput) roundsInput.value = repo.maxFixRounds != null && repo.maxFixRounds !== "" ? String(repo.maxFixRounds) : "";
     setPressed("#repo-deliver [data-deliver]", "data-deliver", repo.deliver === "pr" ? "pr" : "local");
     var browser = document.getElementById("repo-browser");
     if (browser) { browser.hidden = true; browser.innerHTML = ""; }
@@ -698,6 +714,8 @@
       base: value("repo-base"),
       prTitle: value("repo-pr-title"),
       branch: value("repo-branch"),
+      maxAttempts: value("repo-max-attempts"),
+      maxFixRounds: value("repo-max-fix-rounds"),
     };
   }
 
@@ -763,6 +781,13 @@
     renderRepoList();
   }
 
+  function optionalNumber(raw) {
+    var text = String(raw == null ? "" : raw).trim();
+    if (!text) return undefined;
+    if (!/^\d+(\.\d+)?$/.test(text)) return text;
+    return Number(text);
+  }
+
   function optionalInt(raw) {
     var text = String(raw == null ? "" : raw).trim();
     if (!text) return undefined;
@@ -791,6 +816,10 @@
       if (repo.base) entry.base = repo.base;
       if (repo.prTitle) entry.prTitle = repo.prTitle;
       if (repo.branch) entry.branch = repo.branch;
+      var repoAttempts = optionalInt(repo.maxAttempts);
+      var repoRounds = optionalInt(repo.maxFixRounds);
+      if (repoAttempts !== undefined) entry.maxAttempts = repoAttempts;
+      if (repoRounds !== undefined) entry.maxFixRounds = repoRounds;
       repos[name] = entry;
     }
     var body = { revision: settingsDoc ? settingsDoc.revision : "", repos: repos };
@@ -800,6 +829,10 @@
     if (attempts !== undefined) body.maxAttempts = attempts;
     if (stall !== undefined) body.stallTimeoutMs = stall;
     if (rounds !== undefined) body.maxFixRounds = rounds;
+    var fingerprint = optionalInt(inputValue("max-same-fingerprint"));
+    var cap = optionalNumber(inputValue("daily-dollar-cap"));
+    if (fingerprint !== undefined) body.maxSameFingerprint = fingerprint;
+    if (cap !== undefined) body.dailyDollarCap = cap;
     var mode = selectedAttr("#sandbox-mode [data-sandbox]", "data-sandbox", "off");
     var domains = domainList(inputValue("sandbox-domains"));
     var sandbox = {};
@@ -820,7 +853,8 @@
       if (repoField) {
         setSettingsTab("repos");
         if (Object.prototype.hasOwnProperty.call(repoDraft, repoField[1])) startEdit(repoField[1]);
-        showSlot(repoField[2], message);
+        var slotName = repoField[2] === "maxAttempts" ? "repoAttempts" : repoField[2] === "maxFixRounds" ? "repoRounds" : repoField[2];
+        showSlot(slotName, message);
         continue;
       }
       if (key.indexOf("sandbox.allowDomains") === 0) {
@@ -828,7 +862,7 @@
         showSlot("sandbox.allowDomains", message);
         continue;
       }
-      if (key === "sandbox.mode" || key === "maxAttempts" || key === "stallTimeoutMs" || key === "maxFixRounds") {
+      if (key === "sandbox.mode" || key === "maxAttempts" || key === "stallTimeoutMs" || key === "maxFixRounds" || key === "maxSameFingerprint" || key === "dailyDollarCap") {
         setSettingsTab("global");
         showSlot(key, message);
         continue;
@@ -1153,6 +1187,18 @@
         if (rev && current && rev !== current) {
           location.reload();
           return;
+        }
+        var toggle = document.getElementById("pause-toggle");
+        var form = document.getElementById("pause-form");
+        if (toggle && form && data && typeof data.paused === "boolean") {
+          toggle.textContent = data.paused ? "Resume" : "Pause";
+          toggle.setAttribute("aria-pressed", data.paused ? "true" : "false");
+          form.setAttribute("action", data.paused ? "/api/resume" : "/api/pause");
+        }
+        var spend = document.getElementById("spend");
+        if (spend && data && data.spend) {
+          var capText = data.spend.cap == null ? "no cap" : "$" + Number(data.spend.cap).toFixed(2);
+          spend.textContent = "today " + data.spend.day + "  $" + Number(data.spend.usd).toFixed(2) + " / " + capText;
         }
         stamp(true);
       })

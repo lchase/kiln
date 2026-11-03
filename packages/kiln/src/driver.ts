@@ -16,7 +16,7 @@ import {
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { claudeCredentialPreflight } from "./auth.js";
 import { buildAttention, type KilnStatus } from "./attention.js";
-import type { LoadedKilnConfig } from "./config.js";
+import { attemptsFor, fixRoundsFor, type LoadedKilnConfig } from "./config.js";
 import {
   clearLaunchError,
   deliverJob,
@@ -37,7 +37,18 @@ import {
   type FeedbackLedger,
   type PullRequestFeedback,
 } from "./feedback.js";
-import { appendEvent } from "./events.js";
+import { appendEvent, readEvents } from "./events.js";
+import { costFromJournal } from "./failure.js";
+import { ensureFixTrailers } from "./fix-commit.js";
+import {
+  holdDetail,
+  pausedFrom,
+  recordDailyCap,
+  reviseNotesSinceRun,
+  spendSnapshot,
+  stopReasonFromEvents,
+  withReviseNotes,
+} from "./rails.js";
 import {
   appendInvestigationFindings,
   existingFindingsPath,
@@ -69,7 +80,7 @@ import {
   type AttemptLedger,
   type ReliabilityNote,
 } from "./reliability.js";
-import { projectRunJournal } from "./project.js";
+import { projectRunJournal, promptsHash } from "./project.js";
 import {
   gateAnswerCommand,
   renderStatus,
@@ -166,16 +177,19 @@ export function runTick(
   const startup = options.startup ?? true;
   const now = options.now ?? new Date();
   return withTickLock(config.kilnDir, () => {
-    const notes = recoverRuns(config, observe(config, host).observation.jobs, { startup, now });
+    const notes = recoverRuns(config, observe(config, host, now).observation.jobs, { startup, now });
     const facts = sandboxIsEnabled(config)
       ? (options.sandboxFacts ?? probeSandboxEnvironment(process.env, requiredSandboxImages(config)))
       : undefined;
-    const midway = observe(config, host);
+    const midway = observe(config, host, now);
     bindOpenFixRuns(config, midway);
     const published = publishReadyFixes(config, host, midway);
-    const world = observe(config, host);
+    const world = observe(config, host, now);
     const feedbackNotes = watchPullRequests(config, world, host);
     const actions = decide(world.observation, now);
+    if (world.observation.spendBlocked) {
+      recordDailyCap(config.kilnDir, spendSnapshot(readEvents(config.kilnDir, { warn: () => {} }), config.dailyDollarCap, now), now);
+    }
     const body = apply(config, world, actions, host, notes, now, [...published, ...feedbackNotes], facts);
     const heads = [
       claudeCredentialPreflight(process.env, config.adapter),
@@ -188,7 +202,7 @@ export function runTick(
 /** Startup pass shared by `kiln tick` (via `runTick`) and `kiln serve`. Idempotent. */
 export function startupRecovery(config: LoadedKilnConfig, host: KilnHost = defaultHost(), now = new Date()): void {
   withTickLock(config.kilnDir, () => {
-    recoverRuns(config, observe(config, host).observation.jobs, { startup: true, now });
+    recoverRuns(config, observe(config, host, now).observation.jobs, { startup: true, now });
   });
 }
 
@@ -256,8 +270,8 @@ export function retryJob(config: LoadedKilnConfig, jobId: string, host: KilnHost
     if (!observed) throw new Error(`No job ${jobId}.`);
     if (observed.error) throw new Error(`Job ${jobId} is invalid: ${observed.error}`);
     const state = jobState(observed, world.observation);
-    if (state !== "failed" && state !== "dead") {
-      throw new Error(`Job ${jobId} is ${state}, not failed or dead.`);
+    if (!canManualRetry(state, observed)) {
+      throw new Error(`Job ${jobId} is ${state}, not failed, dead, or stopped for a person.`);
     }
     const job = world.jobs.get(jobId);
     if (!job) throw new Error(`No job ${jobId}.`);
@@ -282,7 +296,7 @@ export function retryJob(config: LoadedKilnConfig, jobId: string, host: KilnHost
       const detail = report.detail.endsWith("\n") || report.detail.length === 0 ? report.detail : `${report.detail}\n`;
       return `retry ${jobId}  ${job.repo}\n${clearedLine}${detail}`;
     }
-    if (state === "dead" && observed.run) {
+    if ((state === "dead" || observed.stopReason) && observed.run) {
       try {
         spawnSync(process.execPath, [yakCliPath(), "cancel", observed.run.runId], {
           cwd: observed.run.checkout,
@@ -301,6 +315,64 @@ export function retryJob(config: LoadedKilnConfig, jobId: string, host: KilnHost
   });
 }
 
+function canManualRetry(state: string, job: ObservedJob): boolean {
+  if (state === "failed" || state === "dead") return true;
+  return state === "needs-human" && Boolean(job.stopReason) && (job.run?.gates.length ?? 0) === 0;
+}
+
+/**
+ * Send a gated job back for another round. The note is stored on a
+ * `gate.resolved` event (redacted, otherwise verbatim) and appended to the
+ * spec the next launch passes into the prompt.
+ */
+export function reviseJob(
+  config: LoadedKilnConfig,
+  jobId: string,
+  note: string,
+  host: KilnHost = defaultHost(),
+): string {
+  const trimmed = note.trim();
+  if (!trimmed) throw new Error("A revise note is required.");
+  if (trimmed.length > 8_000) throw new Error("A revise note must be 8000 characters or fewer.");
+  return withTickLock(config.kilnDir, () => {
+    const world = observe(config, host);
+    const observed = world.observation.jobs.find((candidate) => candidate.jobId === jobId);
+    if (!observed) throw new Error(`No job ${jobId}.`);
+    if (observed.error) throw new Error(`Job ${jobId} is invalid: ${observed.error}`);
+    const state = jobState(observed, world.observation);
+    const gate = observed.run?.gates[0];
+    if (state !== "needs-human" || !observed.run || !gate) {
+      throw new Error(`Job ${jobId} is ${state}, not waiting on a gate.`);
+    }
+    const job = world.jobs.get(jobId);
+    if (!job) throw new Error(`No job ${jobId}.`);
+    appendEvent(config.kilnDir, {
+      job_id: jobId,
+      run_id: observed.run.runId,
+      event: "gate.resolved",
+      step: gate.stepId,
+      properties: {
+        decision: "revise",
+        by: "human",
+        repo: job.repo,
+        note: trimmed,
+      },
+    });
+    resetAttemptLedger(config.kilnDir, jobId, observed.run.runId);
+    rmSync(breadcrumbPath(config.kilnDir, jobId), { force: true });
+    clearLaunchError(config.kilnDir, jobId);
+    const events = readEvents(config.kilnDir, { warn: () => {} });
+    const spend = spendSnapshot(events, config.dailyDollarCap);
+    const paused = pausedFrom(events);
+    const hold = holdDetail(paused, spend);
+    if (hold) return `revised ${jobId}\n${hold}\n`;
+    const again = observe(config, host);
+    const report = launchJob(config, again, job, host);
+    const output = report.output.endsWith("\n") || report.output.length === 0 ? report.output : `${report.output}\n`;
+    return `revised ${jobId}  ${report.repo}\n${output}`;
+  });
+}
+
 function shouldRedeliver(job: ObservedJob): boolean {
   if (!isLanded(job)) return false;
   if (job.delivery?.prState === "CLOSED") return false;
@@ -314,9 +386,13 @@ function gateForChoice(gates: ObservedGate[], choice: "approve" | "reject"): Obs
   );
 }
 
-function observe(config: LoadedKilnConfig, host: KilnHost): World {
+function observe(config: LoadedKilnConfig, host: KilnHost, now = new Date()): World {
   const loaded = loadJobs(config);
   const runs = scanRuns(config);
+  const events = readEvents(config.kilnDir, { warn: () => {} });
+  const paused = pausedFrom(events);
+  const spend = spendSnapshot(events, config.dailyDollarCap, now);
+  const waiting = holdDetail(paused, spend);
   const breadcrumbs = readBreadcrumbs(config.kilnDir);
   const jobs: ObservedJob[] = [];
   const records = new Map<string, Job>();
@@ -365,11 +441,14 @@ function observe(config: LoadedKilnConfig, host: KilnHost): World {
     const launchActivityMs = later(crumb ? fileMtimeMs(crumb.path) : undefined, logPath ? fileMtimeMs(logPath) : undefined);
     const attemptCount = ledger?.attempts.length ?? 0;
     const lastFailure = ledger?.attempts.at(-1);
+    const attemptCap = attemptsFor(config, entry.job?.repo ?? "");
     const exhausted =
-      attemptCount >= config.maxAttempts &&
+      attemptCount >= attemptCap &&
       attemptCount > 0 &&
       !launching &&
       (picked.retired || !run || run.status === "dead" || run.status === "failed");
+    const eventStop = entry.job ? stopReasonFromEvents(events, entry.job.id) : undefined;
+    const stopReason = eventStop ?? (exhausted ? "attempt-cap" : undefined);
     const specPath = entry.job ? resolveJobSpec(config.kilnDir, entry.job.spec) : undefined;
     const findingsPath =
       entry.job?.workflow === INVESTIGATION_WORKFLOW
@@ -410,6 +489,8 @@ function observe(config: LoadedKilnConfig, host: KilnHost): World {
       ...(lastFailure ? { lastFailureReason: lastFailure.reason } : {}),
       ...(ledger?.nextRetryAt && !exhausted ? { nextRetryAt: ledger.nextRetryAt } : {}),
       ...(exhausted ? { retriesExhausted: true } : {}),
+      ...(stopReason ? { stopReason } : {}),
+      attemptCap,
       ...(picked.retired ? { runRetired: true } : {}),
       ...(ledgerResult === "corrupt" ? { ledgerError: "attempt ledger is unreadable" } : {}),
       ...(entry.job ? { sandboxed: jobIsSandboxed(config, entry.job.id, entry.job.workflow) } : {}),
@@ -431,6 +512,9 @@ function observe(config: LoadedKilnConfig, host: KilnHost): World {
       maxAttempts: config.maxAttempts,
       jobs,
       breadcrumbsToClear,
+      ...(paused ? { paused: true } : {}),
+      ...(spend.blocked ? { spendBlocked: true } : {}),
+      ...(waiting ? { holdDetail: waiting } : {}),
     },
     jobs: records,
   };
@@ -597,7 +681,8 @@ function specHandedToYak(config: LoadedKilnConfig, world: World, job: Job): stri
     }
     sections.push({ title: dep.title, markdown: readFileSync(path, "utf8") });
   }
-  return appendInvestigationFindings(base, sections);
+  const noted = withReviseNotes(appendInvestigationFindings(base, sections), reviseNotesSinceRun(readEvents(config.kilnDir, { warn: () => {} }), job.id));
+  return noted;
 }
 
 /** Remote name the stacked pull request targets. Falls back to the local yak ref. */
@@ -707,6 +792,19 @@ function publishReadyFixes(config: LoadedKilnConfig, host: KilnHost, world: Worl
     const record = readDelivery(config.kilnDir, job.jobId);
     const checkout = job.run.checkout;
     const source = `yak/${job.run.runId}`;
+    const worktree = join(checkout, ".yak", "worktrees", job.run.runId);
+    if (existsSync(worktree)) {
+      ensureFixTrailers(
+        worktree,
+        {
+          jobId: job.jobId,
+          round: open.round,
+          promptsHash: hashForRun(config.kilnDir, job.jobId, job.run.runId),
+          title: job.title,
+        },
+        open.headSha,
+      );
+    }
     if (!record?.branch) {
       notes.push(`feedback ${job.jobId} failed: no pull request branch to publish`);
       continue;
@@ -760,6 +858,15 @@ function publishReadyFixes(config: LoadedKilnConfig, host: KilnHost, world: Worl
     notes.push(`pushed ${job.jobId}  ${record.branch}  ${sha}`);
   }
   return notes;
+}
+
+function hashForRun(kilnDir: string, jobId: string, runId: string): string {
+  for (const event of readEvents(kilnDir, { warn: () => {} })) {
+    if (event.job_id === jobId && event.run_id === runId && event.event === "run.started") {
+      return event.properties.prompts_hash;
+    }
+  }
+  return promptsHash("fix", kilnDir, jobId);
 }
 
 function isNonFastForward(message: string): boolean {
@@ -833,7 +940,7 @@ function watchPullRequests(config: LoadedKilnConfig, world: World, host: KilnHos
       continue;
     }
     job.feedbackPlan = planFeedback({
-      maxFixRounds: config.maxFixRounds,
+      maxFixRounds: fixRoundsFor(config, job.repo),
       ledger,
       snapshot,
     });
@@ -930,7 +1037,7 @@ function startFix(
     writeBreadcrumb(breadcrumbPath(config.kilnDir, job.id), { jobId: job.id, pid: 0, logPath });
     return { jobId: job.id, repo: job.repo, kind: "fix", output: message };
   }
-  const report = launchFixRun(config, job, host, repo.path, headSha, specText, sandboxFacts);
+  const report = launchFixRun(config, job, host, repo.path, headSha, specText, round, sandboxFacts);
   return { ...report, output: `round ${round}\n${report.output}` };
 }
 
@@ -959,7 +1066,7 @@ function launchOpenFix(
     writeBreadcrumb(breadcrumbPath(config.kilnDir, job.id), { jobId: job.id, pid: 0, logPath });
     return { jobId: job.id, repo: job.repo, kind: "fix", output: message };
   }
-  return launchFixRun(config, job, host, checkout, headSha, specText, sandboxFacts);
+  return launchFixRun(config, job, host, checkout, headSha, specText, open.round, sandboxFacts);
 }
 
 function resolveCommit(host: KilnHost, checkout: string, sha: string): string {
@@ -979,6 +1086,7 @@ function launchFixRun(
   checkout: string,
   headSha: string,
   specText: string,
+  round: number,
   sandboxFacts?: SandboxFacts,
 ): LaunchReport {
   const refused = claudeCredentialPreflight(process.env, config.adapter);
@@ -990,6 +1098,7 @@ function launchFixRun(
   mkdirSync(dirname(logPath), { recursive: true });
   const blocked = commitAgentSandbox(config, job.id, "fix", workflow, logPath, sandboxFacts);
   if (blocked) return { jobId: job.id, repo: job.repo, kind: "fix", output: blocked };
+  const hash = promptsHash("fix", config.kilnDir, job.id);
   ensureCheckoutExcludes(checkout);
   const input = workflowInputs(sourceWorkflow, {
     title: job.title,
@@ -1002,6 +1111,9 @@ function launchFixRun(
     ...process.env,
     ...(repo?.test ? { KILN_TEST: repo.test } : {}),
     KILN_TASK_TITLE: job.title,
+    KILN_JOB: job.id,
+    KILN_ROUND: String(round),
+    KILN_PROMPTS_HASH: hash,
     KILN_VERIFY_WRAPPER: join(packageRoot(), "dist", "truncate-output.js"),
   };
   return spawnLogged(config, host, {
@@ -1272,6 +1384,7 @@ function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun[]> {
       const stepPlan = readRunStepPlan(runDir);
       const stepEvents = stepEventsFrom(events);
       const sandboxError = sandboxFailureDetail(stepEvents);
+      const cost = costFromJournal(events);
       const pid = livePid(events);
       const activityMs = eventActivityMs(events) ?? fileMtimeMs(join(runDir, "journal.jsonl"));
       const finishedReason =
@@ -1291,6 +1404,7 @@ function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun[]> {
         ...(activityMs !== undefined ? { activityMs } : {}),
         ...(finishedReason ? { finishedReason } : {}),
         ...(sandboxError ? { sandboxError } : {}),
+        cost,
       };
       const list = byTag.get(started.tag) ?? [];
       list.push(run);

@@ -7,6 +7,7 @@ import { DEFAULT_BRANCH_TEMPLATE, DEFAULT_PR_TITLE } from "./pr-names.js";
 import {
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_MAX_FIX_ROUNDS,
+  DEFAULT_MAX_SAME_FINGERPRINT,
   DEFAULT_STALL_TIMEOUT_MS,
   KilnConfigFileSchema,
   SettingsWriteSchema,
@@ -29,6 +30,8 @@ export interface SettingsDocument {
   stallTimeoutMs?: number;
   maxAttempts?: number;
   maxFixRounds?: number;
+  maxSameFingerprint?: number;
+  dailyDollarCap?: number;
   sandbox?: {
     mode?: "off" | "docker";
     allowDomains?: string[];
@@ -41,6 +44,9 @@ export interface SettingsDocument {
     maxAttempts: number;
     stallTimeoutMs: number;
     maxFixRounds: number;
+    maxSameFingerprint: number;
+    /** Null means new runs are not blocked by spend. */
+    dailyDollarCap: null;
     sandboxMode: "off";
   };
 }
@@ -63,6 +69,8 @@ const DEFAULTS: SettingsDocument["defaults"] = {
   maxAttempts: DEFAULT_MAX_ATTEMPTS,
   stallTimeoutMs: DEFAULT_STALL_TIMEOUT_MS,
   maxFixRounds: DEFAULT_MAX_FIX_ROUNDS,
+  maxSameFingerprint: DEFAULT_MAX_SAME_FINGERPRINT,
+  dailyDollarCap: null,
   sandboxMode: "off",
 };
 
@@ -122,6 +130,8 @@ function project(path: string, revision: string, file: KilnConfigFile): Settings
     ...(file.stallTimeoutMs !== undefined ? { stallTimeoutMs: file.stallTimeoutMs } : {}),
     ...(file.maxAttempts !== undefined ? { maxAttempts: file.maxAttempts } : {}),
     ...(file.maxFixRounds !== undefined ? { maxFixRounds: file.maxFixRounds } : {}),
+    ...(file.maxSameFingerprint !== undefined ? { maxSameFingerprint: file.maxSameFingerprint } : {}),
+    ...(file.dailyDollarCap !== undefined ? { dailyDollarCap: file.dailyDollarCap } : {}),
     ...(sandbox ? { sandbox } : {}),
     defaults: DEFAULTS,
   };
@@ -150,12 +160,16 @@ function mergeSettings(raw: Record<string, unknown>, settings: EditableKilnSetti
     setOptional(prior, "base", entry.base);
     setOptional(prior, "prTitle", entry.prTitle);
     setOptional(prior, "branch", entry.branch);
+    setOptional(prior, "maxAttempts", entry.maxAttempts);
+    setOptional(prior, "maxFixRounds", entry.maxFixRounds);
     repos[name] = prior;
   }
   next.repos = repos;
   setOptional(next, "stallTimeoutMs", settings.stallTimeoutMs);
   setOptional(next, "maxAttempts", settings.maxAttempts);
   setOptional(next, "maxFixRounds", settings.maxFixRounds);
+  setOptional(next, "maxSameFingerprint", settings.maxSameFingerprint);
+  setOptional(next, "dailyDollarCap", settings.dailyDollarCap);
   if (settings.sandbox) {
     const prior = isRecord(raw.sandbox) ? { ...raw.sandbox } : {};
     setOptional(prior, "mode", settings.sandbox.mode);

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { addRepo, renderRepoList, resolveKilnConfig } from "./config.js";
 import { renderSandboxStatus, runSandboxBuild } from "./sandbox.js";
-import { answerJob, retryJob, runStatus, runTick } from "./driver.js";
+import { answerJob, retryJob, reviseJob, runStatus, runTick } from "./driver.js";
+import { pauseFactory, resumeFactory } from "./rails.js";
 import { parseSince, renderLedgerFile } from "./ledger.js";
 import { startServe } from "./serve.js";
 import { addFromFile } from "./intake/file.js";
@@ -21,7 +22,10 @@ function usage(): never {
       "       kiln status [jobId] [--config <file>]",
       "       kiln approve <jobId> [--config <file>]",
       "       kiln reject <jobId> [--config <file>]",
+      "       kiln revise <jobId> --note <text> [--config <file>]",
       "       kiln retry <jobId> [--config <file>]",
+      "       kiln pause [--config <file>]",
+      "       kiln resume [--config <file>]",
       "       kiln ledger [--since 7d] [--repo <name>] [--config <file>]",
       "       kiln sandbox [build] [--config <file>]",
       "       kiln serve [--port 4100] [--tick <seconds>|--no-tick] [--config <file>]",
@@ -68,7 +72,13 @@ function usage(): never {
       "or a process that is already gone when tick or serve starts (orphaned) retries",
       "after 10s, 20s, 40s, and so on, capped at 5 minutes, up to maxAttempts",
       "A rejected Claude login (401 or an invalid bearer token) is auth-failed and is not retried.",
-      "(default 3). The job is then dead. A rejected gate is not retried.",
+      "(default 3, overridable per repo). Hitting the cap is a budget failure and the",
+      "job needs a person. The same failure fingerprint stops the job after",
+      "maxSameFingerprint (default 3). A test, build, or type error is not retried.",
+      "A rejected gate is not retried. revise sends the job around again with the",
+      "note in the next prompt. pause stops new runs until resume. In-flight runs",
+      "finish. A daily dollar cap, when set, does the same once today's recorded",
+      "spend reaches it. ledger prints that spend.",
       "Attempts are files under the kiln home, not fields on the job.",
       "Events are one JSON line each in <kiln-home>/events.jsonl. A write",
       "failure is reported and does not stop the job. kiln ledger counts",
@@ -124,6 +134,7 @@ interface FlagBag {
   tickSeconds?: number;
   noTick: boolean;
   since?: string;
+  note?: string;
 }
 
 function parseFlags(argv: string[]): FlagBag {
@@ -235,6 +246,12 @@ function parseFlags(argv: string[]): FlagBag {
     }
     if (flag === "--no-tick") {
       bag.noTick = true;
+      continue;
+    }
+    if (flag === "--note") {
+      if (!next || next.startsWith("--")) usage();
+      bag.note = next;
+      i += 1;
       continue;
     }
     if (flag === "--since") {
@@ -394,7 +411,7 @@ function sandboxCommand(argv: string[]): void {
 function tickCommand(argv: string[]): void {
   const flags = parseFlags(argv);
   rejectServeFlags(flags);
-  if (flags.positionals.length !== 0 || flags.test || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.stack) {
+  if (flags.positionals.length !== 0 || flags.test || flags.note || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.stack) {
     usage();
   }
   const config = resolveKilnConfig({ configPath: flags.configPath });
@@ -404,7 +421,7 @@ function tickCommand(argv: string[]): void {
 function statusCommand(argv: string[]): void {
   const flags = parseFlags(argv);
   rejectServeFlags(flags);
-  if (flags.positionals.length > 1 || flags.test || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.stack) {
+  if (flags.positionals.length > 1 || flags.test || flags.note || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.stack) {
     usage();
   }
   const config = resolveKilnConfig({ configPath: flags.configPath });
@@ -415,7 +432,7 @@ function retryCommand(argv: string[]): void {
   const flags = parseFlags(argv);
   rejectServeFlags(flags);
   const jobId = flags.positionals[0];
-  if (!jobId || flags.positionals.length !== 1 || flags.test || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.stack) {
+  if (!jobId || flags.positionals.length !== 1 || flags.test || flags.note || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.stack) {
     usage();
   }
   const config = resolveKilnConfig({ configPath: flags.configPath });
@@ -449,15 +466,47 @@ function ledgerCommand(argv: string[]): void {
     renderLedgerFile(config.kilnDir, {
       ...(since ? { since } : {}),
       ...(flags.repo ? { repo: flags.repo } : {}),
+      ...(config.dailyDollarCap !== undefined ? { dailyDollarCap: config.dailyDollarCap } : {}),
     }),
   );
+}
+
+function reviseCommand(argv: string[]): void {
+  const flags = parseFlags(argv);
+  rejectServeFlags(flags);
+  const jobId = flags.positionals[0];
+  if (
+    !jobId ||
+    flags.positionals.length !== 1 ||
+    !flags.note ||
+    flags.test ||
+    hasIntakeFlags(flags) ||
+    flags.deliver ||
+    flags.base ||
+    flags.stack
+  ) {
+    usage();
+  }
+  const config = resolveKilnConfig({ configPath: flags.configPath });
+  process.stdout.write(reviseJob(config, jobId, flags.note));
+}
+
+function pauseCommand(argv: string[], pause: boolean): void {
+  const flags = parseFlags(argv);
+  rejectServeFlags(flags);
+  if (flags.positionals.length !== 0 || flags.test || hasIntakeFlags(flags) || flags.note || flags.deliver || flags.base || flags.stack) {
+    usage();
+  }
+  const config = resolveKilnConfig({ configPath: flags.configPath });
+  const changed = pause ? pauseFactory(config.kilnDir) : resumeFactory(config.kilnDir);
+  process.stdout.write(pause ? (changed ? "paused\n" : "already paused\n") : changed ? "resumed\n" : "already running\n");
 }
 
 function gateCommand(choice: "approve" | "reject", argv: string[]): void {
   const flags = parseFlags(argv);
   rejectServeFlags(flags);
   const jobId = flags.positionals[0];
-  if (!jobId || flags.positionals.length !== 1 || flags.test || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.stack) {
+  if (!jobId || flags.positionals.length !== 1 || flags.test || flags.note || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.stack) {
     usage();
   }
   const config = resolveKilnConfig({ configPath: flags.configPath });
@@ -537,6 +586,18 @@ async function main(): Promise<void> {
   }
   if (command === "retry") {
     retryCommand(argv.slice(1));
+    return;
+  }
+  if (command === "revise") {
+    reviseCommand(argv.slice(1));
+    return;
+  }
+  if (command === "pause") {
+    pauseCommand(argv.slice(1), true);
+    return;
+  }
+  if (command === "resume") {
+    pauseCommand(argv.slice(1), false);
     return;
   }
   if (command === "ledger") {

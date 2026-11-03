@@ -214,6 +214,10 @@ export interface StatusJobView {
   /** Configured budget. The board prints `attempt N/M`. */
   maxAttempts: number;
   lastFailureReason?: FailureReason;
+  /** Fingerprint breaker or attempt cap. A person can retry. */
+  stopReason?: "fingerprint" | "attempt-cap";
+  /** Pause or the daily dollar cap. New runs are not starting. */
+  waitReason?: string;
   /** ISO time the next automatic retry becomes due. */
   nextRetryAt?: string;
   /** Set when `<kilnDir>/attempts/<id>.json` cannot be parsed. Automatic retry stays off. */
@@ -229,6 +233,8 @@ export interface StatusJobView {
   gates: StatusGateView[];
   canApprove: boolean;
   canReject: boolean;
+  /** The gate can be sent back with a note. */
+  canRevise: boolean;
   /** Leaf steps with phases taken from yak run events. Empty when the workflow has no steps. */
   steps: StepProgress[];
   /** Job file `createdAt`. */
@@ -310,11 +316,15 @@ export function statusDetails(job: StatusJobView): string[] {
   if (job.feedbackLedgerError) lines.push(job.feedbackLedgerError);
   if ((job.feedbackRounds?.length ?? 0) > 0) lines.push(`feedback ${job.feedbackRounds?.length}`);
   if (job.state === "needs-human" && job.feedbackReason) lines.push(`reason ${job.feedbackReason}`);
+  if (job.stopReason) lines.push(`reason ${job.stopReason}`);
+  if (job.waitReason) lines.push(job.waitReason);
   if (job.attemptCount > 0) lines.push(`attempts ${job.attemptCount}`);
   if (job.lastFailureReason) lines.push(`reason ${job.lastFailureReason}`);
   if (job.lastFailureReason === "auth-failed") lines.push(AUTH_FAILED_LINE);
   if (job.nextRetryAt) lines.push(`next retry ${job.nextRetryAt}`);
-  if (job.state === "dead" && job.attemptCount > 0) lines.push(`retry: kiln retry ${job.jobId}`);
+  if ((job.state === "dead" || job.stopReason) && job.attemptCount > 0 && job.gates.length === 0) {
+    lines.push(`retry: kiln retry ${job.jobId}`);
+  }
   if (job.noReadableApproval) lines.push("no readable approval decision");
   if (job.cancelCommand) lines.push(job.cancelCommand);
   if (job.state === "blocked") {
@@ -327,6 +337,9 @@ export function statusDetails(job: StatusJobView): string[] {
       lines.push(`gate ${gate.stepId}: ${gate.prompt}`);
       if (gate.choices.includes("approve")) lines.push(`approve: kiln approve ${job.jobId}`);
       if (gate.choices.includes("reject")) lines.push(`reject: kiln reject ${job.jobId}`);
+      if (gate.choices.includes("approve") || gate.choices.includes("revise")) {
+        lines.push(`revise: kiln revise ${job.jobId} --note <text>`);
+      }
     }
   }
   return lines;
@@ -359,7 +372,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
       ...(job.findingsPath ? { findingsPath: job.findingsPath } : {}),
       launchFailed: job.launchFailed,
       attemptCount: job.attemptCount ?? 0,
-      maxAttempts: observation.maxAttempts,
+      maxAttempts: job.attemptCap ?? observation.maxAttempts,
       ...(job.lastFailureReason ? { lastFailureReason: job.lastFailureReason } : {}),
       ...(job.nextRetryAt ? { nextRetryAt: job.nextRetryAt } : {}),
       invalidReason: job.error,
@@ -369,6 +382,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
       gates: [],
       canApprove: false,
       canReject: false,
+      canRevise: false,
       steps: progressFor(job),
       ...(job.deliver ? { deliver: job.deliver } : {}),
       ...(job.createdAt ? { createdAt: job.createdAt } : {}),
@@ -383,7 +397,8 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     : job.feedbackAmbiguous
       ? "feedback-ambiguous"
       : undefined;
-  const gates = state === "needs-human" && job.run && !feedbackReason ? job.run.gates.map(toGateView) : [];
+  const gates =
+    state === "needs-human" && job.run && !feedbackReason && !job.stopReason ? job.run.gates.map(toGateView) : [];
   const prNumber = job.delivery?.prNumber;
   const runId = job.run?.runId;
   const showBranch =
@@ -408,8 +423,12 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     ...(job.findingsPath ? { findingsPath: job.findingsPath } : {}),
     launchFailed: job.launchFailed,
     attemptCount: job.attemptCount ?? 0,
-    maxAttempts: observation.maxAttempts,
+    maxAttempts: job.attemptCap ?? observation.maxAttempts,
     ...(job.lastFailureReason ? { lastFailureReason: job.lastFailureReason } : {}),
+    ...(job.stopReason ? { stopReason: job.stopReason } : {}),
+    ...(observation.holdDetail && (state === "queued" || state === "blocked" || state === "failed")
+      ? { waitReason: observation.holdDetail }
+      : {}),
     ...(job.nextRetryAt && !job.retriesExhausted ? { nextRetryAt: job.nextRetryAt } : {}),
     ...(job.ledgerError ? { ledgerError: job.ledgerError } : {}),
     ...(job.feedbackLedgerError ? { feedbackLedgerError: job.feedbackLedgerError } : {}),
@@ -426,6 +445,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     gates,
     canApprove: gates.some((gate) => gate.choices.includes("approve")),
     canReject: gates.some((gate) => gate.choices.includes("reject")),
+    canRevise: gates.some((gate) => gate.choices.includes("approve") || gate.choices.includes("revise")),
     steps: progressFor(job),
     ...(job.createdAt ? { createdAt: job.createdAt } : {}),
     ...(job.run?.startedAt ? { startedAt: job.run.startedAt } : {}),
@@ -565,7 +585,7 @@ export function renderTick(
     );
   }
   for (const note of notes) {
-    const next = note.nextRetryAt ? `  next ${note.nextRetryAt}` : note.reason === "auth-failed" ? "" : "  dead";
+    const next = note.nextRetryAt ? `  next ${note.nextRetryAt}` : note.needsHuman ? "  needs human" : "";
     lines.push(`${note.kind} ${note.jobId}  ${note.reason}  attempt ${note.attempt}${next}`);
   }
   for (const note of feedbackNotes) {
