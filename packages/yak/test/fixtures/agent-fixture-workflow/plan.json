@@ -1,0 +1,11 @@
+[
+  {
+    "output": { "summary": "Add null check to password field", "step": "guard against empty password" }
+  },
+  {
+    "output": {
+      "summary": "Add null check to password field",
+      "steps": ["Guard the password field against an empty string", "Add a regression test"]
+    }
+  }
+]

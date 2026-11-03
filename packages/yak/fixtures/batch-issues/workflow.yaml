@@ -1,0 +1,45 @@
+name: map-fanout-batch-issues
+version: "1"
+steps:
+  - id: triage
+    agent:
+      prompt: { file: "fixtures/batch-issues/prompts/triage.md" }
+      schema:
+        inline:
+          type: object
+          properties:
+            summary: { type: string }
+            confidence: { type: number }
+          required: [summary, confidence]
+      tools: [Read, Glob, Write]
+    produces: triage
+
+  - id: issues
+    needs: [triage]
+    transform: { fn: batchIssues }
+    produces: issues
+
+  - id: fix-issue
+    needs: [issues]
+    map:
+      over: issues
+      isolation: worktree
+      concurrency: 3
+      step:
+        id: fix-one
+        needs: [issues]
+        agent:
+          prompt:
+            inline: >
+              Read fixtures/batch-issues/BUGS.md for context on all known
+              bugs, then read {{issues.file}} and {{issues.test}}. Fix the
+              bug in {{issues.file}} (id: {{issues.id}}) so its test
+              passes. Make only the edit needed for this one bug.
+          schema:
+            inline:
+              type: object
+              properties:
+                summary: { type: string }
+              required: [summary]
+          tools: [Read, Edit]
+    produces: fixResults

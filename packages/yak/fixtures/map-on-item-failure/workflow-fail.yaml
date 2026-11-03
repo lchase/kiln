@@ -1,0 +1,40 @@
+name: map-on-item-failure-fail
+version: "1"
+steps:
+  - id: checks
+    transform: { fn: batchChecks }
+    produces: checks
+
+  - id: run-checks
+    needs: [checks]
+    map:
+      over: checks
+      concurrency: 3
+      onItemFailure: fail
+      step:
+        id: run-one-check
+        # $MAP_ITEM_INDEX/$MAP_ITEM are engine-provided per-item env vars
+        # (a command step's analog of an agent step's {{...}} templating).
+        # Item 2 is deliberately unsatisfiable, deterministically, so this
+        # pattern's outcome never depends on model behavior.
+        command:
+          run: 'echo "checking item $MAP_ITEM_INDEX: $MAP_ITEM"; [ "$MAP_ITEM_INDEX" != "2" ]'
+          capture: [stdout, stderr, exitCode]
+    produces: checkResults
+
+  - id: summarize
+    needs: [checkResults]
+    agent:
+      prompt:
+        inline: >
+          Here are the results of 3 automated checks, one per item, as a
+          JSON array (a null entry means that check never produced a
+          result): {{checkResults}}. Write one short sentence summarizing
+          how many passed.
+      schema:
+        inline:
+          type: object
+          properties:
+            summary: { type: string }
+          required: [summary]
+    produces: summary

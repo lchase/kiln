@@ -1,0 +1,22 @@
+name: loop-on-exhausted-continue
+version: "1"
+steps:
+  - id: draft-until-perfect
+    loop:
+      # Same unsatisfiable until as workflow-fail.yaml — only onExhausted
+      # differs, so the contrast is apples to apples.
+      until: "false"
+      budget:
+        maxIterations: 1
+      onExhausted: continue
+      body:
+        - id: draft
+          agent:
+            prompt: { inline: "Write one short sentence describing what mergesort does." }
+            schema:
+              inline:
+                type: object
+                properties:
+                  sentence: { type: string }
+                required: [sentence]
+          produces: draft

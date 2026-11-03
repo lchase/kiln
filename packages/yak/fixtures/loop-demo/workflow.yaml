@@ -1,0 +1,56 @@
+name: loop-review-revise
+version: "1"
+steps:
+  - id: fix-until-approved
+    loop:
+      until: "review.approved == true"
+      budget:
+        maxIterations: 5
+        noProgress:
+          signal: "testResult.numFailedTests"
+          rounds: 2
+      body:
+        - id: prep-feedback
+          needs: [review]
+          transform: { fn: prepFeedback }
+          produces: priorFeedback
+
+        - id: implement
+          needs: [priorFeedback]
+          agent:
+            prompt: { file: "fixtures/loop-demo/prompts/implement.md" }
+            schema:
+              inline:
+                type: object
+                properties:
+                  summary: { type: string }
+                required: [summary]
+            tools: [Read, Edit]
+          produces: implementResult
+
+        - id: test
+          needs: [implementResult]
+          command:
+            run: "npx vitest run --reporter=json --root fixtures/loop-demo"
+            capture: [stdout, exitCode]
+            failOn: never
+          produces: testRaw
+
+        - id: parse-test
+          needs: [testRaw]
+          transform: { fn: parseTestResult }
+          produces: testResult
+
+        - id: review
+          needs: [testResult]
+          agent:
+            prompt: { file: "fixtures/loop-demo/prompts/review.md" }
+            schema:
+              inline:
+                type: object
+                properties:
+                  approved: { type: boolean }
+                  feedback: { type: string }
+                required: [approved, feedback]
+            tools: [Read]
+          produces: review

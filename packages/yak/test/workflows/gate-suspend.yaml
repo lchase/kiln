@@ -1,0 +1,14 @@
+name: gate-suspend
+version: "1"
+steps:
+  - id: approve
+    gate:
+      schema:
+        inline:
+          type: object
+          properties:
+            decision: { type: string, enum: [approve, reject] }
+            notes: { type: string }
+          required: [decision]
+      render: { inline: "Approve this change?" }
+    produces: decision

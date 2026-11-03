@@ -1,0 +1,13 @@
+name: gate-skip-inline
+version: "1"
+steps:
+  - id: approve
+    skipIf: "true"
+    gate:
+      schema:
+        inline:
+          type: object
+          properties:
+            decision: { type: string, enum: [approve, reject], default: approve }
+      render: { inline: "Approve this change?" }
+    produces: decision

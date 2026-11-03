@@ -1,0 +1,27 @@
+# Rendered by entrypoint.sh: ${ALLOWED_DOMAINS_ACL} is a space-separated
+# domain list built from the ALLOWED_DOMAINS env var.
+acl allowed_domains dstdomain ${ALLOWED_DOMAINS_ACL}
+acl SSL_ports port 443
+acl CONNECT method CONNECT
+
+http_access allow CONNECT allowed_domains
+http_access allow allowed_domains
+http_access deny all
+
+http_port 3128
+
+# Don't cache API responses — this proxy exists for domain enforcement,
+# not performance.
+cache deny all
+
+# Ticket 08 (real-Docker verification): a plain /dev/stdout target — with
+# or without squid's `stdio:` module prefix — failed at startup in the
+# environment this was tested in (permission denied writing through
+# Docker's /dev/stdout symlink after squid drops to the `proxy` user, even
+# though `/var/log/squid` itself is proxy-owned and world-writable — this
+# environment enforces stricter DAC checks than typical Docker, where even
+# root doesn't bypass file permissions). Logging to the file squid already
+# owns sidesteps that whole class of problem; not essential to domain-ACL
+# enforcement, only to debugging it (`docker exec <proxy> tail -f
+# /var/log/squid/access.log`).
+access_log /var/log/squid/access.log

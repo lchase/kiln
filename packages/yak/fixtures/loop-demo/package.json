@@ -1,0 +1,14 @@
+{
+  "name": "loop-demo-fixture",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Tiny unimplemented function with tricky edge cases, for yak's review-and-revise loop pattern",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1"
+  }
+}

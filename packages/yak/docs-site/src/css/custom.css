@@ -1,0 +1,315 @@
+/**
+ * yak docs — a quiet, restrained theme over Infima: neutral ink/paper
+ * palette, one indigo accent, hairline borders instead of shadows or
+ * filled blocks, tight sidebar typography. Every rule below overrides a
+ * stock Infima variable or targets one of Docusaurus's stable class
+ * names — no swizzled components.
+ */
+
+:root {
+  /* -- palette tokens (light) -- */
+  --yak-ink: #0b0b0f;
+  --yak-ink-secondary: #32323c;
+  --yak-ink-muted: #6b6b76;
+  --yak-paper: #ffffff;
+  --yak-paper-sunk: #f6f6f8;
+  --yak-line: #e3e3e8;
+  --yak-accent: #5046e5;
+  --yak-accent-ink: #ffffff;
+  --yak-accent-soft: rgba(80, 70, 229, 0.08);
+  --yak-accent-soft-strong: rgba(80, 70, 229, 0.16);
+
+  /* -- Infima color scale, derived from the accent above -- */
+  --ifm-color-primary: var(--yak-accent);
+  --ifm-color-primary-dark: #3f35db;
+  --ifm-color-primary-darker: #362cc9;
+  --ifm-color-primary-darkest: #2c23a5;
+  --ifm-color-primary-light: #6459e8;
+  --ifm-color-primary-lighter: #756bea;
+  --ifm-color-primary-lightest: #9a92f0;
+
+  --ifm-background-color: var(--yak-paper);
+  --ifm-background-surface-color: var(--yak-paper);
+  --ifm-font-color-base: var(--yak-ink-secondary);
+  --ifm-heading-color: var(--yak-ink);
+
+  --ifm-font-family-base: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif,
+    'Apple Color Emoji', 'Segoe UI Emoji';
+  --ifm-font-family-monospace: ui-monospace, 'SF Mono', 'Cascadia Code', 'Roboto Mono', Consolas, Menlo, monospace;
+  --ifm-line-height-base: 1.65;
+  --ifm-heading-font-weight: 600;
+  --ifm-h1-font-size: 2rem;
+  --ifm-h2-font-size: 1.4rem;
+  --ifm-h3-font-size: 1.15rem;
+  --ifm-heading-margin-top: 2.5rem;
+
+  --ifm-code-font-size: 87%;
+  --ifm-code-background: var(--yak-paper-sunk);
+  --ifm-code-border-radius: 4px;
+  --ifm-code-padding-horizontal: 0.3em;
+  --ifm-code-padding-vertical: 0.15em;
+
+  --ifm-global-radius: 6px;
+  --ifm-global-shadow-lw: none;
+  --ifm-global-shadow-md: none;
+  --ifm-global-shadow-tl: none;
+  --ifm-hr-background-color: var(--yak-line);
+
+  --ifm-link-color: var(--yak-accent);
+  --ifm-link-decoration: none;
+  --ifm-link-hover-decoration: underline;
+
+  --ifm-navbar-background-color: var(--yak-paper);
+  --ifm-navbar-shadow: none;
+  --ifm-navbar-height: 3.5rem;
+  --ifm-navbar-link-color: var(--yak-ink-secondary);
+  --ifm-navbar-link-hover-color: var(--yak-ink);
+
+  --ifm-menu-color: var(--yak-ink-muted);
+  --ifm-menu-color-active: var(--yak-ink);
+  --ifm-menu-color-background-active: transparent;
+  --ifm-menu-color-background-hover: var(--yak-paper-sunk);
+
+  --ifm-toc-border-color: var(--yak-line);
+  --ifm-toc-link-color: var(--yak-ink-muted);
+
+  --ifm-table-border-color: var(--yak-line);
+  --ifm-table-head-background: transparent;
+  --ifm-table-head-color: var(--yak-ink);
+  --ifm-table-head-font-weight: 600;
+  --ifm-table-stripe-background: transparent;
+  --ifm-table-cell-padding: 0.6rem 0.85rem;
+
+  --ifm-blockquote-border-color: var(--yak-line);
+  --ifm-blockquote-color: var(--yak-ink-muted);
+
+  --ifm-alert-border-left-width: 1px;
+  --ifm-alert-border-width: 1px;
+  --ifm-alert-border-radius: 6px;
+  --ifm-alert-shadow: none;
+  --ifm-alert-padding-horizontal: 1rem;
+  --ifm-alert-padding-vertical: 0.85rem;
+
+  --docusaurus-highlighted-code-line-bg: var(--yak-accent-soft-strong);
+}
+
+[data-theme='dark'] {
+  --yak-ink: #f2f2f5;
+  --yak-ink-secondary: #c7c7d1;
+  --yak-ink-muted: #8a8a96;
+  --yak-paper: #0a0a0d;
+  --yak-paper-sunk: #16161b;
+  --yak-line: #26262e;
+  --yak-accent: #9089f5;
+  --yak-accent-ink: #0a0a0d;
+  --yak-accent-soft: rgba(144, 137, 245, 0.12);
+  --yak-accent-soft-strong: rgba(144, 137, 245, 0.2);
+
+  --ifm-color-primary: var(--yak-accent);
+  --ifm-color-primary-dark: #7a72f2;
+  --ifm-color-primary-darker: #6c63f0;
+  --ifm-color-primary-darkest: #4c41ea;
+  --ifm-color-primary-light: #a6a0f8;
+  --ifm-color-primary-lighter: #b4aef9;
+  --ifm-color-primary-lightest: #d6d3fc;
+}
+
+/* Base surfaces — every panel-like area shares one hairline vocabulary
+ * instead of Infima's default shadows. */
+.navbar {
+  border-bottom: 1px solid var(--yak-line);
+}
+
+.navbar__title,
+.navbar__link {
+  font-weight: 500;
+}
+
+.menu {
+  font-size: 0.8125rem;
+}
+
+/* Active sidebar item: a chevron, not a left-border tick — the same
+ * bracket the logo's own <y> is built from, doing double duty as a
+ * "you are here" marker instead of the generic accent-bar-on-the-left
+ * every admin dashboard reaches for. Reserved gutter space keeps every
+ * row's text aligned whether or not it's showing the marker. */
+.menu__link {
+  position: relative;
+  padding-left: 1.4rem;
+  border-radius: 4px;
+  transition: color 0.1s ease, background-color 0.1s ease;
+}
+
+.menu__link--active:not(.menu__link--sublist) {
+  color: var(--yak-accent);
+  background: transparent;
+  font-weight: 600;
+}
+
+.menu__link--active:not(.menu__link--sublist)::before {
+  content: '\276F';
+  position: absolute;
+  left: 0.3rem;
+  font-size: 0.65em;
+  color: var(--yak-accent);
+}
+
+.menu__list-item-collapsible {
+  font-weight: 600;
+}
+
+/* Shrink the category collapse caret to roughly match the active-page
+ * chevron above — Infima's default is an oversized 1.25rem glyph. */
+.menu__link--sublist-caret::after,
+.menu__caret::before {
+  min-width: 0.85rem;
+  height: 0.85rem;
+  background-size: 0.85rem 0.85rem;
+}
+
+.menu__list-item-collapsible:hover {
+  background: transparent;
+}
+
+/* Code blocks: quiet gray panel, hairline border, no drop shadow. */
+div[class^='codeBlockContainer'] {
+  border: 1px solid var(--yak-line);
+  box-shadow: none;
+  border-radius: 6px;
+}
+
+div[class^='codeBlockContent'] pre {
+  background: var(--yak-paper-sunk) !important;
+}
+
+code {
+  border: 1px solid var(--yak-line);
+}
+
+pre code {
+  border: none;
+}
+
+/* Admonitions: a uniform hairline box, no colored left-border stripe —
+ * the type reads from the tinted background and the icon/label chip,
+ * not an accent bar down one edge (same reasoning as the sidebar's
+ * chevron instead of a border tick: pick a signal that isn't the first
+ * thing every admin-dashboard template reaches for). */
+.theme-admonition {
+  border: 1px solid var(--yak-line);
+}
+
+.theme-admonition-caution {
+  --yak-admonition-color: #a6790a;
+  background: rgba(166, 121, 10, 0.09);
+}
+
+.theme-admonition-info {
+  --yak-admonition-color: var(--yak-accent);
+  background: var(--yak-accent-soft);
+}
+
+.theme-admonition-tip {
+  --yak-admonition-color: #1f9d55;
+  background: rgba(31, 157, 85, 0.09);
+}
+
+/* Infima derives inline-`code` background inside an alert from its own
+ * hardcoded per-type highlight color (a fixed bright amber/green/etc,
+ * same in both themes) — override it to track our own admonition color
+ * instead, so it isn't the one loud thing in an otherwise quiet box. */
+.theme-admonition {
+  --ifm-alert-background-color-highlight: color-mix(in srgb, var(--yak-admonition-color) 16%, transparent);
+  --ifm-alert-foreground-color: var(--yak-admonition-color);
+}
+
+[data-theme='dark'] .theme-admonition-caution {
+  --yak-admonition-color: #e8b23a;
+  background: rgba(232, 178, 58, 0.16);
+}
+
+[data-theme='dark'] .theme-admonition-tip {
+  --yak-admonition-color: #4ade80;
+  background: rgba(74, 222, 128, 0.14);
+}
+
+.theme-admonition .admonition-heading {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  color: var(--yak-admonition-color);
+}
+
+/* Infima's alert scope recolors link text but not its underline, so
+ * links inside a callout end up two-tone (dark text, bright-colored
+ * underline) — reads like a misspelling squiggle, not a link. Keep
+ * both in the same ink instead. */
+.theme-admonition a {
+  color: var(--yak-ink);
+  text-decoration-color: currentColor;
+}
+
+/* Tables: clean header rule, no zebra striping, no cell borders except
+ * hairline separators. */
+table {
+  border: 1px solid var(--yak-line);
+}
+
+table thead tr {
+  border-bottom: 1px solid var(--yak-line);
+}
+
+table tr {
+  border-top: 1px solid var(--yak-line);
+}
+
+/* Pagination / doc footer buttons: flat, hairline, no fill until hover. */
+.pagination-nav__link {
+  border: 1px solid var(--yak-line);
+  box-shadow: none;
+  transition: border-color 0.1s ease;
+}
+
+.pagination-nav__link:hover {
+  border-color: var(--yak-accent);
+}
+
+.pagination-nav__sublabel {
+  color: var(--yak-ink-muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Table of contents: quiet, active item marked by color + tick, not a
+ * filled pill. */
+.table-of-contents {
+  font-size: 0.8rem;
+}
+
+.table-of-contents__link--active {
+  color: var(--yak-accent);
+  font-weight: 500;
+}
+
+/* Article headings: generous top rhythm carries section breaks instead
+ * of a drawn rule. */
+article h2 {
+  margin-top: 3rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--yak-line);
+}
+
+article h2:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+/* Breadcrumbs */
+.breadcrumbs__link {
+  color: var(--yak-ink-muted);
+}

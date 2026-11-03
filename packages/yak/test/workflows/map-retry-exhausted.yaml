@@ -1,0 +1,17 @@
+name: map-retry-exhausted
+version: "1"
+steps:
+  - id: items
+    transform: { fn: oneItem }
+    produces: items
+
+  - id: review
+    needs: [items]
+    map:
+      over: items
+      concurrency: 1
+      onItemFailure: retry
+      step:
+        id: review-one
+        command: { run: "exit 1", capture: [exitCode] }
+    produces: findings

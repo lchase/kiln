@@ -1,0 +1,17 @@
+name: loop-budget-exhausted
+version: "1"
+steps:
+  - id: fix-until-green
+    loop:
+      until: "testresult.exitCode == 0"
+      budget:
+        maxIterations: 3
+      body:
+        - id: implement
+          command: { run: "true" }
+          produces: code
+
+        - id: test
+          needs: [code]
+          command: { run: "exit 1", capture: [exitCode], failOn: never }
+          produces: testresult

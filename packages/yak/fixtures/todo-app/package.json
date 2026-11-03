@@ -1,0 +1,14 @@
+{
+  "name": "todo-app-fixture",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Tiny todo-list app with one intentional bug, for yak's M2 acceptance run and later tutorial/quickstart use",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1"
+  }
+}
