@@ -37,7 +37,7 @@ export interface LoadedKilnConfig {
   >;
   /**
    * Kiln home. Jobs, logs, deliveries, launching, launch-errors, attempts,
-   * feedback, and specs live here: the directory of the config file
+   * feedback, specs, and the append-only event log live here: the directory of the config file
    * (`--config`'s directory, `$KILN_HOME`, or `~/.kiln`).
    */
   kilnDir: string;

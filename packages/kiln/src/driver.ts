@@ -37,6 +37,7 @@ import {
   type FeedbackLedger,
   type PullRequestFeedback,
 } from "./feedback.js";
+import { appendEvent } from "./events.js";
 import {
   appendInvestigationFindings,
   existingFindingsPath,
@@ -68,6 +69,7 @@ import {
   type AttemptLedger,
   type ReliabilityNote,
 } from "./reliability.js";
+import { projectRunJournal } from "./project.js";
 import {
   gateAnswerCommand,
   renderStatus,
@@ -218,6 +220,20 @@ export function answerJob(
   if (result.status !== 0) {
     throw new Error(output.trim() || `Could not ${choice} job ${jobId}.`);
   }
+  const noted = gateEdit(job.run.checkout, job.run.runId, gate.stepId);
+  appendEvent(config.kilnDir, {
+    job_id: jobId,
+    run_id: job.run.runId,
+    event: "gate.resolved",
+    step: gate.stepId,
+    properties: {
+      decision: choice,
+      by: "human",
+      repo: job.repo,
+      ...noted,
+      once: `gate.resolved:${gate.stepId}`,
+    },
+  });
   if (choice === "approve") {
     recordInvestigationFindings(config, observe(config, host), jobId);
   }
@@ -249,6 +265,11 @@ export function retryJob(config: LoadedKilnConfig, jobId: string, host: KilnHost
     if (crumb && pidAlive(crumb.pid)) {
       throw new Error(`Job ${jobId} is already launching.`);
     }
+    appendEvent(config.kilnDir, {
+      job_id: jobId,
+      event: "job.retried",
+      properties: { by: "human", repo: job.repo },
+    });
     const cleared = observed.attemptCount ?? 0;
     resetAttemptLedger(config.kilnDir, jobId, observed.run?.runId);
     rmSync(breadcrumbPath(config.kilnDir, jobId), { force: true });
@@ -701,6 +722,7 @@ function publishReadyFixes(config: LoadedKilnConfig, host: KilnHost, world: Worl
     if (sha === open.headSha) {
       open.outcome = "fixed";
       writeFeedbackLedger(config.kilnDir, ledger);
+      recordFeedbackOutcome(config.kilnDir, job.jobId, job.run.runId, open, "fixed");
       notes.push(`fixed ${job.jobId}  ${sha}`);
       continue;
     }
@@ -734,6 +756,7 @@ function publishReadyFixes(config: LoadedKilnConfig, host: KilnHost, world: Worl
     });
     open.outcome = "pushed";
     writeFeedbackLedger(config.kilnDir, ledger);
+    recordFeedbackOutcome(config.kilnDir, job.jobId, job.run.runId, open, "pushed");
     notes.push(`pushed ${job.jobId}  ${record.branch}  ${sha}`);
   }
   return notes;
@@ -741,6 +764,51 @@ function publishReadyFixes(config: LoadedKilnConfig, host: KilnHost, world: Worl
 
 function isNonFastForward(message: string): boolean {
   return /non-fast-forward|\[rejected\]|failed to push some refs/i.test(message);
+}
+
+function recordFeedbackOutcome(
+  kilnDir: string,
+  jobId: string,
+  runId: string,
+  round: { round: number; trigger: "ci" | "review"; items: readonly unknown[] },
+  outcome: "fixed" | "pushed",
+): void {
+  appendEvent(kilnDir, {
+    job_id: jobId,
+    run_id: runId,
+    event: "pr.feedback",
+    properties: {
+      round: round.round,
+      trigger: round.trigger,
+      outcome,
+      items: round.items.length,
+      once: `pr.feedback:${round.round}:${outcome}`,
+    },
+  });
+}
+
+/** An edit note the human left on the gate answer, when the answer file has one. */
+function gateEdit(checkout: string, runId: string, stepId: string): { note?: string; edit?: string } {
+  const paths = [
+    join(checkout, ".runs", runId, "pending", `${stepId}.answer.json`),
+    join(checkout, ".runs", runId, "artifacts", "approval.json"),
+  ];
+  for (const path of paths) {
+    if (!existsSync(path)) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as { note?: unknown; edit?: unknown };
+      const note = typeof parsed.note === "string" ? parsed.note.trim() : "";
+      const edit = typeof parsed.edit === "string" ? parsed.edit.trim() : "";
+      if (!note && !edit) continue;
+      return {
+        ...(note ? { note: note.slice(0, 240) } : {}),
+        ...(edit ? { edit: edit.slice(0, 240) } : {}),
+      };
+    } catch {
+      // An unreadable answer is not an edit note.
+    }
+  }
+  return {};
 }
 
 /**
@@ -792,6 +860,11 @@ function markFeedback(
   if (reason === "feedback-exhausted") ledger.exhausted = true;
   else ledger.ambiguous = true;
   writeFeedbackLedger(kilnDir, ledger);
+  appendEvent(kilnDir, {
+    job_id: jobId,
+    event: "needs-human",
+    properties: { reason, once: `needs-human:${reason}` },
+  });
 }
 
 /**
@@ -835,6 +908,16 @@ function startFix(
     at: now.toISOString(),
   });
   writeFeedbackLedger(config.kilnDir, ledger);
+  appendEvent(config.kilnDir, {
+    job_id: job.id,
+    event: "pr.feedback",
+    properties: {
+      round,
+      trigger: plan.trigger,
+      items: plan.items.length,
+      once: `pr.feedback:${round}:open`,
+    },
+  });
   let specText: string;
   try {
     specText = feedbackSpec(specHandedToYak(config, world, job), plan.items);
@@ -1156,6 +1239,10 @@ function loadJobFile(file: string): LoadedJob {
 }
 
 function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun[]> {
+  const jobs = new Map<string, Job>();
+  for (const entry of loadJobs(config)) {
+    if (entry.job) jobs.set(entry.job.id, entry.job);
+  }
   const byTag = new Map<string, ObservedRun[]>();
   for (const repo of Object.values(config.repos)) {
     for (const runDir of listRunDirs(repo.path)) {
@@ -1163,6 +1250,21 @@ function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun[]> {
       const started = events.find((event) => event.t === "run.started");
       if (!started?.tag || !parseJobTag(started.tag)) continue;
       const runId = basename(runDir);
+      const jobId = parseJobTag(started.tag);
+      if (jobId) {
+        const job = jobs.get(jobId);
+        const testCommand = job ? config.repos[job.repo]?.test : undefined;
+        projectRunJournal({
+          kilnDir: config.kilnDir,
+          jobId,
+          runId,
+          runDir,
+          workflow: job?.workflow ?? "",
+          repo: job?.repo ?? "",
+          ...(testCommand ? { testCommand } : {}),
+          events,
+        });
+      }
       const status = classify(events);
       const gateDecision = readApproveDecision(runDir);
       const title = readRunTitle(runDir);

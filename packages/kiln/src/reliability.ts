@@ -17,6 +17,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { z } from "zod";
 import { authenticationFailureLine } from "./auth.js";
 import type { LoadedKilnConfig } from "./config.js";
+import { appendEvent } from "./events.js";
 import { jobBasename } from "./paths.js";
 import type { FailureReason, ObservedJob } from "./reconcile.js";
 import { FAILURE_REASONS } from "./reconcile.js";
@@ -141,6 +142,17 @@ export function recoverRuns(
     const recorded = recordFailure(config, job.jobId, existing, pending, options.now);
     if (recorded.created) {
       appendLog(job.logPath, recorded.ledger.attempts.at(-1));
+      const runId = pending.runId ?? job.run?.runId;
+      appendEvent(config.kilnDir, {
+        job_id: job.jobId,
+        run_id: runId ?? null,
+        event: "run.failed",
+        properties: {
+          reason: pending.reason,
+          ...(pending.detail ? { detail: pending.detail } : {}),
+          once: runId ? `run.failed:${runId}` : `run.failed:launch:${recorded.ledger.attempts.length}`,
+        },
+      });
       notes.push({
         jobId: job.jobId,
         kind: kindFor(pending.reason),
@@ -151,7 +163,17 @@ export function recoverRuns(
     }
     const checkout = job.run?.checkout ?? config.repos[job.repo]?.path;
     const runId = pending.runId ?? job.run?.runId;
-    if (checkout && runId) cleanupRunWorktree(checkout, runId);
+    if (checkout && runId) {
+      const outcome = cleanupRunWorktree(checkout, runId);
+      if (outcome === "removed" || outcome === "kept") {
+        appendEvent(config.kilnDir, {
+          job_id: job.jobId,
+          run_id: runId,
+          event: outcome === "removed" ? "worktree.cleaned" : "worktree.kept",
+          properties: { once: `worktree.${outcome}:${runId}` },
+        });
+      }
+    }
   }
   return notes;
 }
