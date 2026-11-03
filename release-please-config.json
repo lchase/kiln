@@ -1,28 +1,21 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-  "separate-pull-requests": true,
+  "separate-pull-requests": false,
+  "bootstrap-sha": "261ddcb71b27537353097d8a2aa2ae8f74a55a3a",
+  "plugins": [
+    {
+      "type": "node-workspace",
+      "merge": false
+    }
+  ],
   "packages": {
     "packages/kiln": {
       "release-type": "node",
-      "component": "kiln",
-      "extra-files": [
-        {
-          "type": "json",
-          "path": "/package-lock.json",
-          "jsonpath": "$.packages['packages/kiln'].version"
-        }
-      ]
+      "component": "kiln"
     },
     "packages/yak": {
       "release-type": "node",
-      "component": "yak",
-      "extra-files": [
-        {
-          "type": "json",
-          "path": "/package-lock.json",
-          "jsonpath": "$.packages['packages/yak'].version"
-        }
-      ]
+      "component": "yak"
     }
   }
 }

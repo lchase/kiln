@@ -197,9 +197,9 @@ describe("sandbox preflight", () => {
     assert.equal(sandboxPreflight(configWith({}), facts({ dockerBinary: false, env: {} })), undefined);
   });
 
-  it("accepts the installed @lchase/yak 0.8.0 bundle", () => {
+  it("accepts the installed @lchase/yak bundle", () => {
     const installed = installedYak();
-    assert.equal(installed.version, "0.8.0");
+    assert.equal(installed.version, declaredYakDependency());
     assert.equal(yakDistHonorsAllowlist(installed.dist), true);
     const config = configWith({ sandbox: { mode: "docker" } });
     assert.equal(
@@ -277,6 +277,15 @@ describe("sandbox docker argv", () => {
     assert.match(sandboxGitOverlayDockerfile(), /apt-get install -y --no-install-recommends git ca-certificates/);
   });
 });
+
+function declaredYakDependency(): string {
+  const pkg = JSON.parse(readFileSync(join(packageRoot(), "package.json"), "utf8")) as {
+    dependencies?: { "@lchase/yak"?: string };
+  };
+  const declared = pkg.dependencies?.["@lchase/yak"];
+  if (!declared) throw new Error("packages/kiln/package.json does not depend on @lchase/yak");
+  return declared;
+}
 
 function installedYak(): { version: string; dist: string } {
   const require = createRequire(import.meta.url);
@@ -381,7 +390,7 @@ describe("sandbox launch and board", () => {
           sandboxFacts: facts({ yakVersion: installed.version, yakDist: installed.dist, env: {} }),
         },
       );
-      assert.equal(installed.version, "0.8.0");
+      assert.equal(installed.version, declaredYakDependency());
       assert.doesNotMatch(output, /does not pass allowedDomains/);
       assert.match(output, new RegExp(`pid ${child.pid}`));
       assert.equal(starts.length, 1);
