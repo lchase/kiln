@@ -40,13 +40,15 @@ carries the same version. After that baseline, nothing is tagged by hand:
    `GITHUB_TOKEN`, which cannot trigger other workflows, and the tags are
    `kiln-v*` and `yak-v*` rather than `v*`. The release-please workflow
    dispatches repo-root `.github/workflows/publish.yml` on `main` only when
-   a kiln release was cut.
+   a kiln release was cut, and `.github/workflows/publish-yak.yml` on `main`
+   only when a yak release was cut.
 5. `publish.yml` checks out `main`, typechecks, tests, builds, and runs
    `npm publish -w @lchase/kiln --provenance --access public`. Auth is npm
    trusted publishing (OIDC): the job sets `id-token: write` and installs
    `npm >= 11.5.1`. There is no `NPM_TOKEN` secret.
-   `@lchase/yak` is not published by that workflow. Repo-root
-   `.github/workflows/publish-yak.yml` is manual `workflow_dispatch` only.
+   `@lchase/yak` is not published by that workflow. `publish-yak.yml` does
+   the same for `npm publish -w @lchase/yak --provenance --access public`.
+   `workflow_dispatch` on either workflow is only a manual fallback.
 
 If release-please reports "no user facing commits found — skipping," it
 means nothing since the last release used a recognized prefix — expected,

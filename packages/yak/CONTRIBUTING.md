@@ -34,11 +34,15 @@ Nothing is done by hand. The flow:
    since the last release.
 3. Merge that PR when you want to ship. The merge itself creates the git
    tag (`yak-v*`) and GitHub Release.
-4. That tag push does not publish. `.github/workflows/publish-yak.yml` at
-   the repo root is manual `workflow_dispatch` only, until the npm trusted
-   publisher for `@lchase/yak` points at this repo and that workflow. It
-   builds, tests, and runs `npm publish` via npm's trusted publishing
-   (OIDC) — no stored token, no manual `npm version`/`git tag`/OTP.
+4. That tag push does not publish. release-please tags with
+   `GITHUB_TOKEN`, which cannot trigger other workflows, and the tag is
+   `yak-v*` rather than `v*`. The release-please workflow dispatches
+   repo-root `.github/workflows/publish-yak.yml` on `main` only when a yak
+   release was cut. That workflow checks out `main`, typechecks, tests,
+   builds, and runs `npm publish -w @lchase/yak --provenance --access public`
+   via npm trusted publishing (OIDC): `id-token: write` and `npm >= 11.5.1`.
+   There is no `NPM_TOKEN` secret. `workflow_dispatch` remains as a manual
+   fallback.
 
 If release-please reports "no user facing commits found — skipping," it
 means nothing since the last release used a recognized prefix — expected,
