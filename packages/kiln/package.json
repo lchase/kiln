@@ -1,6 +1,6 @@
 {
   "name": "@lchase/kiln",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Run a workflow on any registered repo. A markdown spec is the input.",
   "license": "MIT",
   "type": "module",

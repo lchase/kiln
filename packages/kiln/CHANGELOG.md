@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/lchase/kiln/compare/kiln-v0.11.0...kiln-v0.12.0) (2026-11-03)
+
+
+### Features
+
+* add triggers, an event router, and hourly review drafts ([#48](https://github.com/lchase/kiln/issues/48)) ([ea4ec98](https://github.com/lchase/kiln/commit/ea4ec985f15d1412788c51fffbd87e619f1e45a3))
+
 ## [0.11.0](https://github.com/lchase/kiln/compare/kiln-v0.10.0...kiln-v0.11.0) (2026-11-03)
 
 
