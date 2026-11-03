@@ -7,6 +7,7 @@ import { after, describe, it } from "node:test";
 import { AUTH_FAILED_LINE } from "../src/auth.js";
 import { loadKilnConfig } from "../src/config.js";
 import { readStatus, runStatus, runTick, startupRecovery } from "../src/driver.js";
+import { readEvents } from "../src/events.js";
 import { defaultHost } from "../src/host.js";
 import { KilnConfigError } from "../src/errors.js";
 import { writeJob } from "../src/jobs.js";
@@ -944,6 +945,10 @@ describe("failed-run worktree cleanup", () => {
     assert.equal(existsSync(savedTree), true);
     assert.equal(cleanupRunWorktree(checkout, cleanRun), "absent");
     assert.equal(cleanupRunWorktree(checkout, savedRun), "kept");
+    const events = readEvents(config.kilnDir);
+    assert.equal(events.filter((event) => event.event === "worktree.cleaned" && event.job_id === cleanId).length, 1);
+    assert.equal(events.filter((event) => event.event === "worktree.kept" && event.job_id === savedId).length, 1);
+    assert.equal(events.filter((event) => event.event === "run.failed" && event.job_id === cleanId).length, 1);
   });
 });
 

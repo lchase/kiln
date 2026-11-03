@@ -2,6 +2,7 @@
 import { addRepo, renderRepoList, resolveKilnConfig } from "./config.js";
 import { renderSandboxStatus, runSandboxBuild } from "./sandbox.js";
 import { answerJob, retryJob, runStatus, runTick } from "./driver.js";
+import { parseSince, renderLedgerFile } from "./ledger.js";
 import { startServe } from "./serve.js";
 import { addFromFile } from "./intake/file.js";
 import { addFromJira } from "./intake/jira.js";
@@ -21,6 +22,7 @@ function usage(): never {
       "       kiln approve <jobId> [--config <file>]",
       "       kiln reject <jobId> [--config <file>]",
       "       kiln retry <jobId> [--config <file>]",
+      "       kiln ledger [--since 7d] [--repo <name>] [--config <file>]",
       "       kiln sandbox [build] [--config <file>]",
       "       kiln serve [--port 4100] [--tick <seconds>|--no-tick] [--config <file>]",
       "",
@@ -29,7 +31,7 @@ function usage(): never {
       "A relative path is stored absolute, resolved from the working directory.",
       "~ is expanded from the home directory.",
       "",
-      "Config, jobs, logs, and deliveries live in one kiln home: --config <file>",
+      "Config, jobs, logs, events, and deliveries live in one kiln home: --config <file>",
       "if given, otherwise $KILN_HOME/kiln.config.json when KILN_HOME is set,",
       "otherwise ~/.kiln/kiln.config.json. repo add creates that directory.",
       "Run kiln repo add <name> <path> from any directory. A leftover",
@@ -68,6 +70,12 @@ function usage(): never {
       "A rejected Claude login (401 or an invalid bearer token) is auth-failed and is not retried.",
       "(default 3). The job is then dead. A rejected gate is not retried.",
       "Attempts are files under the kiln home, not fields on the job.",
+      "Events are one JSON line each in <kiln-home>/events.jsonl. A write",
+      "failure is reported and does not stop the job. kiln ledger counts",
+      "human interventions from that log: a rejected gate, a manual retry,",
+      "an edit noted on a gate, and a needs-human stop. --since 7d (or 12h,",
+      "30m, 45s, or an ISO time) keeps events at or after that time. --repo",
+      "limits the count to one registered repo name.",
       "Once a pull request is open, tick watches it. A failed check or a review",
       "that requests changes starts a fix on that same branch, up to maxFixRounds",
       "(default 2). Kiln does not merge, approve, or comment. Past that bound the",
@@ -115,6 +123,7 @@ interface FlagBag {
   port?: number;
   tickSeconds?: number;
   noTick: boolean;
+  since?: string;
 }
 
 function parseFlags(argv: string[]): FlagBag {
@@ -228,14 +237,21 @@ function parseFlags(argv: string[]): FlagBag {
       bag.noTick = true;
       continue;
     }
+    if (flag === "--since") {
+      if (!next || next.startsWith("--")) usage();
+      bag.since = next;
+      i += 1;
+      continue;
+    }
     if (flag?.startsWith("--")) usage();
     if (flag !== undefined) bag.positionals.push(flag);
   }
   return bag;
 }
 
-function rejectServeFlags(flags: FlagBag): void {
+function rejectServeFlags(flags: FlagBag, options: { since?: boolean } = {}): void {
   if (flags.port !== undefined || flags.tickSeconds !== undefined || flags.noTick) usage();
+  if (options.since !== false && flags.since) usage();
 }
 
 function repoCommand(argv: string[]): void {
@@ -406,6 +422,37 @@ function retryCommand(argv: string[]): void {
   process.stdout.write(retryJob(config, jobId));
 }
 
+function ledgerCommand(argv: string[]): void {
+  const flags = parseFlags(argv);
+  rejectServeFlags(flags, { since: false });
+  if (
+    flags.positionals.length !== 0 ||
+    flags.test ||
+    flags.spec ||
+    flags.prompt ||
+    flags.jira ||
+    flags.title ||
+    flags.issue ||
+    flags.workflow ||
+    flags.context ||
+    flags.dryRun ||
+    flags.stack ||
+    flags.after.length > 0 ||
+    flags.deliver ||
+    flags.base
+  ) {
+    usage();
+  }
+  const config = resolveKilnConfig({ configPath: flags.configPath });
+  const since = flags.since ? parseSince(flags.since) : undefined;
+  process.stdout.write(
+    renderLedgerFile(config.kilnDir, {
+      ...(since ? { since } : {}),
+      ...(flags.repo ? { repo: flags.repo } : {}),
+    }),
+  );
+}
+
 function gateCommand(choice: "approve" | "reject", argv: string[]): void {
   const flags = parseFlags(argv);
   rejectServeFlags(flags);
@@ -490,6 +537,10 @@ async function main(): Promise<void> {
   }
   if (command === "retry") {
     retryCommand(argv.slice(1));
+    return;
+  }
+  if (command === "ledger") {
+    ledgerCommand(argv.slice(1));
     return;
   }
   if (command === "sandbox") {

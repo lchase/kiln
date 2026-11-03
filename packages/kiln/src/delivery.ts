@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { z } from "zod";
 import type { LoadedKilnConfig } from "./config.js";
+import { evidenceSectionFor } from "./evidence.js";
+import { appendEvent } from "./events.js";
 import type { GitRemote, KilnHost, PullRequestRef } from "./host.js";
 import { HostError } from "./host.js";
 import { readJobSpec } from "./jobs.js";
@@ -216,6 +218,20 @@ export function deliverJob(request: DeliverRequest): DeliverOutcome {
       prNumber: pr.number,
       prUrl: pr.url,
     });
+    if (!sameRun?.prNumber && remoteName) {
+      appendEvent(request.config.kilnDir, {
+        job_id: request.job.id,
+        run_id: request.runId,
+        event: "pr.opened",
+        properties: {
+          number: pr.number,
+          url: pr.url,
+          branch: remoteName,
+          base: request.baseBranch,
+          once: `pr.opened:${pr.number}`,
+        },
+      });
+    }
     return { ok: true, detail: pr.url, prUrl: pr.url, prNumber: pr.number };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -247,6 +263,8 @@ export function pullRequestBody(request: DeliverRequest): string {
     "",
     "## Reviewers",
     ...(reviews.length > 0 ? reviews : ["- (no reviewer artifacts)"]),
+    "",
+    evidenceSectionFor(request.config.kilnDir, request.job.id).trimEnd(),
     "",
   ].join("\n");
 }

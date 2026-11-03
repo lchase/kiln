@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { LoadedKilnConfig } from "./config.js";
+import { appendEvent } from "./events.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import { jobBasename } from "./paths.js";
 import { JobSchema, parseIssueKey, type Job, type JobSource } from "./schemas.js";
@@ -116,6 +117,17 @@ export function writeJob(config: LoadedKilnConfig, input: WriteJobInput): { job:
   mkdirSync(config.jobsDir, { recursive: true });
   const jsonPath = jobFilePath(config.jobsDir, job.id);
   writeFileSync(jsonPath, `${JSON.stringify(job, null, 2)}\n`);
+  appendEvent(config.kilnDir, {
+    job_id: job.id,
+    event: "job.added",
+    properties: {
+      repo: job.repo,
+      workflow: job.workflow,
+      title: job.title,
+      ...(job.source ? { source_kind: job.source.kind } : {}),
+      once: "job.added",
+    },
+  });
   return { job, jsonPath };
 }
 

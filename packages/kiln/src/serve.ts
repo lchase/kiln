@@ -7,8 +7,9 @@ import { AUTH_PREFLIGHT_PREFIX } from "./auth.js";
 import { loadKilnConfig, type LoadedKilnConfig } from "./config.js";
 import { answerJob, readStatus, retryJob, runTick, startupRecovery } from "./driver.js";
 import { browse } from "./fs-browse.js";
-import { defaultHost } from "./host.js";
+import { appendEvent, eventsForJob } from "./events.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
+import { defaultHost } from "./host.js";
 import { intakeJobs } from "./intake-http.js";
 import { packageRoot } from "./paths.js";
 import { SANDBOX_PREFLIGHT_PREFIX } from "./sandbox.js";
@@ -228,6 +229,15 @@ async function handle(
   }
   if (path === "/api/jobs" || path === "/api/status") {
     sendJson(res, 200, statusDocument(state), secrets);
+    return;
+  }
+  if (path === "/api/events") {
+    const jobId = url.searchParams.get("job_id");
+    if (!jobId || !JOB_ID.test(jobId)) {
+      sendJson(res, 400, { error: "job_id is required." }, secrets);
+      return;
+    }
+    sendJson(res, 200, { job_id: jobId, events: eventsForJob(config.kilnDir, jobId) }, secrets);
     return;
   }
 
@@ -555,6 +565,11 @@ function refreshLiveConfig(state: LiveConfig): void {
     state.configError = undefined;
     state.mtimeMs = file.mtimeMs;
     state.size = file.size;
+    appendEvent(next.kilnDir, {
+      job_id: null,
+      event: "config.reloaded",
+      properties: {},
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const named = message.includes(path) ? message : `${path}: ${message}`;
