@@ -40,6 +40,18 @@ export const RepoEntrySchema = z.object({
    * The local branch stays `yak/<run-id>`.
    */
   branch: z.string().min(1, "Branch template is empty.").optional(),
+  /** Overrides the global attempt cap for jobs in this repo. */
+  maxAttempts: z
+    .number()
+    .int("Max attempts must be a whole number.")
+    .min(1, "Max attempts must be at least 1.")
+    .optional(),
+  /** Overrides the global fix-round cap for jobs in this repo. */
+  maxFixRounds: z
+    .number()
+    .int("Max fix rounds must be a whole number.")
+    .min(1, "Max fix rounds must be at least 1.")
+    .optional(),
 });
 export type RepoEntry = z.infer<typeof RepoEntrySchema>;
 
@@ -94,22 +106,35 @@ const WORKFLOW_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /** No yak event and no log output for this long stalls a running job. `<= 0` disables it. */
 export const DEFAULT_STALL_TIMEOUT_MS = 15 * 60 * 1000;
-/** Transient failures retry until this many attempts, then the job is dead. */
+/** Transient failures retry until this many attempts, then the job needs a person. */
 export const DEFAULT_MAX_ATTEMPTS = 3;
 /** Pull request fix rounds before the job is needs-human (`feedback-exhausted`). */
 export const DEFAULT_MAX_FIX_ROUNDS = 2;
+/** Identical failure fingerprints before the job needs a person. */
+export const DEFAULT_MAX_SAME_FINGERPRINT = 3;
 
 /**
  * Milliseconds without a yak event or log output before a running job is
  * killed and retried. Default 15 minutes. `0` or negative disables stall detection.
  */
 const stallTimeoutMs = z.number().int("Stall timeout must be a whole number of milliseconds.").optional();
-/** Transient failures before the job is dead. Default 3. */
+/** Transient failures before the job needs a person. Default 3. Hitting the cap is a budget failure. */
 const maxAttempts = z
   .number()
   .int("Max attempts must be a whole number.")
   .min(1, "Max attempts must be at least 1.")
   .optional();
+/** Same failure fingerprint before Needs human. Default 3. */
+const maxSameFingerprint = z
+  .number()
+  .int("Fingerprint limit must be a whole number.")
+  .min(1, "Fingerprint limit must be at least 1.")
+  .optional();
+/**
+ * Dollars of recorded run cost allowed on the local calendar day.
+ * Omitted means no cap. `0` blocks new runs immediately.
+ */
+const dailyDollarCap = z.number().nonnegative("Daily dollar cap cannot be negative.").optional();
 /**
  * Fix rounds for an open pull request before the job is needs-human with
  * reason `feedback-exhausted`. Default 2. Kiln does not merge.
@@ -130,6 +155,8 @@ export const EditableKilnSettingsSchema = z.object({
   stallTimeoutMs,
   maxAttempts,
   maxFixRounds,
+  maxSameFingerprint,
+  dailyDollarCap,
   sandbox: EditableSandboxSchema.optional(),
 });
 export type EditableKilnSettings = z.infer<typeof EditableKilnSettingsSchema>;
@@ -145,6 +172,8 @@ export const KilnConfigFileSchema = z.object({
   stallTimeoutMs,
   maxAttempts,
   maxFixRounds,
+  maxSameFingerprint,
+  dailyDollarCap,
   adapter: z.enum(["mock", "claude-code"]).optional(),
   sandbox: SandboxSettingsSchema.optional(),
   /** Per-workflow sandbox override. A set field replaces the global one; an omitted field inherits. */
@@ -206,9 +235,10 @@ export type Job = z.infer<typeof JobSchema>;
  * `deliver=pr`. It does not enter `in-review`. A reject, a failure, a dead
  * process, and an ok run with no readable approval do not unblock an
  * after-merged dependent. A stacked job unblocks when its one upstream has
- * landed, which includes `in-review`. `dead` is also a job whose transient
- * failures have used `maxAttempts`. Those attempts live under the kiln
- * directory, not in this file.
+ * landed, which includes `in-review`. A job that has used its attempt cap,
+ * fix-round cap, or fingerprint breaker is `needs-human`. `dead` is a run
+ * whose process died and has not been recorded yet. Attempts live under
+ * the kiln directory, not in this file.
  */
 export const JOB_STATES = [
   "queued",

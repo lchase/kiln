@@ -242,10 +242,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         throw new AgentStepFailedError(mapResultError(result))
       }
 
+      const usd = reportedUsd(result)
       return {
         output: result.structured_output ?? result.result,
         sessionId: result.session_id,
         tokens: { input: result.usage.input_tokens, output: result.usage.output_tokens },
+        ...(usd !== undefined ? { usd } : {}),
         filesChanged: [...filesChanged].sort(),
         stopReason: 'complete',
       }
@@ -253,4 +255,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       await network?.teardown()
     }
   }
+}
+
+/** Dollars the CLI already reported. Absent or non-finite stays unset. */
+function reportedUsd(result: object): number | undefined {
+  if (!('total_cost_usd' in result)) return undefined
+  const value = result.total_cost_usd
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined
+  return value
 }

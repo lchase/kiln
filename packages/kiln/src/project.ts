@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, join, relative, sep } from "node:path";
 import { appendEvent } from "./events.js";
+import { costFromJournal, decideFailure } from "./failure.js";
 import { jobBasename, packageRoot } from "./paths.js";
 
 /**
@@ -200,24 +201,39 @@ function recordGateResolved(input: ProjectRunInput, event: Record<string, unknow
 }
 
 function recordRunFinished(input: ProjectRunInput, event: Record<string, unknown>): void {
+  const cost = costFromJournal(input.events);
   if (event.status === "ok") {
     appendEvent(input.kilnDir, {
       job_id: input.jobId,
       run_id: input.runId,
       event: "run.finished",
-      properties: { status: "ok", once: "run.finished" },
+      properties: { status: "ok", tokens: cost.tokens, usd: cost.usd, once: "run.finished" },
     });
     return;
   }
-  if (event.status !== "failed") return;
-  const reason = typeof event.reason === "string" ? clip(event.reason) : undefined;
+  // A normal failure is classified in recoverRuns, which owns the retry decision.
+  // A cancelled run is not recovered, so the class is recorded here.
+  if (event.status !== "failed" || event.reason !== "cancelled") return;
+  const decision = decideFailure({
+    text: "cancelled",
+    operational: false,
+    blocked: true,
+    attempt: 1,
+    maxAttempts: Number.MAX_SAFE_INTEGER,
+    sameFingerprint: 1,
+    maxSameFingerprint: Number.MAX_SAFE_INTEGER,
+  });
   appendEvent(input.kilnDir, {
     job_id: input.jobId,
     run_id: input.runId,
     event: "run.failed",
     properties: {
       status: "failed",
-      ...(reason ? { reason } : {}),
+      reason: "cancelled",
+      class: decision.class,
+      fingerprint: decision.fingerprint,
+      tokens: cost.tokens,
+      usd: cost.usd,
       once: `run.failed:${input.runId}`,
     },
   });

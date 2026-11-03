@@ -31,6 +31,7 @@ function job(overrides: Partial<StatusJobView> & Pick<StatusJobView, "jobId" | "
     noReadableApproval: false,
     gates: [],
     canApprove: false,
+    canRevise: false,
     canReject: false,
     steps: [],
     ...overrides,
@@ -97,6 +98,7 @@ describe("attention view", () => {
         jobId: "human",
         state: "needs-human",
         canApprove: true,
+        canRevise: true,
         canReject: true,
         gates: [
           {
@@ -425,7 +427,7 @@ describe("attention view", () => {
     assert.ok(dead);
     assert.equal(again.state, "failed");
     assert.equal(scheduledRetry(again), true);
-    assert.equal(dead.state, "dead");
+    assert.equal(dead.state, "needs-human");
     assert.equal(scheduledRetry(dead), false);
 
     const attention = buildAttention(view.jobs);

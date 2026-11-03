@@ -13,6 +13,8 @@ export interface AgentAdapterResponse {
   output: unknown                      // parsed if schema given, else string
   sessionId: string
   tokens: { input: number; output: number }
+  /** Dollars the CLI reported for this call. Omit when it reported none. */
+  usd?: number
   filesChanged: string[]
   stopReason: 'complete' | 'max_turns' | 'error' | 'aborted'
 }

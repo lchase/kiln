@@ -294,7 +294,7 @@ describe("decide", () => {
       lastFailureReason: "failed",
     });
     const done = observation({ jobs: [exhausted, other] });
-    assert.equal(jobState(exhausted, done), "dead");
+    assert.equal(jobState(exhausted, done), "needs-human");
     assert.deepEqual(decide(done, new Date("2026-06-01T00:00:00.000Z")), [
       { type: "launch", jobId: "other", repo: "web" },
     ]);

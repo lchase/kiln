@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { formatSpend, type SpendSnapshot } from "./rails.js";
 import { join } from "node:path";
 import { scheduledRetry, type AttentionItem, type AttentionView } from "./attention.js";
 import { readBoardFiles, stageOf, stagesFor, type BoardFile, type BoardReviewRound, type BoardStage } from "./board.js";
@@ -18,6 +19,8 @@ export interface ServePageOptions {
   repos: ServeRepoOption[];
   workflows: string[];
   configError?: string;
+  paused?: boolean;
+  spend?: SpendSnapshot;
 }
 
 const REVIEWERS = [
@@ -61,8 +64,12 @@ export function renderConsole(css: string, attention: AttentionView, page?: Serv
     ...repos.map((repo) => chip(repo, repo, items.filter((item) => item.job.repo === repo).length, false)),
   ].join("");
   const version = VERSION ? `<span class="ver">v${escapeHtml(VERSION)}</span>` : "";
+  const paused = intake.paused === true;
+  const spend = intake.spend ? `<span class="spend" id="spend">${escapeHtml(formatSpend(intake.spend))}</span>` : "";
   const body = `<header>
 <div class="brand"><span class="logo" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12V6l5-3 5 3v6l-5 3-5-3z"/><path d="M3 6l5 3 5-3M8 9v6"/></svg></span><h1>Kiln</h1>${version}</div>
+${spend}
+<form method="post" action="${paused ? "/api/resume" : "/api/pause"}" class="pause" id="pause-form"><input type="hidden" name="csrf" value="${escapeHtml(intake.csrf)}"><button type="submit" id="pause-toggle" aria-pressed="${paused ? "true" : "false"}">${paused ? "Resume" : "Pause"}</button></form>
 <div class="status" id="status">${items.length === 1 ? "1 job" : `${items.length} jobs`}</div>
 </header>
 <p class="meta config-error" id="config-error" role="status"${intake.configError ? "" : " hidden"}>${escapeHtml(intake.configError ?? "")}</p>
@@ -232,6 +239,12 @@ function settingsSheet(): string {
 <label class="field"><span class="k">Branch template</span><input id="repo-branch" type="text" autocomplete="off" spellcheck="false"></label>
 <p class="hint" id="hint-branch">Default {issue}-{slug}, which renders as ABC-123-slug.</p>
 <p class="field-error" data-error="branch" hidden></p>
+<label class="field"><span class="k">Max attempts</span><input id="repo-max-attempts" type="number" min="1" step="1" placeholder="inherit"></label>
+<p class="hint">Overrides the global attempt cap for this repo. Empty inherits.</p>
+<p class="field-error" data-error="repoAttempts" hidden></p>
+<label class="field"><span class="k">Max fix rounds</span><input id="repo-max-fix-rounds" type="number" min="1" step="1" placeholder="inherit"></label>
+<p class="hint">Overrides the global fix-round cap for this repo. Empty inherits.</p>
+<p class="field-error" data-error="repoRounds" hidden></p>
 <div class="d-actions"><button type="button" id="repo-done">Done</button></div>
 </div>
 <div id="repo-list"></div>
@@ -256,6 +269,12 @@ function settingsSheet(): string {
 <label class="field"><span class="k">Max fix rounds</span><input id="max-fix-rounds" type="number" min="1" step="1"></label>
 <p class="hint" id="hint-fix"></p>
 <p class="field-error" data-error="maxFixRounds" hidden></p>
+<label class="field"><span class="k">Same fingerprint limit</span><input id="max-same-fingerprint" type="number" min="1" step="1"></label>
+<p class="hint" id="hint-fingerprint"></p>
+<p class="field-error" data-error="maxSameFingerprint" hidden></p>
+<label class="field"><span class="k">Daily dollar cap</span><input id="daily-dollar-cap" type="number" min="0" step="0.01"></label>
+<p class="hint" id="hint-cap"></p>
+<p class="field-error" data-error="dailyDollarCap" hidden></p>
 </div>
 <div class="d-actions"><button type="submit">Save</button></div>
 </form>
@@ -348,6 +367,11 @@ function actionsHtml(item: AttentionItem, csrf: string): string {
   if (item.job.canReject) {
     forms.push(`<form method="post" action="/api/jobs/${id}/reject" class="act reject">${token}<button type="submit">Reject</button></form>`);
   }
+  if (item.job.canRevise) {
+    forms.push(
+      `<form method="post" action="/api/jobs/${id}/revise" class="act revise">${token}<input name="note" type="text" required maxlength="8000" placeholder="Note for the next round" autocomplete="off"><button type="submit">Revise</button></form>`,
+    );
+  }
   if (item.retry) {
     forms.push(`<form method="post" action="/api/jobs/${id}/retry" class="act retry">${token}<button type="submit">Retry</button></form>`);
   }
@@ -401,7 +425,7 @@ function attemptHtml(job: StatusJobView, stage: string): string {
     if (job.lastFailureReason) detail.push(job.lastFailureReason);
     return `<div class="meta">retrying <time datetime="${escapeHtml(job.nextRetryAt)}" data-time="clock">${escapeHtml(job.nextRetryAt)}</time> · ${escapeHtml(detail.join(" · "))}</div>`;
   }
-  if (stage !== "needs-human" || (job.state !== "failed" && job.state !== "dead")) return "";
+  if (stage !== "needs-human" || (job.state !== "failed" && job.state !== "dead" && job.state !== "needs-human")) return "";
   if (job.attemptCount <= 0 && !job.lastFailureReason && !job.nextRetryAt) return "";
   const parts: string[] = [];
   if (job.attemptCount > 0) parts.push(`attempt ${job.attemptCount}/${job.maxAttempts}`);

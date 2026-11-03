@@ -61,6 +61,19 @@ header {
 }
 .ver { font-size: 12px; line-height: 16px; color: var(--faint); align-self: flex-end; margin: 0 0 4px -4px; }
 h1 { margin: 0; font-size: 18px; line-height: 24px; font-weight: 500; }
+.spend { font-family: var(--mono); font-size: 12px; line-height: 16px; color: var(--muted); }
+.pause { margin: 0; }
+.pause button, .d-actions .revise input {
+  font: inherit;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+.pause button[aria-pressed="true"] { color: var(--human); }
+.d-actions .revise { display: flex; gap: 8px; align-items: center; }
+.d-actions .revise input { min-width: 16rem; }
 .status { margin-left: auto; font-family: var(--mono); font-size: 12px; line-height: 16px; color: var(--muted); }
 .status::before {
   content: "";

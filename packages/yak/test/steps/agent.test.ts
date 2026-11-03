@@ -160,7 +160,25 @@ describe('callAgentOnce', () => {
     expect(events).toContainEqual(
       expect.objectContaining({ t: 'budget.consumed', stepId: 'plan', tokens: 30 }),
     )
+    expect(events.find((event) => event.t === 'budget.consumed')).not.toHaveProperty('usd')
 
+    await rm(runDir, { recursive: true, force: true })
+  })
+
+  it('journals usd only when the adapter reported a dollar figure', async () => {
+    const runDir = await mkdtemp(path.join(tmpdir(), 'yak-agent-usd-'))
+    const adapter = new FakeAdapter({
+      output: 'ok',
+      sessionId: 'sess-usd',
+      tokens: { input: 2, output: 3 },
+      usd: 0.25,
+      filesChanged: [],
+      stopReason: 'complete',
+    })
+    const step = agent({ id: 'plan', prompt: { inline: 'go' } })
+    await callAgentOnce(step, {}, { runId: 'r1', runDir, cwd, adapter })
+    const events = await readJournal(runDir)
+    expect(events).toContainEqual(expect.objectContaining({ t: 'budget.consumed', stepId: 'plan', tokens: 5, usd: 0.25 }))
     await rm(runDir, { recursive: true, force: true })
   })
 

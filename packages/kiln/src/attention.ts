@@ -34,7 +34,9 @@ export function scheduledRetry(job: {
   maxAttempts?: number;
   lastFailureReason?: string;
   nextRetryAt?: string;
+  waitReason?: string;
 }): boolean {
+  if (job.waitReason) return false;
   if (job.state !== "failed") return false;
   if (!job.nextRetryAt || !Number.isFinite(Date.parse(job.nextRetryAt))) return false;
   const max = job.maxAttempts;
@@ -152,7 +154,9 @@ function toItem(job: StatusJobView): AttentionItem {
     reason: attentionReason(job, tail),
     ...(tail ? { errorTail: tail } : {}),
     ...(findings ? { findings } : {}),
-    retry: job.state === "failed" || job.state === "dead",
+    retry:
+      (job.state === "failed" || job.state === "dead" || (job.state === "needs-human" && Boolean(job.stopReason))) &&
+      job.gates.length === 0,
     ...(since ? { since } : {}),
   };
 }
@@ -160,6 +164,8 @@ function toItem(job: StatusJobView): AttentionItem {
 export function attentionReason(job: StatusJobView, tail = errorTail(job)): string {
   switch (job.state) {
     case "needs-human": {
+      if (job.stopReason === "attempt-cap") return "Attempt cap reached";
+      if (job.stopReason === "fingerprint") return "Same failure repeated";
       if (job.feedbackReason) return job.feedbackReason;
       const question = gateQuestion(job);
       return question ? `Gate: ${oneLine(question)}` : "Waiting on a person";
@@ -168,6 +174,7 @@ export function attentionReason(job: StatusJobView, tail = errorTail(job)): stri
       if (job.lastFailureReason === "auth-failed") return AUTH_FAILED_LINE;
       return job.sandboxError ? `Sandbox: ${oneLine(job.sandboxError)}` : "Run died before it finished";
     case "failed": {
+      if (job.waitReason) return job.waitReason;
       if (job.lastFailureReason === "auth-failed") return AUTH_FAILED_LINE;
       if (job.sandboxError) return `Sandbox: ${oneLine(job.sandboxError)}`;
       const why = failureLine(job.launchError) || firstLine(job.deliveryError) || firstLine(job.failureDetail) || firstLine(tail) || "Run failed";
@@ -179,8 +186,6 @@ export function attentionReason(job: StatusJobView, tail = errorTail(job)): stri
       return "In review";
     case "invalid":
       return job.invalidReason ? `Invalid: ${oneLine(job.invalidReason)}` : "Job file is invalid";
-    case "blocked":
-      return oneLine(waitingOn(job));
     case "running": {
       const current = job.steps.find((step) => step.phase === "current" || step.phase === "failed");
       return current ? `Running ${current.id}` : "Running";
@@ -188,7 +193,9 @@ export function attentionReason(job: StatusJobView, tail = errorTail(job)): stri
     case "approved":
       return "Approved, still finishing";
     case "queued":
-      return "Queued, ready to launch";
+      return job.waitReason ?? "Queued, ready to launch";
+    case "blocked":
+      return job.waitReason ?? oneLine(waitingOn(job));
     case "done":
       return job.prUrl ? "Merged" : "Done";
     case "rejected":

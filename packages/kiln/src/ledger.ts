@@ -1,6 +1,7 @@
 import type { KilnEvent } from "./events.js";
 import { readEvents } from "./events.js";
 import { redact } from "./redact.js";
+import { formatSpend, spendSnapshot, type SpendSnapshot } from "./rails.js";
 
 /**
  * Interventions are derived from the event log. Nothing is stored beside it.
@@ -17,6 +18,9 @@ export interface LedgerOptions {
   /** Repo name from the job, or from an event that recorded one. */
   repo?: string;
   now?: Date;
+  /** Included so the ledger can print today's spend. Omit the field to skip the line. */
+  dailyDollarCap?: number;
+  spend?: SpendSnapshot;
 }
 
 export interface LedgerRow {
@@ -81,8 +85,14 @@ export function ledgerRows(events: readonly KilnEvent[], options: LedgerOptions 
 }
 
 export function renderLedger(events: readonly KilnEvent[], options: LedgerOptions = {}): string {
+  const spend =
+    options.spend ??
+    (options.dailyDollarCap !== undefined || options.now
+      ? spendSnapshot(events, options.dailyDollarCap, options.now ?? new Date())
+      : undefined);
+  const head = spend ? `${formatSpend(spend)}\n` : "";
   const rows = ledgerRows(events, options);
-  if (rows.length === 0) return redact("0 interventions\n");
+  if (rows.length === 0) return redact(`${head}0 interventions\n`);
   const lines: string[] = [];
   let grand = 0;
   let index = 0;
@@ -104,11 +114,13 @@ export function renderLedger(events: readonly KilnEvent[], options: LedgerOption
   }
   lines.push("");
   lines.push(`${grand} ${grand === 1 ? "intervention" : "interventions"}`);
-  return redact(`${lines.join("\n")}\n`);
+  return redact(`${head}${lines.join("\n")}\n`);
 }
 
 export function renderLedgerFile(kilnDir: string, options: LedgerOptions = {}): string {
-  return renderLedger(readEvents(kilnDir), options);
+  const events = readEvents(kilnDir);
+  const spend = spendSnapshot(events, options.dailyDollarCap, options.now ?? new Date());
+  return renderLedger(events, { ...options, spend });
 }
 
 function reasonsFor(event: KilnEvent): string[] {

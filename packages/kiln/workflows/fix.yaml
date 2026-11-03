@@ -45,4 +45,4 @@ steps:
     needs: [input, build]
     skipIf: 'build.status != "READY"'
     command:
-      run: 'git add -A && git diff --cached --quiet || git commit -m "kiln: $KILN_TASK_TITLE"'
+      run: 'git add -A && git diff --cached --quiet || git commit -m "kiln: $KILN_TASK_TITLE" --trailer "Kiln-Job: $KILN_JOB" --trailer "Kiln-Round: $KILN_ROUND" --trailer "Kiln-Prompts-Hash: $KILN_PROMPTS_HASH"'

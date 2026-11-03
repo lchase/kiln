@@ -152,6 +152,7 @@ describe('ClaudeCodeAdapter', () => {
       output: { summary: 'ok' },
       sessionId: 'session-1',
       tokens: { input: 12, output: 34 },
+      usd: 0,
       filesChanged: [],
       stopReason: 'complete',
     })

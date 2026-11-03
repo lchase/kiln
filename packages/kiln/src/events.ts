@@ -20,7 +20,8 @@ import { redactDeep } from "./redact.js";
  * parses it. A write failure is reported and does not escape to the caller.
  *
  * `run_id` and `step` are null when the moment has none. `job_id` is null
- * only for `config.reloaded`, which is not a job.
+ * for `config.reloaded`, `kiln.paused`, `kiln.resumed`, and `budget.blocked`,
+ * which are not a job.
  */
 
 export const EVENT_NAMES = [
@@ -39,6 +40,9 @@ export const EVENT_NAMES = [
   "worktree.kept",
   "config.reloaded",
   "needs-human",
+  "kiln.paused",
+  "kiln.resumed",
+  "budget.blocked",
 ] as const;
 export type EventName = (typeof EVENT_NAMES)[number];
 
@@ -95,14 +99,24 @@ const GateResolved = z.object({
   edit: z.string().min(1).optional(),
   once,
 });
+const costFields = {
+  /** Sum of yak `budget.consumed` tokens. Null when the journal did not report any. */
+  tokens: z.number().nonnegative().nullable().optional(),
+  /** Sum of reported dollars. Null when the journal did not report any. Never invented. */
+  usd: z.number().nonnegative().nullable().optional(),
+};
 const RunFailed = z.object({
   reason: z.string().min(1).optional(),
   detail: z.string().min(1).optional(),
   status: z.string().min(1).optional(),
+  class: z.enum(["transient", "deterministic", "budget"]).optional(),
+  fingerprint: z.string().min(1).optional(),
+  ...costFields,
   once,
 });
 const RunFinished = z.object({
   status: z.literal("ok"),
+  ...costFields,
   once,
 });
 const PrOpened = z.object({
@@ -123,6 +137,13 @@ const Worktree = z.object({ once });
 const ConfigReloaded = z.object({ once });
 const NeedsHuman = z.object({
   reason: z.string().min(1),
+  once,
+});
+const FactoryToggle = z.object({ once });
+const BudgetBlocked = z.object({
+  day: z.string().min(1),
+  usd: z.number().nonnegative(),
+  cap: z.number().nonnegative(),
   once,
 });
 
@@ -154,6 +175,24 @@ export const EventSchema = z.discriminatedUnion("event", [
     properties: ConfigReloaded,
   }),
   z.object({ ...envelope, event: z.literal("needs-human"), job_id: z.string().min(1), properties: NeedsHuman }),
+  z.object({
+    ...envelope,
+    event: z.literal("kiln.paused"),
+    job_id: z.string().min(1).nullable(),
+    properties: FactoryToggle,
+  }),
+  z.object({
+    ...envelope,
+    event: z.literal("kiln.resumed"),
+    job_id: z.string().min(1).nullable(),
+    properties: FactoryToggle,
+  }),
+  z.object({
+    ...envelope,
+    event: z.literal("budget.blocked"),
+    job_id: z.string().min(1).nullable(),
+    properties: BudgetBlocked,
+  }),
 ]);
 
 export type KilnEvent = z.infer<typeof EventSchema>;
