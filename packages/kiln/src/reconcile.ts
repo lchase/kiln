@@ -130,6 +130,13 @@ export interface ObservedJob {
    * Omitted until the file has been written.
    */
   findingsPath?: string;
+  /**
+   * Set when posting an approved review draft failed and a later
+   * `review.posted` has not cleared it. The job stays on the gate.
+   */
+  reviewPostError?: string;
+  /** URL from `review.posted` for this pull request head. */
+  reviewUrl?: string;
   /** A launching breadcrumb exists, its child pid is alive, and no journal is visible yet. */
   launching: boolean;
   /**

@@ -90,6 +90,8 @@ export interface BoardJob {
   log: boolean;
   /** Launch log. List rows for a gate omit it; a failure row keeps the tail. */
   logTail?: string;
+  /** Set when an approved review draft could not be posted. The gate is still open. */
+  reviewPostError?: string;
 }
 
 export interface BoardDocument {
@@ -209,6 +211,7 @@ export function parseSeenQuery(values: readonly string[]): Record<string, string
 }
 
 export function isInbox(job: StatusJobView): boolean {
+  if (job.reviewPostError) return false;
   if (job.canApprove || job.canReject || job.canRevise) return true;
   return job.state === "needs-human" && job.gates.length > 0 && !job.stopReason && !job.feedbackReason;
 }
@@ -642,11 +645,13 @@ function toBoardJob(job: StatusJobView, events: readonly KilnEvent[]): BoardJob 
     spec: Boolean(job.specPath),
     log: Boolean(job.logPath),
     ...(job.logTail?.trim() ? { logTail: job.logTail.trim() } : {}),
+    ...(job.reviewPostError ? { reviewPostError: job.reviewPostError } : {}),
   };
 }
 
 function finishedLine(job: StatusJobView): string {
   if (job.state === "rejected") return "Rejected";
+  if (job.workflow === "review") return job.reviewUrl ? "comment posted" : "approved";
   if (job.prNumber) return `merged · PR #${job.prNumber}`;
   if (job.prUrl && httpUrl(job.prUrl)) return "merged · PR";
   return job.branch ? `landed locally · ${job.branch}` : "landed locally";
@@ -662,6 +667,7 @@ function httpUrl(url: string): boolean {
 }
 
 function handLine(job: StatusJobView, failure: { class?: FailureClass; fingerprint?: string } | undefined): string {
+  if (job.reviewPostError) return job.reviewPostError;
   let label = "Needs a person";
   if (job.stopReason === "attempt-cap") label = "Attempt cap";
   else if (job.stopReason === "fingerprint") label = "Same failure";
