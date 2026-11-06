@@ -191,7 +191,7 @@ function triggersHtml(rows: readonly TriggerRow[]): string {
     rows.length === 0
       ? `<p class="empty">No triggers.</p>`
       : rows.map((row) => triggerCard(row)).join("\n");
-  return `<header class="list-head"><h2>Triggers</h2><p class="meta">The clock, Jira, and pull request activity can start work. Kiln does not post, approve, or merge.</p><p class="form-error" id="trigger-error" role="alert" hidden></p></header>${body}`;
+  return `<header class="list-head"><h2>Triggers</h2><p class="meta">The clock, Jira, and pull request activity can start work. A review is posted only after you approve it. Kiln does not approve or merge.</p><p class="form-error" id="trigger-error" role="alert" hidden></p></header>${body}`;
 }
 
 function triggerCard(row: TriggerRow): string {
@@ -226,7 +226,7 @@ function listHtml(model: AppModel, csrf: string): string {
     return `<header class="list-head"><h2>Inbox</h2><p class="meta">Approve, reject, or revise. Kiln does not do this on its own.</p></header>${jobList(board.inbox, "inbox", "Nothing is waiting on a gate.", csrf)}`;
   }
   if (model.section === "hand") {
-    return `<header class="list-head"><h2>Needs a hand</h2><p class="meta">A breaker tripped, a cap was hit, or a run failed with no retry left.</p></header>${jobList(board.hand, "hand", "Nothing needs a person.", csrf)}`;
+    return `<header class="list-head"><h2>Needs a hand</h2><p class="meta">A breaker tripped, a cap was hit, a review could not be posted, or a run failed with no retry left.</p></header>${jobList(board.hand, "hand", "Nothing needs a person.", csrf)}`;
   }
   if (model.section === "history") {
     return `<header class="list-head"><h2>History</h2></header>${jobList(board.history, "history", "No finished jobs.", csrf)}`;
@@ -332,7 +332,7 @@ function dependsHtml(job: BoardJob): string {
 }
 
 function actionsHtml(job: BoardJob, section: "inbox" | "hand" | "repos" | "history" | "job", csrf: string): string {
-  const showGate = section === "inbox" || section === "job";
+  const showGate = section === "inbox" || section === "job" || (section === "hand" && Boolean(job.reviewPostError));
   const showRetry = section === "hand" || section === "repos" || section === "job";
   if (!showGate && !showRetry) return "";
   const id = encodeURIComponent(job.jobId);

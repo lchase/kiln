@@ -164,6 +164,7 @@ function toItem(job: StatusJobView): AttentionItem {
 export function attentionReason(job: StatusJobView, tail = errorTail(job)): string {
   switch (job.state) {
     case "needs-human": {
+      if (job.reviewPostError) return job.reviewPostError;
       if (job.stopReason === "attempt-cap") return "Attempt cap reached";
       if (job.stopReason === "fingerprint") return "Same failure repeated";
       if (job.feedbackReason) return job.feedbackReason;

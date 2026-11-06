@@ -47,6 +47,8 @@ export const EVENT_NAMES = [
   "trigger.routed",
   "trigger.failed",
   "trigger.skipped",
+  "review.posted",
+  "review.failed",
 ] as const;
 export type EventName = (typeof EVENT_NAMES)[number];
 
@@ -179,6 +181,28 @@ const TriggerSkipped = z.object({
   reason: z.enum(["paused", "capped"]),
   once,
 });
+const ReviewPosted = z.object({
+  repo: z.string().min(1),
+  number: z.number().int().positive(),
+  sha: z.string().regex(/^[0-9a-f]{7,64}$/i),
+  review_id: z.string().min(1),
+  url: z.string().min(1),
+  findings: z.number().int().nonnegative(),
+  inline: z.number().int().nonnegative(),
+  skipped: z.number().int().nonnegative(),
+  /** `review:<repo>:<number>:<head sha>`. Same shape as the review-request dedupe. */
+  dedupe: z.string().min(1),
+  once,
+});
+const ReviewFailed = z.object({
+  repo: z.string().min(1),
+  number: z.number().int().positive(),
+  sha: z.string().regex(/^[0-9a-f]{7,64}$/i),
+  class: z.enum(["transient", "deterministic", "budget"]),
+  detail: z.string().min(1),
+  dedupe: z.string().min(1),
+  once,
+});
 
 const envelope = {
   id: z.string().min(1),
@@ -250,6 +274,8 @@ export const EventSchema = z.discriminatedUnion("event", [
     job_id: z.string().min(1).nullable(),
     properties: TriggerSkipped,
   }),
+  z.object({ ...envelope, event: z.literal("review.posted"), job_id: z.string().min(1), properties: ReviewPosted }),
+  z.object({ ...envelope, event: z.literal("review.failed"), job_id: z.string().min(1), properties: ReviewFailed }),
 ]);
 
 export type KilnEvent = z.infer<typeof EventSchema>;

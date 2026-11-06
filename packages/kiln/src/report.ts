@@ -207,6 +207,10 @@ export interface StatusJobView {
   specPath?: string;
   /** Absolute path of the approved findings file. Set for an investigation once that file exists. */
   findingsPath?: string;
+  /** Set when an approved review draft could not be posted. The gate is still open. */
+  reviewPostError?: string;
+  /** GitHub URL of the COMMENT review Kiln posted for this draft. */
+  reviewUrl?: string;
   launchFailed: boolean;
   launchError?: string;
   /** Recorded attempts. `0` when the job has no attempt ledger. */
@@ -298,6 +302,8 @@ export function statusDetails(job: StatusJobView): string[] {
   if (job.source) lines.push(`source ${job.source.kind} ${job.source.ref}`);
   if (job.findingsPath) lines.push(`findings ${job.findingsPath}`);
   else if (job.workflow === INVESTIGATION_WORKFLOW && job.state === "done") lines.push("findings missing");
+  if (job.reviewUrl) lines.push(`review ${job.reviewUrl}`);
+  if (job.reviewPostError) lines.push(job.reviewPostError);
   if (job.prPending) lines.push("pull request not opened yet");
   if (job.state === "failed" && job.deliveryError) lines.push(job.deliveryError);
   if (job.state === "failed" && job.prClosedUnmerged && job.prNumber) {
@@ -370,6 +376,8 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
       ...(job.specPath ? { specPath: job.specPath } : {}),
       ...(job.logPath ? { logPath: job.logPath } : {}),
       ...(job.findingsPath ? { findingsPath: job.findingsPath } : {}),
+      ...(job.reviewPostError ? { reviewPostError: job.reviewPostError } : {}),
+      ...(job.reviewUrl ? { reviewUrl: job.reviewUrl } : {}),
       launchFailed: job.launchFailed,
       attemptCount: job.attemptCount ?? 0,
       maxAttempts: job.attemptCap ?? observation.maxAttempts,
@@ -421,6 +429,8 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     ...(job.logPath ? { logPath: job.logPath } : {}),
     ...(job.specPath ? { specPath: job.specPath } : {}),
     ...(job.findingsPath ? { findingsPath: job.findingsPath } : {}),
+    ...(job.reviewPostError ? { reviewPostError: job.reviewPostError } : {}),
+    ...(job.reviewUrl ? { reviewUrl: job.reviewUrl } : {}),
     launchFailed: job.launchFailed,
     attemptCount: job.attemptCount ?? 0,
     maxAttempts: job.attemptCap ?? observation.maxAttempts,
