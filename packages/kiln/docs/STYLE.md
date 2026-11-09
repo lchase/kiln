@@ -19,7 +19,7 @@ Spacing is a 4px grid:
 | `--space-8` | 64px | Page end |
 | `--hairline` | 1px | Borders |
 
-Radii: `--radius-sm` 4px (fields, buttons), `--radius-md` 8px (small controls), `--radius-lg` 12px (cards, columns), `--radius-pill` chips, `--radius-full` circles.
+Radii stay tight. `--radius-sm` is 2px (buttons and small controls). `--radius-md` is 4px (inputs). `--radius-lg` is 6px (cards and columns). `--radius-pill` is chips only. `--radius-full` is circles.
 
 Type, on `--font-sans` (UI) or `--font-mono` (ids, meta, code):
 
@@ -31,16 +31,20 @@ Type, on `--font-sans` (UI) or `--font-mono` (ids, meta, code):
 | `--text-lg` / `--leading-lg` | 20 / 28 page and drawer titles |
 | `--text-xl` / `--leading-xl` | 28 / 36 stats |
 
-Dark theme:
+Surfaces are a cool slate stack, flat, with no warm or purple tint in the chrome:
 
-| Token | Role |
-| --- | --- |
-| `--bg` `--panel` `--card` `--card-hover` | Page, drawer, card, hover |
-| `--line` `--line-strong` | Hairline and control borders |
-| `--ink` `--muted` `--faint` | Text, secondary, tertiary |
-| `--primary` `--on-primary` | Primary action and its label |
-| `--focus` | Focus ring |
-| `--code` `--code-bg` | Links and code |
+| Token | Slate | Role |
+| --- | --- | --- |
+| `--bg` | 950 | Page |
+| `--panel` | 900 | Nav, drawer, column |
+| `--card` | 800 | Card |
+| `--card-hover` `--line` | 700 | Hover and hairline |
+| `--line-strong` | 600 | Control border |
+| `--faint` | 500 | Tertiary text |
+| `--muted` | 400 | Secondary text |
+| `--ink` | 200 | Primary text |
+| `--primary` `--on-primary` | — | The one action accent (Approve, Add) and its label |
+| `--focus` `--code` | 300 | Focus ring and links |
 
 State colors (say the word as well as the color):
 
@@ -59,8 +63,18 @@ State colors (say the word as well as the color):
 - Page gutter is `--gutter` (`--space-5`). Bottom padding is `--space-8`.
 - Content stops at `--content-max`. Do not stretch a form or a list across an ultrawide window.
 - Drawer padding is `--drawer-pad` on the head, the body, and the footer. Labels and inputs do not touch the drawer edge.
-- Card anatomy: `--card` or `--panel` fill, `--hairline` border, `--radius-lg`, padding `--space-4`.
+- Card anatomy: `--card` fill, `--hairline` border, `--radius-lg`, padding `--space-4`. One surface. Actions sit in a footer row on that same surface.
+- State is a labeled chip. It is not a bar, a stripe, or a fill on the card.
+- A card that needs a person says `Needs a decision` in `--muted`. Sentence case.
 - The pipeline tray may scroll sideways. Chip rows and form controls may not.
+
+## Don't
+
+- No left or top accent bar on a card, and no thicker colored border in its place.
+- No glow, and no gradient or tinted wash on a card.
+- No all-caps marketing eyebrows.
+- Do not paint chrome with `--primary`. It is for the action button only.
+- Do not add a second accent color for decoration.
 
 ## Forms
 
@@ -104,6 +118,7 @@ State colors (say the word as well as the color):
 ## Checklist for any new screen
 
 - Spacing, type, radius, and color come from tokens. The style guard passes.
+- The screen follows the Don't list: no card bars, glow, washes, or all-caps eyebrows.
 - The screen uses the page gutter and stays within `--content-max`.
 - Drawer content is padded on all sides. The footer is sticky. The primary action is on the right, Cancel on its left.
 - Labels sit above fields. Fields are full width. Hints and errors are inline. The primary action stays disabled until the form is valid.

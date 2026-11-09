@@ -339,7 +339,7 @@ function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", 
   if (section === "inbox") classes.push("decision");
   if (job.scheduledRetry) classes.push("retrying");
   if (section === "inbox" || (section === "hand" && !job.scheduledRetry)) classes.push("human");
-  const flag = classes.includes("human") ? `<span class="flag">your call</span>` : "";
+  const flag = classes.includes("human") ? `<span class="flag">Needs a decision</span>` : "";
   const repo = section === "repos" ? "" : `<span class="meta">${escapeHtml(job.repo)}</span>`;
   const sandbox = job.sandboxed ? `<span class="meta">sandbox · docker</span>` : "";
   const pr = section === "repos" && job.state === "in-review" ? `<span class="meta">PR review</span>` : "";

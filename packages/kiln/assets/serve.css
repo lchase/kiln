@@ -1,27 +1,25 @@
 /* kiln-serve */
 /* tokens:start */
 :root {
-  --bg: #16181d;
-  --panel: #1c1f26;
-  --card: #22262e;
-  --card-hover: #2a303a;
-  --line: #2c323c;
-  --line-strong: #3d4551;
-  --ink: #f4f5f7;
-  --muted: #a7b0bb;
-  --faint: #7c8694;
+  --bg: #020617;
+  --panel: #0f172a;
+  --card: #1e293b;
+  --card-hover: #334155;
+  --line: #334155;
+  --line-strong: #475569;
+  --ink: #e2e8f0;
+  --muted: #94a3b8;
+  --faint: #64748b;
   --live: #3dd6c6;
   --pass: #8dcea8;
   --changes: #e6c36a;
   --human: #ff7a45;
-  --merged: #b4a4ff;
   --primary: #6d4aff;
-  --code: #c4b8ff;
-  --code-bg: #2a303a;
+  --code: #cbd5e1;
+  --code-bg: #0f172a;
   --on-primary: #ffffff;
-  --on-human: #1a100c;
-  --scrim: rgba(0, 0, 0, 0.5);
-  --focus: #c4b8ff;
+  --scrim: rgba(2, 6, 23, 0.72);
+  --focus: #cbd5e1;
   --state-queued: var(--faint);
   --state-running: var(--live);
   --state-needs-you: var(--human);
@@ -29,12 +27,6 @@
   --state-done: var(--pass);
   --state-failed: #f07178;
   --state-cancelled: #8b93a1;
-  --tint-merged: color-mix(in srgb, var(--merged) 24%, var(--card));
-  --tint-done: color-mix(in srgb, var(--state-done) 18%, transparent);
-  --tint-needs-you: color-mix(in srgb, var(--state-needs-you) 18%, transparent);
-  --tint-running: color-mix(in srgb, var(--state-running) 25%, transparent);
-  --tint-needs-hand: color-mix(in srgb, var(--state-needs-hand) 25%, transparent);
-  --job-foot: color-mix(in srgb, var(--bg) 55%, transparent);
   --font-sans: Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   --font-mono: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --mono: var(--font-mono);
@@ -59,9 +51,9 @@
   --space-8: 64px;
   --hairline: 1px;
   --track: 2px;
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
   --radius-pill: 999px;
   --radius-full: 50%;
   --nav-width: 232px;
@@ -77,8 +69,6 @@
   --hit: 44px;
   --logo: 28px;
   --dot: 8px;
-  --ring: 3px;
-  --accent: 3px;
   --icon: 16px;
   --badge: 20px;
   --focus-width: 2px;
@@ -167,12 +157,8 @@ h3 {
   height: var(--dot);
   border-radius: var(--radius-full);
   background: var(--state-running);
-  box-shadow: 0 0 0 var(--ring) var(--tint-running);
 }
-.live-dot.paused {
-  background: var(--state-needs-you);
-  box-shadow: 0 0 0 var(--ring) var(--tint-needs-you);
-}
+.live-dot.paused { background: var(--state-needs-you); }
 .spend, .cap {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
@@ -205,7 +191,7 @@ h3 {
   font: var(--text-xs)/var(--badge) var(--font-mono);
   text-align: center;
 }
-.nav-link[aria-current="page"] .badge { background: var(--state-needs-you); color: var(--on-human); }
+.nav-link[aria-current="page"] .badge { background: var(--line-strong); color: var(--ink); }
 .unseen { margin: 0 var(--space-2) var(--space-2); color: var(--state-needs-hand); font-size: var(--text-xs); line-height: var(--leading-xs); }
 
 .pause button,
@@ -233,7 +219,7 @@ h3 {
 .pause { margin: 0 0 0 auto; }
 .pause button[aria-pressed="true"] { color: var(--state-needs-you); }
 .add, .tool-link { margin-top: var(--space-1); text-align: left; }
-.add, .btn.primary, .job.decision .approve button {
+.add, .btn.primary, .d-actions .approve button {
   background: var(--primary);
   color: var(--on-primary);
   border-color: transparent;
@@ -253,11 +239,11 @@ h3 {
 }
 .pick[aria-pressed="true"], .seg button[aria-pressed="true"],
 .repo-f[aria-pressed="true"], .wf-f[aria-pressed="true"] {
-  border-color: transparent;
-  background: var(--tint-merged);
+  border-color: var(--line-strong);
+  background: var(--card-hover);
   color: var(--ink);
 }
-.btn.primary:hover, .add:hover, .job.decision .approve button:hover {
+.btn.primary:hover, .add:hover, .d-actions .approve button:hover {
   background: var(--primary);
   color: var(--on-primary);
 }
@@ -300,14 +286,11 @@ h3 {
   gap: var(--space-2);
   padding: var(--space-4);
 }
-.job.human { box-shadow: inset var(--accent) 0 0 var(--state-needs-you); }
-.job.retrying { box-shadow: inset var(--accent) 0 0 var(--state-needs-hand); }
 .job .d-actions {
-  margin: var(--space-1) calc(var(--space-4) * -1) calc(var(--space-4) * -1);
-  padding: var(--space-3) var(--space-4);
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3) 0 0;
   border-top: var(--hairline) solid var(--line);
-  background: var(--job-foot);
-  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  background: none;
 }
 .job-top, .head-row, .phase header, .timeline li, .col .full, .state-group h3 {
   display: flex;
@@ -333,10 +316,9 @@ h3 {
 .links { display: flex; gap: var(--space-3); }
 .ask { font-size: var(--text-md); line-height: var(--leading-md); }
 .flag {
-  font: var(--text-xs)/var(--leading-xs) var(--font-mono);
-  color: var(--state-needs-you);
-  text-transform: uppercase;
-  letter-spacing: .04em;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  color: var(--muted);
 }
 .ticks { display: flex; flex-wrap: wrap; gap: var(--space-2); list-style: none; margin: var(--space-3) 0 0; padding: 0; }
 .tick, .chip {
@@ -490,7 +472,7 @@ h3 {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--state-needs-hand);
-  background: var(--tint-needs-hand);
+  background: none;
 }
 .rail { position: sticky; top: var(--space-4); padding: var(--space-4) var(--space-4) var(--space-2); }
 .rail dl { margin: 0; }
@@ -570,8 +552,6 @@ body.open .drawer { transform: none; }
 .d-actions form, .form-footer { margin: 0; }
 .d-actions .revise { display: flex; gap: var(--space-2); align-items: center; }
 .d-actions .revise input { min-width: 16rem; background: var(--bg); }
-.d-actions .approve button { color: var(--state-done); background: var(--tint-done); border-color: transparent; }
-.d-actions .reject button { color: var(--state-needs-you); background: var(--tint-needs-you); border-color: transparent; }
 
 .sheet.intake { flex: 1; min-height: 0; height: auto; overflow: hidden; display: flex; flex-direction: column; }
 .intake-form {
@@ -601,7 +581,7 @@ body.open .drawer { transform: none; }
   color: var(--ink);
   background: var(--bg);
   border: var(--hairline) solid var(--line-strong);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   padding: var(--space-2) var(--space-3);
 }
 .field textarea, .intake-form textarea { resize: vertical; min-height: var(--field-min); }
@@ -627,7 +607,7 @@ body.open .drawer { transform: none; }
 .combo-list [role="option"]:hover,
 .combo-list [role="option"].active,
 .combo-list [role="option"][aria-selected="true"] {
-  background: var(--tint-merged);
+  background: var(--card-hover);
   color: var(--ink);
 }
 .combo-list .empty { margin: 0; padding: var(--space-2) var(--space-3); }
