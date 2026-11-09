@@ -24,6 +24,8 @@
   try { compact = localStorage.getItem("kiln-compact") !== "off"; } catch (err) { compact = true; }
   var repo = "";
   try { repo = localStorage.getItem("kiln-repo") || ""; } catch (err) { repo = ""; }
+  var workflow = "";
+  try { workflow = localStorage.getItem("kiln-workflow") || ""; } catch (err) { workflow = ""; }
 
   var COMPACT = {
     on: ["expand empty columns", '<path d="M3 12h7m0 0-3-3m3 3-3 3M21 12h-7m0 0 3-3m-3 3 3 3M12 4v16"/>'],
@@ -66,11 +68,18 @@
     var cards = document.querySelectorAll(".board .card");
     for (var i = 0; i < cards.length; i++) {
       var cardRepo = cards[i].getAttribute("data-repo") || "";
-      cards[i].hidden = Boolean(repo) && cardRepo !== repo;
+      var cardWorkflow = cards[i].getAttribute("data-workflow") || "";
+      var hideRepo = Boolean(repo) && cardRepo !== repo;
+      var hideWorkflow = Boolean(workflow) && cardWorkflow !== workflow;
+      cards[i].hidden = hideRepo || hideWorkflow;
     }
     var chips = document.querySelectorAll(".repo-f");
     for (var j = 0; j < chips.length; j++) {
       chips[j].setAttribute("aria-pressed", (chips[j].getAttribute("data-repo") || "") === repo ? "true" : "false");
+    }
+    var flows = document.querySelectorAll(".wf-f");
+    for (var k = 0; k < flows.length; k++) {
+      flows[k].setAttribute("aria-pressed", (flows[k].getAttribute("data-workflow") || "") === workflow ? "true" : "false");
     }
     layout();
   }
@@ -185,10 +194,30 @@
     view.innerHTML = text ? markdown(localizeIso(text)) : '<p class="empty">Nothing written yet.</p>';
   }
 
-  function localTime(iso, withDate) {
+  function relativeTime(iso) {
     var date = new Date(iso);
     if (!isFinite(date.getTime())) return iso;
-    if (!withDate) return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    var delta = Date.now() - date.getTime();
+    var future = delta < 0;
+    var abs = Math.abs(delta);
+    var sec = Math.round(abs / 1000);
+    if (sec < 45) return future ? "in a moment" : "just now";
+    var min = Math.round(sec / 60);
+    var prefix = future ? "in " : "";
+    var suffix = future ? "" : " ago";
+    if (min < 60) return prefix + min + "m" + suffix;
+    var hr = Math.round(min / 60);
+    if (hr < 36) return prefix + hr + "h" + suffix;
+    var day = Math.round(hr / 24);
+    if (day < 14) return prefix + day + "d" + suffix;
+    return date.toLocaleString();
+  }
+
+  function localTime(iso, mode) {
+    var date = new Date(iso);
+    if (!isFinite(date.getTime())) return iso;
+    if (mode === "clock" || mode === false) return date.toLocaleTimeString();
+    if (mode === "rel") return relativeTime(iso);
     return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
   }
 
@@ -202,7 +231,7 @@
     var nodes = (root || document).querySelectorAll("time[datetime]");
     for (var i = 0; i < nodes.length; i++) {
     var iso = nodes[i].getAttribute("datetime");
-    if (iso) nodes[i].textContent = localTime(iso, nodes[i].getAttribute("data-time") !== "clock");
+    if (iso) nodes[i].textContent = localTime(iso, nodes[i].getAttribute("data-time") || "local");
     }
   }
 
@@ -1181,6 +1210,16 @@
       try {
         if (repo) localStorage.setItem("kiln-repo", repo);
         else localStorage.removeItem("kiln-repo");
+      } catch (err) { /* private mode */ }
+      applyRepo();
+      return;
+    }
+    var flow = target.closest(".wf-f");
+    if (flow) {
+      workflow = flow.getAttribute("data-workflow") || "";
+      try {
+        if (workflow) localStorage.setItem("kiln-workflow", workflow);
+        else localStorage.removeItem("kiln-workflow");
       } catch (err) { /* private mode */ }
       applyRepo();
       return;

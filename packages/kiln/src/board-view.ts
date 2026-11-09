@@ -1,11 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { attentionReason, scheduledRetry } from "./attention.js";
 import type { KilnEvent } from "./events.js";
 import type { FailureClass } from "./failure.js";
-import { feedbackRoundLabel } from "./feedback.js";
+import { isFinished, isHand, isInbox, projectJob, type JobView } from "./job-view.js";
 import { ledgerRows, type LedgerRow } from "./ledger.js";
 import { localDay, spendSnapshot, type SpendSnapshot } from "./rails.js";
 import type { StatusJobView } from "./report.js";
+
+export type { FeedbackLine, JobView } from "./job-view.js";
+export { isFinished, isHand, isInbox };
+export type BoardJob = JobView;
 
 /**
  * Lists, stats, and job pages for the serve shell. Job state still comes
@@ -47,52 +50,6 @@ const PHASE_LABEL: Record<string, string> = {
 
 export const STAT_WINDOWS = ["today", "7d", "30d"] as const;
 export type StatWindow = (typeof STAT_WINDOWS)[number];
-
-export interface FeedbackLine {
-  label: string;
-  url?: string;
-}
-
-export interface BoardJob {
-  jobId: string;
-  title: string;
-  repo: string;
-  workflow: string;
-  state: string;
-  reason: string;
-  inbox: boolean;
-  hand: boolean;
-  finished: boolean;
-  retry: boolean;
-  sandboxed: boolean;
-  canApprove: boolean;
-  canReject: boolean;
-  canRevise: boolean;
-  attemptCount: number;
-  maxAttempts: number;
-  scheduledRetry: boolean;
-  nextRetryAt?: string;
-  attemptLine?: string;
-  failureClass?: FailureClass;
-  /** First 12 characters. The full value stays on the event. */
-  fingerprint?: string;
-  latestEventAt?: string;
-  eventCount: number;
-  prUrl?: string;
-  prNumber?: number;
-  dependsOn: { jobId: string; state: string; detail?: string }[];
-  evidence: string[];
-  feedback: FeedbackLine[];
-  notes: string[];
-  historyLine?: string;
-  findings: boolean;
-  spec: boolean;
-  log: boolean;
-  /** Launch log. List rows for a gate omit it; a failure row keeps the tail. */
-  logTail?: string;
-  /** Set when an approved review draft could not be posted. The gate is still open. */
-  reviewPostError?: string;
-}
 
 export interface BoardDocument {
   inbox: BoardJob[];
@@ -210,27 +167,8 @@ export function parseSeenQuery(values: readonly string[]): Record<string, string
   return seen;
 }
 
-export function isInbox(job: StatusJobView): boolean {
-  if (job.reviewPostError) return false;
-  if (job.canApprove || job.canReject || job.canRevise) return true;
-  return job.state === "needs-human" && job.gates.length > 0 && !job.stopReason && !job.feedbackReason;
-}
-
-/**
- * Needs a person, and not an open gate. A failure that still has a scheduled
- * retry is in flight, so it stays off this list.
- */
-export function isHand(job: StatusJobView): boolean {
-  if (isInbox(job) || scheduledRetry(job)) return false;
-  return job.state === "needs-human" || job.state === "failed" || job.state === "dead" || job.state === "invalid";
-}
-
-export function isFinished(job: StatusJobView): boolean {
-  return job.state === "done" || job.state === "rejected" || job.state === "cancelled";
-}
-
 export function buildBoard(jobs: readonly StatusJobView[], events: readonly KilnEvent[]): BoardDocument {
-  const rows = jobs.map((job) => toBoardJob(job, events));
+  const rows = jobs.map((job) => projectJob(job, events));
   const inbox = rows.filter((job) => job.inbox);
   const hand = rows.filter((job) => job.hand);
   const history = rows.filter((job) => job.finished);
@@ -429,7 +367,7 @@ export function jobDetail(input: {
   const jobEvents = input.events.filter((event) => event.job_id === input.job.jobId);
   const changes = jobChanges(input.job, input.events, input.commits ?? [], input.diffStat);
   return {
-    job: toBoardJob(input.job, input.events),
+    job: projectJob(input.job, input.events),
     overview: phaseFeed(input.events, input.job.jobId),
     changes,
     timeline: jobEvents,
@@ -585,132 +523,6 @@ export function branchOf(job: StatusJobView, events: readonly KilnEvent[]): stri
     if (event.job_id === job.jobId && event.event === "pr.opened") branch = event.properties.branch;
   }
   return branch;
-}
-
-function toBoardJob(job: StatusJobView, events: readonly KilnEvent[]): BoardJob {
-  const inbox = isInbox(job);
-  const hand = isHand(job);
-  const finished = isFinished(job);
-  const failure = latestFailure(events, job.jobId);
-  const activity = jobActivity(events, job.jobId);
-  const waiting = scheduledRetry(job);
-  const reason = hand ? handLine(job, failure) : attentionReason(job);
-  const notes: string[] = [];
-  if (job.launchError?.trim()) notes.push(job.launchError.trim());
-  if (job.failureDetail?.trim()) notes.push(job.failureDetail.trim());
-  if (job.waitReason) notes.push(job.waitReason);
-  const feedback: FeedbackLine[] = [];
-  for (const round of job.feedbackRounds ?? []) {
-    const url = round.items.find((item) => item.url)?.url;
-    feedback.push({ label: feedbackRoundLabel(round), ...(url ? { url } : {}) });
-  }
-  let historyLine: string | undefined;
-  if (finished) historyLine = finishedLine(job);
-  return {
-    jobId: job.jobId,
-    title: job.title || job.jobId,
-    repo: job.repo,
-    workflow: job.workflow,
-    state: job.state,
-    reason,
-    inbox,
-    hand,
-    finished,
-    retry: (job.state === "failed" || job.state === "dead" || (job.state === "needs-human" && Boolean(job.stopReason))) && job.gates.length === 0,
-    sandboxed: job.sandboxed === true,
-    canApprove: job.canApprove,
-    canReject: job.canReject,
-    canRevise: job.canRevise,
-    attemptCount: job.attemptCount,
-    maxAttempts: job.maxAttempts,
-    scheduledRetry: waiting,
-    ...(waiting && job.nextRetryAt ? { nextRetryAt: job.nextRetryAt } : {}),
-    ...(attemptLine(job) ? { attemptLine: attemptLine(job) } : {}),
-    ...(failure?.class ? { failureClass: failure.class } : {}),
-    ...(failure?.fingerprint ? { fingerprint: shortFingerprint(failure.fingerprint) } : {}),
-    ...(activity.latest ? { latestEventAt: activity.latest } : {}),
-    eventCount: activity.count,
-    ...(job.prUrl ? { prUrl: job.prUrl } : {}),
-    ...(job.prNumber ? { prNumber: job.prNumber } : {}),
-    dependsOn: job.dependsOn.map((dep) => ({
-      jobId: dep.jobId,
-      state: dep.state,
-      ...(dep.blockedDetail ? { detail: dep.blockedDetail } : {}),
-    })),
-    evidence: evidenceTexts(job),
-    feedback,
-    notes,
-    ...(historyLine ? { historyLine } : {}),
-    findings: Boolean(job.findingsPath),
-    spec: Boolean(job.specPath),
-    log: Boolean(job.logPath),
-    ...(job.logTail?.trim() ? { logTail: job.logTail.trim() } : {}),
-    ...(job.reviewPostError ? { reviewPostError: job.reviewPostError } : {}),
-  };
-}
-
-function finishedLine(job: StatusJobView): string {
-  if (job.state === "cancelled") return "Cancelled";
-  if (job.state === "rejected") return "Rejected";
-  if (job.workflow === "review") return job.reviewUrl ? "comment posted" : "approved";
-  if (job.prNumber) return `merged · PR #${job.prNumber}`;
-  if (job.prUrl && httpUrl(job.prUrl)) return "merged · PR";
-  return job.branch ? `landed locally · ${job.branch}` : "landed locally";
-}
-
-function httpUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-function handLine(job: StatusJobView, failure: { class?: FailureClass; fingerprint?: string } | undefined): string {
-  if (job.reviewPostError) return job.reviewPostError;
-  let label = "Needs a person";
-  if (job.stopReason === "attempt-cap") label = "Attempt cap";
-  else if (job.stopReason === "fingerprint") label = "Same failure";
-  else if (job.feedbackReason === "feedback-exhausted") label = "Fix round cap";
-  else if (job.feedbackReason === "feedback-ambiguous") label = "Feedback unclear";
-  else if (job.state === "failed" || job.state === "dead" || job.state === "invalid") label = attentionReason(job);
-  const parts = [label];
-  if (failure?.class) parts.push(failure.class);
-  const fingerprint = shortFingerprint(failure?.fingerprint);
-  if (fingerprint) parts.push(fingerprint);
-  return parts.join(" · ");
-}
-
-function evidenceTexts(job: StatusJobView): string[] {
-  const texts: string[] = [];
-  if (job.workflow !== "investigation" && job.diffSummary?.trim()) texts.push(job.diffSummary.trim());
-  for (const gate of job.gates) {
-    const body = gate.rendered?.trim() || gate.prompt?.trim();
-    if (body) texts.push(body);
-    for (const review of gate.reviews ?? []) if (review.summary?.trim()) texts.push(review.summary.trim());
-    for (const artifact of gate.artifacts ?? []) if (artifact.summary?.trim()) texts.push(artifact.summary.trim());
-  }
-  return texts;
-}
-
-function attemptLine(job: StatusJobView): string | undefined {
-  if (job.attemptCount <= 0 && !job.lastFailureReason) return undefined;
-  const parts: string[] = [];
-  if (job.attemptCount > 0) parts.push(`attempt ${job.attemptCount}/${job.maxAttempts}`);
-  if (job.lastFailureReason) parts.push(job.lastFailureReason);
-  return parts.join(" · ");
-}
-
-function jobActivity(events: readonly KilnEvent[], jobId: string): { count: number; latest?: string } {
-  let count = 0;
-  let latest: string | undefined;
-  for (const event of events) {
-    if (event.job_id !== jobId) continue;
-    count += 1;
-    if (!latest || event.ts > latest) latest = event.ts;
-  }
-  return { count, ...(latest ? { latest } : {}) };
 }
 
 function latestFailure(

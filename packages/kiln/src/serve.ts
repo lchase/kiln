@@ -844,7 +844,8 @@ function statusDocument(state: LiveConfig): unknown {
 }
 
 function listSection(path: string): AppSection | undefined {
-  if (path === "/" || path === "" || path === "/board" || path === "/inbox") return "inbox";
+  if (path === "/" || path === "" || path === "/board" || path === "/pipeline") return "pipeline";
+  if (path === "/inbox") return "inbox";
   if (path === "/hand") return "hand";
   if (path === "/repos") return "repos";
   if (path === "/history") return "history";

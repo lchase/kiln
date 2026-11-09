@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { appendEvent } from "./events.js";
 import { costFromJournal, decideFailure } from "./failure.js";
 import { jobBasename, packageRoot } from "./paths.js";
@@ -39,7 +40,29 @@ export function projectRunJournal(input: ProjectRunInput): void {
   }
 }
 
+/**
+ * Version of the `@lchase/kiln` package that contains this file.
+ * Walks up from the running module so a parent package.json (the workspace
+ * root has none) cannot supply a stale or missing version.
+ */
 export function kilnVersion(): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 8; i += 1) {
+    const pkgPath = join(dir, "package.json");
+    if (existsSync(pkgPath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(pkgPath, "utf8")) as { name?: unknown; version?: unknown };
+        if (parsed.name === "@lchase/kiln" && typeof parsed.version === "string" && parsed.version) {
+          return parsed.version;
+        }
+      } catch {
+        // An unreadable file is not the running package. Keep walking.
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
   return packageVersion(join(packageRoot(), "package.json"));
 }
 
