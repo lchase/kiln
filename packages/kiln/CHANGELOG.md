@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/lchase/kiln/compare/kiln-v0.13.0...kiln-v0.14.0) (2026-11-09)
+
+
+### Features
+
+* opt-in label and caps for review requests ([#52](https://github.com/lchase/kiln/issues/52)) ([d244bb7](https://github.com/lchase/kiln/commit/d244bb7ceb6a9f3b9465cc760f0dfca5a7e3d071))
+
 ## [0.13.0](https://github.com/lchase/kiln/compare/kiln-v0.12.0...kiln-v0.13.0) (2026-11-09)
 
 
