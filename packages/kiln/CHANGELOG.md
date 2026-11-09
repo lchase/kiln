@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/lchase/kiln/compare/kiln-v0.16.0...kiln-v0.17.0) (2026-11-09)
+
+
+### Features
+
+* add sidebar icons and a status footer ([#59](https://github.com/lchase/kiln/issues/59)) ([d9440ea](https://github.com/lchase/kiln/commit/d9440ea7dc76ca7d535fe8c553edd813f0e1f7e2))
+
 ## [0.16.0](https://github.com/lchase/kiln/compare/kiln-v0.15.0...kiln-v0.16.0) (2026-11-09)
 
 
