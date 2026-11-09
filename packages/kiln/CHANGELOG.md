@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/lchase/kiln/compare/kiln-v0.15.0...kiln-v0.16.0) (2026-11-09)
+
+
+### Features
+
+* board style guide and Add job form ([#56](https://github.com/lchase/kiln/issues/56)) ([88be01e](https://github.com/lchase/kiln/commit/88be01ed0f4a6e564a7261fd12b52fe0e951f7fd))
+
 ## [0.15.0](https://github.com/lchase/kiln/compare/kiln-v0.14.0...kiln-v0.15.0) (2026-11-09)
 
 
