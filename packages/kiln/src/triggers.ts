@@ -1,15 +1,17 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { LoadedKilnConfig } from "./config.js";
+import { loadKilnConfig, type LoadedKilnConfig } from "./config.js";
 import { appendEvent, readEvents, type KilnEvent } from "./events.js";
 import { isIgnoredAuthor } from "./feedback.js";
-import type { ReviewRequest, ReviewRequestSource } from "./host.js";
+import { DEFAULT_REVIEW_LABEL, type ReviewRequest, type ReviewRequestSource } from "./host.js";
 import { searchJiraIssues, type JiraPollIssue } from "./intake/jira.js";
 import { listValidJobs, writeJob } from "./jobs.js";
+import { jobBasename } from "./paths.js";
 import { pausedFrom, spendSnapshot } from "./rails.js";
 import { redact } from "./redact.js";
-import { ISSUE_KEY, type RouteConfig, type TriggerConfig, type TriggerToggle } from "./schemas.js";
+import { isPidAlive } from "./reliability.js";
+import { ISSUE_KEY, type Job, type RouteConfig, type TriggerConfig, type TriggerToggle } from "./schemas.js";
 import { REVIEW_WORKFLOW } from "./workflow.js";
 
 /**
@@ -17,7 +19,8 @@ import { REVIEW_WORKFLOW } from "./workflow.js";
  * A trigger writes a typed event. The router creates a job or attaches to
  * one. The dedupe key lives on that event, so a restart does not create
  * the job twice. A failed fire records `last_error` and waits for the next
- * slot. Pause and the daily cap record a skip. Nothing is queued.
+ * slot. Pause, the daily cap, and the review burst caps record a skip.
+ * Nothing over the cap is queued.
  *
  * Jira is polled. `jiraIssueEvent` is the seam a webhook can call later.
  * Pull-request activity reuses the feedback loop's snapshot. It does not
@@ -29,9 +32,21 @@ export const PR_ACTIVITY_TRIGGER = "pr-activity";
 /** Minute 0 of every hour, local time. */
 export const DEFAULT_REVIEW_CRON = "0 * * * *";
 export const DEFAULT_JIRA_EVERY = "5m";
+/** New review jobs one fire may create. Further pull requests are skipped. */
+export const DEFAULT_REVIEW_MAX_NEW = 3;
+/** Queued or running review jobs at once. A review waiting in the Inbox does not count. */
+export const DEFAULT_REVIEW_MAX_QUEUED = 5;
 
 const BUILTIN_TRIGGERS: readonly TriggerConfig[] = [
-  { id: REVIEW_REQUESTS_TRIGGER, kind: "schedule", cron: DEFAULT_REVIEW_CRON, enabled: true },
+  {
+    id: REVIEW_REQUESTS_TRIGGER,
+    kind: "schedule",
+    cron: DEFAULT_REVIEW_CRON,
+    enabled: true,
+    label: DEFAULT_REVIEW_LABEL,
+    maxNew: DEFAULT_REVIEW_MAX_NEW,
+    maxQueued: DEFAULT_REVIEW_MAX_QUEUED,
+  },
   { id: PR_ACTIVITY_TRIGGER, kind: "pr", enabled: true },
 ];
 
@@ -85,6 +100,14 @@ export interface TriggerRow {
   kind: string;
   enabled: boolean;
   schedule: string;
+  /** GitHub label `review-requests` requires. Default `kiln-review`. */
+  label?: string;
+  /** New review jobs allowed on one fire. */
+  maxNew?: number;
+  /** Queued or running review jobs allowed at once. */
+  maxQueued?: number;
+  /** Per-repo label overrides. Empty when every repo uses `label`. */
+  repoLabels?: { repo: string; label: string }[];
   nextFire?: string;
   lastFire?: string;
   lastError?: string;
@@ -400,11 +423,21 @@ export function triggerRows(config: LoadedKilnConfig, events: readonly KilnEvent
         event: event.event,
         summary: triggerSummary(event),
       }));
+    const review = trigger.id === REVIEW_REQUESTS_TRIGGER;
+    const repoLabels = review ? repoReviewLabels(config) : [];
     return {
       id: trigger.id,
       kind: trigger.kind,
       enabled: trigger.enabled !== false,
       schedule: scheduleLabel(trigger),
+      ...(review
+        ? {
+            label: reviewRequestLabel(trigger),
+            maxNew: reviewMaxNew(trigger),
+            maxQueued: reviewMaxQueued(trigger),
+            ...(repoLabels.length > 0 ? { repoLabels } : {}),
+          }
+        : {}),
       ...(nextFire(trigger, state, now) ? { nextFire: nextFire(trigger, state, now) } : {}),
       ...(state?.lastFire && Number.isFinite(Date.parse(state.lastFire)) ? { lastFire: state.lastFire } : {}),
       ...(state?.lastError ? { lastError: state.lastError } : {}),
@@ -436,15 +469,18 @@ function runSchedule(
   const reviews = route?.workflow === REVIEW_WORKFLOW || trigger.id === REVIEW_REQUESTS_TRIGGER;
   if (reviews) {
     if (!input.reviews) return;
+    // A disable that landed after this process started, including during the
+    // startup list, must not create jobs. The Triggers page reads the file,
+    // so it can already say disabled while this fire is still in the list.
+    if (!triggerEnabledNow(input.config, trigger.id)) return;
     let requests: ReviewRequest[];
     try {
-      requests = input.reviews.list(
-        Object.entries(input.config.repos).map(([name, repo]) => ({ name, path: repo.path })),
-      );
+      requests = input.reviews.list(reviewTargets(input.config, trigger));
     } catch (error) {
       failSlot(input.config, trigger.id, stamp, errorMessage(error), now);
       return;
     }
+    if (!triggerEnabledNow(input.config, trigger.id)) return;
     succeedSlot(input.config.kilnDir, trigger.id, stamp);
     appendFire(input.config, {
       key: `schedule:${trigger.id}:${stamp}`,
@@ -453,16 +489,37 @@ function runSchedule(
       id: stamp,
       revision: stamp,
     });
+    const maxNew = reviewMaxNew(trigger);
+    const maxQueued = reviewMaxQueued(trigger);
+    let created = 0;
+    let active = reviewSlotsInUse(input.config);
     for (const request of requests) {
+      if (!triggerEnabledNow(input.config, trigger.id)) break;
+      const key = reviewDedupeKey(request);
+      if (reviewDrafted(input.config, key)) {
+        try {
+          ingestReview(input.config, request, routes, now);
+        } catch (error) {
+          noteReviewFailure(input.config, trigger.id, stamp, request, error, now);
+        }
+        continue;
+      }
+      if (active >= maxQueued) {
+        noteSkip(input.config, trigger.id, "queued-cap", stamp, now, key);
+        continue;
+      }
+      if (created >= maxNew) {
+        noteSkip(input.config, trigger.id, "burst-cap", stamp, now, key);
+        continue;
+      }
       try {
-        ingestReview(input.config, request, routes, now);
+        const outcome = ingestReview(input.config, request, routes, now);
+        if (outcome === "created") {
+          created += 1;
+          active += 1;
+        }
       } catch (error) {
-        remember(input.config.kilnDir, trigger.id, {
-          lastFire: stamp,
-          lastError: publicError(errorMessage(error)),
-          lastErrorAt: now.toISOString(),
-        });
-        appendFailed(input.config, trigger.id, publicError(errorMessage(error)), `review:${request.repo}:${request.number}`, now);
+        noteReviewFailure(input.config, trigger.id, stamp, request, error, now);
       }
     }
     return;
@@ -490,7 +547,7 @@ function ingestReview(
   request: ReviewRequest,
   routes: readonly RouteConfig[],
   now: Date,
-): void {
+): "created" | "existing" | "ignored" {
   const sha = request.headSha.trim().toLowerCase();
   if (!/^[0-9a-f]{7,64}$/.test(sha)) throw new Error(`Pull request ${request.number} has no head SHA.`);
   const repo = config.repos[request.repo];
@@ -499,10 +556,10 @@ function ingestReview(
   const base = repo.base ?? "the default branch";
   const url = httpUrl(request.url);
   const title = oneLine(request.title) || `PR ${request.number}`;
-  ingest(
+  return ingest(
     config,
     {
-      key: `review:${request.repo}:${request.number}:${sha}`,
+      key: reviewDedupeKey(request),
       source: "review",
       triggerId: REVIEW_REQUESTS_TRIGGER,
       id: String(request.number),
@@ -578,24 +635,24 @@ function ingest(
   event: TriggerEvent,
   routes: readonly RouteConfig[],
   now: Date,
-): void {
+): "created" | "existing" | "ignored" {
   const events = readEvents(config.kilnDir, { warn: () => {} });
   const routed = routedKeys(events);
   const decision = routeTrigger(event, routes, routed);
-  if (decision.type === "ignore" || decision.type === "deduped") return;
+  if (decision.type === "ignore" || decision.type === "deduped") return "ignored";
   if (decision.type === "unrouted") {
     noteConfigError(config, event.triggerId, `No route for trigger ${event.triggerId}.`, now);
-    return;
+    return "ignored";
   }
   appendFire(config, event, now);
   if (decision.type === "attach") {
     appendRouted(config, event, decision.jobId, "attach", undefined, now);
-    return;
+    return "existing";
   }
   const existing = listValidJobs(config).find((job) => job.source?.kind === "trigger" && job.source.ref === event.key);
   if (existing) {
     appendRouted(config, event, existing.id, "create", decision.workflow, now);
-    return;
+    return "existing";
   }
   const title = oneLine(event.title ?? "") || event.id;
   const specText = redact(event.body?.trim() || `# ${title}\n`);
@@ -611,6 +668,7 @@ function ingest(
     now,
   });
   appendRouted(config, event, written.job.id, "create", decision.workflow, now);
+  return "created";
 }
 
 function reviewSpec(input: { title: string; url?: string; number: number; sha: string; base: string }): string {
@@ -690,12 +748,15 @@ function succeedSlot(kilnDir: string, triggerId: string, stamp: string): void {
   remember(kilnDir, triggerId, { lastFire: stamp, lastError: undefined, lastErrorAt: undefined });
 }
 
+type SkipReason = "paused" | "capped" | "burst-cap" | "queued-cap";
+
 function noteSkip(
   config: LoadedKilnConfig,
   triggerId: string,
-  reason: "paused" | "capped",
+  reason: SkipReason,
   stamp: string,
   now: Date,
+  externalId?: string,
 ): void {
   appendEvent(config.kilnDir, {
     job_id: null,
@@ -704,9 +765,28 @@ function noteSkip(
     properties: {
       trigger_id: triggerId,
       reason,
-      once: `skipped:${triggerId}:${stamp}:${reason}`,
+      ...(externalId ? { external_id: externalId } : {}),
+      once: externalId
+        ? `skipped:${triggerId}:${stamp}:${reason}:${externalId}`
+        : `skipped:${triggerId}:${stamp}:${reason}`,
     },
   });
+}
+
+function noteReviewFailure(
+  config: LoadedKilnConfig,
+  triggerId: string,
+  stamp: string,
+  request: ReviewRequest,
+  error: unknown,
+  now: Date,
+): void {
+  remember(config.kilnDir, triggerId, {
+    lastFire: stamp,
+    lastError: publicError(errorMessage(error)),
+    lastErrorAt: now.toISOString(),
+  });
+  appendFailed(config, triggerId, publicError(errorMessage(error)), `review:${request.repo}:${request.number}`, now);
 }
 
 function noteConfigError(config: LoadedKilnConfig, triggerId: string, message: string, now: Date): void {
@@ -715,6 +795,133 @@ function noteConfigError(config: LoadedKilnConfig, triggerId: string, message: s
   if (current?.lastError === error) return;
   remember(config.kilnDir, triggerId, { lastError: error, lastErrorAt: now.toISOString() });
   appendFailed(config, triggerId, error, `config:${error}`, now);
+}
+
+/** GitHub label for a review-requests fire. Omitted config uses {@link DEFAULT_REVIEW_LABEL}. */
+export function reviewRequestLabel(trigger: TriggerConfig): string {
+  return trigger.label?.trim() || DEFAULT_REVIEW_LABEL;
+}
+
+export function reviewMaxNew(trigger: TriggerConfig): number {
+  return trigger.maxNew ?? DEFAULT_REVIEW_MAX_NEW;
+}
+
+export function reviewMaxQueued(trigger: TriggerConfig): number {
+  return trigger.maxQueued ?? DEFAULT_REVIEW_MAX_QUEUED;
+}
+
+/**
+ * Review jobs that are queued or running.
+ * A review sitting on the Inbox gate has a finished journal and does not count.
+ * A cancelled job does not count.
+ */
+export function reviewSlotsInUse(config: LoadedKilnConfig): number {
+  let count = 0;
+  for (const job of listValidJobs(config)) {
+    if (job.workflow !== REVIEW_WORKFLOW || job.cancelledAt) continue;
+    if (reviewOccupiesSlot(config, job)) count += 1;
+  }
+  return count;
+}
+
+function reviewTargets(
+  config: LoadedKilnConfig,
+  trigger: TriggerConfig,
+): { name: string; path: string; label: string }[] {
+  const fallback = reviewRequestLabel(trigger);
+  return Object.entries(config.repos).map(([name, repo]) => ({
+    name,
+    path: repo.path,
+    label: repo.reviewLabel?.trim() || fallback,
+  }));
+}
+
+function repoReviewLabels(config: LoadedKilnConfig): { repo: string; label: string }[] {
+  const labels: { repo: string; label: string }[] = [];
+  for (const [repo, entry] of Object.entries(config.repos)) {
+    const label = entry.reviewLabel?.trim();
+    if (label) labels.push({ repo, label });
+  }
+  return labels;
+}
+
+function reviewDedupeKey(request: ReviewRequest): string {
+  return `review:${request.repo}:${request.number}:${request.headSha.trim().toLowerCase()}`;
+}
+
+function reviewDrafted(config: LoadedKilnConfig, key: string): boolean {
+  if (routedKeys(readEvents(config.kilnDir, { warn: () => {} })).has(key)) return true;
+  return listValidJobs(config).some((job) => job.source?.kind === "trigger" && job.source.ref === key);
+}
+
+/**
+ * True when the trigger is enabled in memory and on disk.
+ * The disk read catches a disable that arrived while `gh pr list` or a fetch was running.
+ */
+function triggerEnabledNow(config: LoadedKilnConfig, id: string): boolean {
+  if (!triggerIsEnabled(config.triggers, id)) return false;
+  try {
+    return triggerIsEnabled(loadKilnConfig(config.configPath).triggers, id);
+  } catch {
+    return true;
+  }
+}
+
+function triggerIsEnabled(file: readonly TriggerConfig[] | undefined, id: string): boolean {
+  const trigger = effectiveTriggers(file).find((item) => item.id === id);
+  return trigger?.enabled !== false;
+}
+
+function reviewOccupiesSlot(config: LoadedKilnConfig, job: Job): boolean {
+  if (launchingAlive(config.kilnDir, job.id)) return true;
+  const repo = config.repos[job.repo];
+  if (!repo) return true;
+  const runs = journalsForJob(repo.path, job.id);
+  if (runs.length === 0) return !deadLaunch(config.kilnDir, job.id);
+  return runs.some((run) => !run.finished);
+}
+
+function launchingAlive(kilnDir: string, jobId: string): boolean {
+  const path = join(kilnDir, "launching", `${jobBasename(jobId)}.json`);
+  if (!existsSync(path)) return false;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { pid?: unknown };
+    return typeof parsed.pid === "number" && isPidAlive(parsed.pid);
+  } catch {
+    return false;
+  }
+}
+
+function deadLaunch(kilnDir: string, jobId: string): boolean {
+  const path = join(kilnDir, "launching", `${jobBasename(jobId)}.json`);
+  if (!existsSync(path)) return false;
+  return !launchingAlive(kilnDir, jobId);
+}
+
+function journalsForJob(checkout: string, jobId: string): { finished: boolean }[] {
+  const runsDir = join(checkout, ".runs");
+  if (!existsSync(runsDir)) return [];
+  const tag = `"kiln:${jobId}"`;
+  let names: string[];
+  try {
+    names = readdirSync(runsDir);
+  } catch {
+    return [];
+  }
+  const found: { finished: boolean }[] = [];
+  for (const name of names) {
+    const file = join(runsDir, name, "journal.jsonl");
+    if (!existsSync(file)) continue;
+    let text: string;
+    try {
+      text = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    if (!text.includes(tag)) continue;
+    found.push({ finished: /"t"\s*:\s*"run\.finished"/.test(text) });
+  }
+  return found;
 }
 
 function blockReason(config: LoadedKilnConfig, now: Date): "paused" | "capped" | undefined {
@@ -746,7 +953,11 @@ function isTriggerEvent(
 
 function triggerSummary(event: KilnEvent): string {
   if (event.event === "trigger.failed") return event.properties.error;
-  if (event.event === "trigger.skipped") return event.properties.reason;
+  if (event.event === "trigger.skipped") {
+    return event.properties.external_id
+      ? `${event.properties.reason} ${event.properties.external_id}`
+      : event.properties.reason;
+  }
   if (event.event === "trigger.routed") return `${event.properties.action} ${event.properties.dedupe}`;
   if (event.event === "trigger.fired") return event.properties.dedupe;
   return event.event;

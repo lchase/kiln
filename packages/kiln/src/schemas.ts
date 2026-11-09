@@ -52,6 +52,11 @@ export const RepoEntrySchema = z.object({
     .int("Max fix rounds must be a whole number.")
     .min(1, "Max fix rounds must be at least 1.")
     .optional(),
+  /**
+   * GitHub label `review-requests` searches for in this checkout.
+   * Overrides the trigger `label`. Omitted uses that label, which defaults to `kiln-review`.
+   */
+  reviewLabel: z.string().min(1).optional(),
 });
 export type RepoEntry = z.infer<typeof RepoEntrySchema>;
 
@@ -157,6 +162,10 @@ const TRIGGER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
  * `schedule` uses `cron` (5 fields, local time). `jira` uses `jql` or
  * `label` / `status` (compiled to JQL) and `every` (default `5m`).
  * `pr` is the built-in Kiln-owned pull request source.
+ * On `review-requests`, `label` is the GitHub label a pull request must
+ * carry (default `kiln-review`). `maxNew` is how many new review jobs one
+ * fire may create (default 3). `maxQueued` is how many review jobs may be
+ * queued or running at once (default 5).
  */
 export const TriggerConfigSchema = z
   .object({
@@ -169,6 +178,10 @@ export const TriggerConfigSchema = z
     jql: z.string().min(1).optional(),
     label: z.string().min(1).optional(),
     status: z.string().min(1).optional(),
+    /** Review jobs created on one fire of `review-requests`. Default 3. */
+    maxNew: z.number().int().min(1).optional(),
+    /** Queued or running review jobs at once. Default 5. */
+    maxQueued: z.number().int().min(1).optional(),
   })
   .strict();
 export type TriggerConfig = z.infer<typeof TriggerConfigSchema>;
@@ -275,6 +288,11 @@ export const JobSchema = z.object({
   issue: z.string().regex(ISSUE_KEY).optional(),
   source: JobSourceSchema.optional(),
   createdAt: z.string().min(1),
+  /**
+   * Set when a person cancels the job before it starts.
+   * Tick does not launch it. Cancelling does not delete a branch.
+   */
+  cancelledAt: z.string().min(1).optional(),
 });
 export type Job = z.infer<typeof JobSchema>;
 
@@ -292,7 +310,8 @@ export type Job = z.infer<typeof JobSchema>;
  * after-merged dependent. A stacked job unblocks when its one upstream has
  * landed, which includes `in-review`. A job that has used its attempt cap,
  * fix-round cap, or fingerprint breaker is `needs-human`. `dead` is a run
- * whose process died and has not been recorded yet. Attempts live under
+ * whose process died and has not been recorded yet. `cancelled` is a job
+ * cancelled before it started. Attempts live under
  * the kiln directory, not in this file.
  */
 export const JOB_STATES = [
@@ -306,5 +325,6 @@ export const JOB_STATES = [
   "dead",
   "in-review",
   "done",
+  "cancelled",
 ] as const;
 export type JobState = (typeof JOB_STATES)[number];

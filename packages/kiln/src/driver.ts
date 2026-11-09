@@ -58,7 +58,7 @@ import {
   writeFindings,
 } from "./findings.js";
 import { defaultHost, type AgentStart, type KilnHost, type PullRequestState } from "./host.js";
-import { readJobSpec, resolveJobSpec } from "./jobs.js";
+import { markJobCancelled, readJobSpec, resolveJobSpec } from "./jobs.js";
 import { jobBasename, packageRoot } from "./paths.js";
 import {
   decide,
@@ -115,6 +115,7 @@ import {
   reviewHeadOf,
 } from "./triggers.js";
 import {
+  assertWorkflowName,
   leafStepIds,
   materializeWorkflow,
   REVIEW_WORKFLOW,
@@ -301,6 +302,54 @@ export function answerJob(
  * current run id is ignored so a dead job is not stuck on the old journal.
  * A dead journal is cancelled first.
  */
+export interface CancelQueuedOptions {
+  repo?: string;
+  workflow?: string;
+  now?: Date;
+}
+
+/**
+ * Cancel queued jobs that have not started.
+ * A running, blocked, or finished job is left alone. Calling again is a no-op.
+ * The event log records `job.cancelled`. Branches are not deleted.
+ */
+export function cancelQueuedJobs(
+  config: LoadedKilnConfig,
+  options: CancelQueuedOptions = {},
+  host: KilnHost = defaultHost(),
+): { cancelled: string[] } {
+  return withTickLock(config.kilnDir, () => {
+    if (options.repo && !config.repos[options.repo]) {
+      throw new Error(`Unknown repo ${options.repo}.`);
+    }
+    if (options.workflow) assertWorkflowName(options.workflow);
+    const now = options.now ?? new Date();
+    const world = observe(config, host, now);
+    const cancelled: string[] = [];
+    for (const observed of world.observation.jobs) {
+      if (observed.error) continue;
+      if (options.repo && observed.repo !== options.repo) continue;
+      if (options.workflow && observed.workflow !== options.workflow) continue;
+      if (jobState(observed, world.observation) !== "queued") continue;
+      const job = world.jobs.get(observed.jobId);
+      if (!job || job.cancelledAt) continue;
+      markJobCancelled(config, job, now);
+      appendEvent(config.kilnDir, {
+        job_id: job.id,
+        event: "job.cancelled",
+        ts: now.toISOString(),
+        properties: {
+          repo: job.repo,
+          workflow: job.workflow,
+          once: "job.cancelled",
+        },
+      });
+      cancelled.push(job.id);
+    }
+    return { cancelled };
+  });
+}
+
 export function retryJob(config: LoadedKilnConfig, jobId: string, host: KilnHost = defaultHost()): string {
   return withTickLock(config.kilnDir, () => {
     const world = observe(config, host);
@@ -524,6 +573,7 @@ function observe(config: LoadedKilnConfig, host: KilnHost, now = new Date()): Wo
       ...(launchActivityMs !== undefined ? { launchActivityMs } : {}),
       ...(logPath ? { logPath } : {}),
       ...(entry.job?.createdAt ? { createdAt: entry.job.createdAt } : {}),
+      ...(entry.job?.cancelledAt ? { cancelled: true } : {}),
       ...(logTail ? { logTail } : {}),
       ...(diffSummary ? { diffSummary } : {}),
       ...(stepPlan && stepPlan.length > 0 ? { stepPlan } : {}),

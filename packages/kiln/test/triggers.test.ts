@@ -7,18 +7,24 @@ import { after, describe, it } from "node:test";
 import { loadKilnConfig, type LoadedKilnConfig } from "../src/config.js";
 import { readEvents } from "../src/events.js";
 import { readStatus, runTick } from "../src/driver.js";
-import { realGitRemote, type GitHubHost, type KilnHost, type ReviewRequest } from "../src/host.js";
+import { listReviewRequests, realGitRemote, reviewSearchQuery, type GitHubHost, type KilnHost, type ReviewRequest } from "../src/host.js";
 import type { JiraPollIssue } from "../src/intake/jira.js";
+import { buildAttention } from "../src/attention.js";
 import { buildBoard } from "../src/board-view.js";
+import { writeJob } from "../src/jobs.js";
+import { packageRoot } from "../src/paths.js";
 import { pauseFactory } from "../src/rails.js";
 import { readSettings, saveSettings } from "../src/settings.js";
+import { renderApp } from "../src/serve-page.js";
 import {
   compileJql,
   evaluateTriggers,
   isKilnOwnActivity,
   prTriggerEvents,
   recordOwnedPullRequest,
+  reviewSlotsInUse,
   routeTrigger,
+  triggerRows,
   effectiveRoutes,
   type JiraSearch,
 } from "../src/triggers.js";
@@ -352,6 +358,9 @@ describe("trigger settings", () => {
     const review = loaded.document.triggers.find((trigger) => trigger.id === "review-requests");
     assert.equal(review?.cron, "0 * * * *");
     assert.equal(review?.enabled, true);
+    assert.equal(review?.label, "kiln-review");
+    assert.equal(review?.maxNew, 3);
+    assert.equal(review?.maxQueued, 5);
     const saved = saveSettings(
       config.configPath,
       {
@@ -380,6 +389,15 @@ describe("trigger settings", () => {
       },
     });
     assert.equal(calls, 0);
+    assert.equal(
+      readEvents(config.kilnDir, { warn: () => {} }).filter((event) => event.event === "trigger.fired").length,
+      0,
+    );
+    const shown = saved.document.triggers.find((trigger) => trigger.id === "review-requests");
+    assert.equal(shown?.enabled, false);
+    assert.equal(shown?.label, "kiln-review");
+    assert.equal(shown?.maxNew, 3);
+    assert.equal(shown?.maxQueued, 5);
   });
 
   it("uses a review prompt from a path", () => {
@@ -395,6 +413,252 @@ describe("trigger settings", () => {
     assert.doesNotMatch(readFileSync(file, "utf8"), /Kiln runs this review/);
   });
 });
+
+describe("review request label", () => {
+  it("asks gh for the label and drops a pull request that does not carry it", () => {
+    const { config } = harness();
+    const checkout = config.repos.web?.path ?? "";
+    git(checkout, ["init", "-q", "-b", "main"]);
+    git(checkout, ["remote", "add", "origin", "https://github.com/example/web.git"]);
+    const sha = "abc1234abc1234";
+    const body = JSON.stringify([
+      {
+        number: 1,
+        title: "SAMPLE-1",
+        url: "https://example.com/web/pull/1",
+        headRefOid: sha,
+        labels: [{ name: "kiln-review" }],
+      },
+      {
+        number: 2,
+        title: "SAMPLE-2",
+        url: "https://example.com/web/pull/2",
+        headRefOid: sha,
+        labels: [{ name: "other" }],
+      },
+    ]);
+    const log = join(config.kilnDir, "gh.log");
+    const payload = join(config.kilnDir, "prs.json");
+    const bin = join(config.kilnDir, "gh");
+    writeFileSync(payload, body);
+    writeFileSync(bin, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$GH_LOG\"\ncat \"$GH_PAYLOAD\"\n");
+    spawnSync("chmod", ["+x", bin]);
+    const previousGh = process.env.KILN_GH;
+    const previousLog = process.env.GH_LOG;
+    const previousPayload = process.env.GH_PAYLOAD;
+    process.env.KILN_GH = bin;
+    process.env.GH_LOG = log;
+    process.env.GH_PAYLOAD = payload;
+    try {
+      assert.equal(reviewSearchQuery("kiln-review"), 'review-requested:@me label:"kiln-review"');
+      const labeled = listReviewRequests([{ name: "web", path: checkout }]);
+      assert.deepEqual(labeled.map((item) => item.title), ["SAMPLE-1"]);
+      const searched = readFileSync(log, "utf8");
+      assert.match(searched, /label:"kiln-review"/);
+      assert.doesNotMatch(searched, /--search review-requested:@me --state/);
+      writeFileSync(log, "");
+      const custom = listReviewRequests([{ name: "web", path: checkout, label: "needs-eyes" }]);
+      assert.deepEqual(custom, []);
+      assert.match(readFileSync(log, "utf8"), /label:"needs-eyes"/);
+    } finally {
+      if (previousGh === undefined) delete process.env.KILN_GH;
+      else process.env.KILN_GH = previousGh;
+      if (previousLog === undefined) delete process.env.GH_LOG;
+      else process.env.GH_LOG = previousLog;
+      if (previousPayload === undefined) delete process.env.GH_PAYLOAD;
+      else process.env.GH_PAYLOAD = previousPayload;
+    }
+  });
+
+  it("uses kiln-review when the trigger sets no label, and a per-repo override when one is set", () => {
+    const { dir, config } = harness();
+    const seen: string[] = [];
+    evaluateTriggers({
+      config,
+      now: local(2026, 11, 9, 4, 0),
+      startup: false,
+      reviews: {
+        list(repos) {
+          seen.push(...repos.map((repo) => repo.label ?? ""));
+          return [];
+        },
+      },
+    });
+    assert.deepEqual(seen, ["kiln-review"]);
+
+    const raw = JSON.parse(readFileSync(config.configPath, "utf8")) as {
+      repos: { web: { reviewLabel?: string } };
+      triggers?: unknown[];
+    };
+    raw.repos.web.reviewLabel = "needs-eyes";
+    raw.triggers = [{ id: "review-requests", kind: "schedule", label: "kiln-review", maxNew: 1, maxQueued: 2 }];
+    writeFileSync(config.configPath, `${JSON.stringify(raw, null, 2)}\n`);
+    const reloaded = loadKilnConfig(config.configPath, { home: dir });
+    const passed: string[] = [];
+    evaluateTriggers({
+      config: reloaded,
+      now: local(2026, 11, 9, 5, 0),
+      startup: false,
+      reviews: {
+        list(repos) {
+          passed.push(...repos.map((repo) => `${repo.name}:${repo.label ?? ""}`));
+          return [];
+        },
+      },
+    });
+    assert.deepEqual(passed, ["web:needs-eyes"]);
+    const row = triggerRows(reloaded, [], local(2026, 11, 9, 5, 0)).find((trigger) => trigger.id === "review-requests");
+    assert.equal(row?.label, "kiln-review");
+    assert.equal(row?.maxNew, 1);
+    assert.equal(row?.maxQueued, 2);
+    assert.deepEqual(row?.repoLabels, [{ repo: "web", label: "needs-eyes" }]);
+    const html = renderApp({
+      css: "/* kiln */",
+      section: "triggers",
+      board: buildBoard([], []),
+      attention: buildAttention([]),
+      page: { csrf: "abc", repos: [], workflows: ["review"] },
+      triggers: triggerRows(reloaded, readEvents(reloaded.kilnDir, { warn: () => {} }), local(2026, 11, 9, 5, 0)),
+    });
+    assert.match(html, /label kiln-review/);
+    assert.match(html, /1 new\/fire/);
+    assert.match(html, /2 queued or running/);
+    assert.match(html, /web label needs-eyes/);
+    assert.match(html, /<time datetime="[^"]+" data-time>/);
+    const script = readFileSync(join(packageRoot(), "assets", "serve.js"), "utf8");
+    const stamp = script.slice(script.indexOf("function stamp"), script.indexOf("function poll"));
+    assert.ok(stamp.indexOf("localizeTimes") !== -1 && stamp.indexOf("localizeTimes") < stamp.indexOf('getElementById("status")'));
+    assert.match(script, /dateStyle: "medium"/);
+  });
+});
+
+describe("review caps", () => {
+  it("creates at most maxNew jobs and records burst-cap for the rest", () => {
+    const { config } = harness();
+    const sha = commitCheckout(config.repos.web?.path ?? "");
+    evaluateTriggers({
+      config,
+      now: local(2026, 11, 9, 4, 0),
+      startup: false,
+      reviews: { list: () => sampleReviews(sha, 5) },
+    });
+    assert.equal(jobs(config).length, 3);
+    const skipped = readEvents(config.kilnDir, { warn: () => {} }).filter((event) => event.event === "trigger.skipped");
+    assert.equal(skipped.length, 2);
+    assert.ok(skipped.every((event) => event.event === "trigger.skipped" && event.properties.reason === "burst-cap"));
+  });
+
+  it("does not create a review when queued or running reviews already fill the cap", () => {
+    const { config } = harness();
+    const sha = commitCheckout(config.repos.web?.path ?? "");
+    for (let n = 0; n < 4; n += 1) queueReview(config, `SAMPLE-held-${n}`);
+    const running = queueReview(config, "SAMPLE-running");
+    mkdirSync(join(config.kilnDir, "launching"), { recursive: true });
+    writeFileSync(
+      join(config.kilnDir, "launching", `${running}.json`),
+      `${JSON.stringify({ jobId: running, pid: process.pid, logPath: "" })}\n`,
+    );
+    assert.equal(reviewSlotsInUse(config), 5);
+    evaluateTriggers({
+      config,
+      now: local(2026, 11, 9, 4, 0),
+      startup: false,
+      reviews: { list: () => sampleReviews(sha, 2) },
+    });
+    assert.equal(jobs(config).length, 5);
+    const skipped = readEvents(config.kilnDir, { warn: () => {} }).filter((event) => event.event === "trigger.skipped");
+    assert.equal(skipped.length, 2);
+    assert.ok(skipped.every((event) => event.event === "trigger.skipped" && event.properties.reason === "queued-cap"));
+  });
+
+  it("does not count a review that is already waiting on its gate", () => {
+    const { config } = harness();
+    const checkout = config.repos.web?.path ?? "";
+    const sha = commitCheckout(checkout);
+    for (let n = 0; n < 5; n += 1) {
+      const id = queueReview(config, `SAMPLE-gate-${n}`);
+      const runDir = join(checkout, ".runs", `run-${n}`);
+      mkdirSync(runDir, { recursive: true });
+      writeFileSync(
+        join(runDir, "journal.jsonl"),
+        `${JSON.stringify({ t: "run.started", tag: `kiln:${id}` })}\n${JSON.stringify({ t: "run.finished", status: "suspended" })}\n`,
+      );
+    }
+    assert.equal(reviewSlotsInUse(config), 0);
+    evaluateTriggers({
+      config,
+      now: local(2026, 11, 9, 4, 0),
+      startup: false,
+      reviews: { list: () => sampleReviews(sha, 1) },
+    });
+    assert.equal(jobs(config).length, 6);
+    assert.equal(
+      readEvents(config.kilnDir, { warn: () => {} }).filter((event) => event.event === "trigger.skipped").length,
+      0,
+    );
+  });
+
+  it("does not fire a trigger that is disabled while the list is in flight", () => {
+    const { dir, config } = harness();
+    let calls = 0;
+    evaluateTriggers({
+      config,
+      now: local(2026, 11, 9, 4, 0),
+      startup: true,
+      reviews: {
+        list() {
+          calls += 1;
+          const raw = JSON.parse(readFileSync(config.configPath, "utf8")) as { triggers?: unknown[] };
+          raw.triggers = [{ id: "review-requests", kind: "schedule", cron: "0 * * * *", enabled: false }];
+          writeFileSync(config.configPath, `${JSON.stringify(raw, null, 2)}\n`);
+          return [
+            { repo: "web", number: 1, title: "SAMPLE-1", url: "https://example.com/web/pull/1", headSha: "abc1234abc1234" },
+          ];
+        },
+      },
+    });
+    assert.equal(calls, 1);
+    assert.equal(jobs(config).length, 0);
+    const names = readEvents(config.kilnDir, { warn: () => {} }).map((event) => event.event);
+    assert.equal(names.includes("trigger.fired"), false);
+    assert.equal(names.includes("trigger.routed"), false);
+    const row = triggerRows(loadKilnConfig(config.configPath, { home: dir }), readEvents(config.kilnDir, { warn: () => {} })).find(
+      (trigger) => trigger.id === "review-requests",
+    );
+    assert.equal(row?.enabled, false);
+  });
+});
+
+function sampleReviews(sha: string, count: number): ReviewRequest[] {
+  return Array.from({ length: count }, (_, index) => ({
+    repo: "web",
+    number: index + 1,
+    title: `SAMPLE-${index + 1}`,
+    url: `https://example.com/web/pull/${index + 1}`,
+    headSha: sha,
+  }));
+}
+
+function queueReview(config: LoadedKilnConfig, title: string): string {
+  return writeJob(config, {
+    workflow: "review",
+    repo: "web",
+    specText: `# ${title}\n`,
+    title,
+    dependsOn: [],
+    source: { kind: "prompt", ref: "inline" },
+  }).job.id;
+}
+
+function commitCheckout(dir: string): string {
+  git(dir, ["init", "-q", "-b", "main"]);
+  git(dir, ["config", "user.email", "kiln-test@example.com"]);
+  git(dir, ["config", "user.name", "Kiln Test"]);
+  writeFileSync(join(dir, "readme.md"), "sample\n");
+  git(dir, ["add", "readme.md"]);
+  git(dir, ["commit", "-q", "-m", "sample"]);
+  return git(dir, ["rev-parse", "HEAD"]).trim();
+}
 
 function git(dir: string, args: string[]): string {
   const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });

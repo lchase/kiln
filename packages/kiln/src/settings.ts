@@ -17,7 +17,15 @@ import {
   type RepoEntry,
   type TriggerConfig,
 } from "./schemas.js";
-import { applyTriggerToggles, effectiveTriggers, knownTrigger } from "./triggers.js";
+import {
+  applyTriggerToggles,
+  effectiveTriggers,
+  knownTrigger,
+  REVIEW_REQUESTS_TRIGGER,
+  reviewMaxNew,
+  reviewMaxQueued,
+  reviewRequestLabel,
+} from "./triggers.js";
 import type { ZodError } from "zod";
 
 /**
@@ -53,6 +61,10 @@ export interface SettingsDocument {
     jql?: string;
     label?: string;
     status?: string;
+    /** New review jobs one `review-requests` fire may create. Default 3. */
+    maxNew?: number;
+    /** Queued or running review jobs at once. Default 5. */
+    maxQueued?: number;
   }[];
   /** Shown when a field is omitted. Not written back. */
   defaults: {
@@ -203,6 +215,7 @@ function mergeSettings(raw: Record<string, unknown>, settings: EditableKilnSetti
 }
 
 function triggerView(trigger: TriggerConfig): SettingsDocument["triggers"][number] {
+  const review = trigger.id === REVIEW_REQUESTS_TRIGGER;
   return {
     id: trigger.id,
     kind: trigger.kind,
@@ -211,8 +224,9 @@ function triggerView(trigger: TriggerConfig): SettingsDocument["triggers"][numbe
     ...(trigger.every ? { every: trigger.every } : {}),
     ...(trigger.repo ? { repo: trigger.repo } : {}),
     ...(trigger.jql ? { jql: trigger.jql } : {}),
-    ...(trigger.label ? { label: trigger.label } : {}),
+    ...(trigger.label || review ? { label: review ? reviewRequestLabel(trigger) : trigger.label } : {}),
     ...(trigger.status ? { status: trigger.status } : {}),
+    ...(review ? { maxNew: reviewMaxNew(trigger), maxQueued: reviewMaxQueued(trigger) } : {}),
   };
 }
 

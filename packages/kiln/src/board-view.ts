@@ -226,7 +226,7 @@ export function isHand(job: StatusJobView): boolean {
 }
 
 export function isFinished(job: StatusJobView): boolean {
-  return job.state === "done" || job.state === "rejected";
+  return job.state === "done" || job.state === "rejected" || job.state === "cancelled";
 }
 
 export function buildBoard(jobs: readonly StatusJobView[], events: readonly KilnEvent[]): BoardDocument {
@@ -650,6 +650,7 @@ function toBoardJob(job: StatusJobView, events: readonly KilnEvent[]): BoardJob 
 }
 
 function finishedLine(job: StatusJobView): string {
+  if (job.state === "cancelled") return "Cancelled";
   if (job.state === "rejected") return "Rejected";
   if (job.workflow === "review") return job.reviewUrl ? "comment posted" : "approved";
   if (job.prNumber) return `merged · PR #${job.prNumber}`;

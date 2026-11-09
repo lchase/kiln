@@ -18,7 +18,7 @@ import { SANDBOX_PREFLIGHT_PREFIX } from "./sandbox.js";
 
 const NEEDS_YOU: readonly StatusState[] = ["needs-human", "dead", "failed", "in-review", "invalid"];
 const IN_FLIGHT: readonly StatusState[] = ["running", "approved", "queued", "blocked"];
-const SETTLED: readonly StatusState[] = ["done", "rejected"];
+const SETTLED: readonly StatusState[] = ["done", "rejected", "cancelled"];
 
 /** Reasons an automatic retry is allowed to schedule. A rejected gate is not one of these. */
 const RETRYABLE_REASONS = new Set(["stalled", "crashed", "orphaned", "failed"]);
@@ -201,6 +201,8 @@ export function attentionReason(job: StatusJobView, tail = errorTail(job)): stri
       return job.prUrl ? "Merged" : "Done";
     case "rejected":
       return "Rejected";
+    case "cancelled":
+      return "Cancelled";
     default:
       return job.state;
   }
