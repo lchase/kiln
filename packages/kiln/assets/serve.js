@@ -1,5 +1,6 @@
 (function () {
   var KEY = "kiln-needs-you";
+  var NOTIFY_KEY = "kiln-notify";
   var body = document.body;
   var board = document.getElementById("board");
   var count = Number(body.getAttribute("data-needs-you") || "0");
@@ -12,7 +13,7 @@
     if (raw === null) return;
     var prev = Number(raw);
     if (!isFinite(prev) || n <= prev) return;
-    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    if (notifyMode() !== "on") return;
     var added = n - prev;
     try {
       new Notification("Kiln", { body: added === 1 ? "1 job needs you" : added + " jobs need you" });
@@ -257,24 +258,63 @@
     try { localStorage.removeItem("kiln-drawer"); } catch (err) { /* private mode */ }
   }
 
-  function notifyLabel() {
+  var notifyAsking = false;
+
+  function notifyPref() {
+    try { return localStorage.getItem(NOTIFY_KEY) === "off" ? "off" : "on"; }
+    catch (err) { return "on"; }
+  }
+
+  function setNotifyPref(value) {
+    try { localStorage.setItem(NOTIFY_KEY, value); } catch (err) { /* private mode */ }
+  }
+
+  function notifyMode() {
+    if (typeof Notification === "undefined") return "unavailable";
+    if (Notification.permission === "denied") return "blocked";
+    if (Notification.permission === "granted") return notifyPref() === "off" ? "off" : "on";
+    return "ask";
+  }
+
+  function notifyCopy(mode) {
+    if (mode === "unavailable") return { label: "Notifications unavailable", note: "" };
+    if (mode === "blocked") return { label: "Notifications blocked", note: "Allow notifications for this site in the browser." };
+    if (mode === "on") return { label: "Notifications on", note: "" };
+    return { label: "Notify me", note: "" };
+  }
+
+  function renderNotify() {
     var button = document.getElementById("notify");
     if (!button) return;
-    if (typeof Notification === "undefined") {
-      button.hidden = true;
-      return;
-    }
+    var mode = notifyMode();
+    var copy = notifyCopy(mode);
     button.hidden = false;
-    if (Notification.permission === "granted") {
-      button.setAttribute("data-tip", "Notifications on");
-      button.setAttribute("aria-label", "Notifications on");
-    } else if (Notification.permission === "denied") {
-      button.setAttribute("data-tip", "Notifications blocked");
-      button.setAttribute("aria-label", "Notifications blocked");
-    } else {
-      button.setAttribute("data-tip", "Notify me");
-      button.setAttribute("aria-label", "Notify me");
+    button.disabled = mode === "unavailable";
+    button.setAttribute("data-state", mode);
+    button.setAttribute("aria-pressed", mode === "on" ? "true" : "false");
+    button.setAttribute("aria-label", copy.label);
+    if (copy.note) button.setAttribute("aria-describedby", "notify-note");
+    else button.removeAttribute("aria-describedby");
+    var label = document.getElementById("notify-label");
+    if (label) label.textContent = copy.label;
+    var note = document.getElementById("notify-note");
+    if (note) {
+      note.hidden = !copy.note;
+      note.textContent = copy.note;
     }
+  }
+
+  function askNotify() {
+    if (notifyAsking || typeof Notification === "undefined" || !Notification.requestPermission) return;
+    notifyAsking = true;
+    var pending = Notification.requestPermission();
+    var done = function () {
+      notifyAsking = false;
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") setNotifyPref("on");
+      renderNotify();
+    };
+    if (pending && typeof pending.then === "function") pending.then(done, done);
+    else done();
   }
 
   var titleDirty = false;
@@ -1490,8 +1530,19 @@
       return;
     }
     if (target.closest("#notify")) {
-      if (typeof Notification === "undefined" || Notification.permission !== "default") return;
-      Notification.requestPermission().then(notifyLabel);
+      var mode = notifyMode();
+      if (mode === "unavailable" || mode === "blocked") return;
+      if (mode === "on") {
+        setNotifyPref("off");
+        renderNotify();
+        return;
+      }
+      if (mode === "off") {
+        setNotifyPref("on");
+        renderNotify();
+        return;
+      }
+      askNotify();
       return;
     }
     var act = target.closest("[data-act]");
@@ -1615,7 +1666,8 @@
         var toggle = document.getElementById("pause-toggle");
         var form = document.getElementById("pause-form");
         if (toggle && form && data && typeof data.paused === "boolean") {
-          toggle.textContent = data.paused ? "Resume" : "Pause";
+          var pauseLabel = document.getElementById("pause-label");
+          if (pauseLabel) pauseLabel.textContent = data.paused ? "Resume" : "Pause";
           toggle.setAttribute("aria-pressed", data.paused ? "true" : "false");
           form.setAttribute("action", data.paused ? "/api/resume" : "/api/pause");
           var label = document.getElementById("run-label");
@@ -1770,7 +1822,7 @@
   showFresh();
   syncValidity();
   renderCompact();
-  notifyLabel();
+  renderNotify();
   applyRepo();
   stamp(true);
   paintUnseen();
