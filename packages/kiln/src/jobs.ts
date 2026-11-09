@@ -131,6 +131,15 @@ export function writeJob(config: LoadedKilnConfig, input: WriteJobInput): { job:
   return { job, jsonPath };
 }
 
+/** Record a cancel on the job file. A second call leaves the file as it is. */
+export function markJobCancelled(config: LoadedKilnConfig, job: Job, now = new Date()): Job {
+  if (job.cancelledAt) return job;
+  const next = JobSchema.parse({ ...job, cancelledAt: now.toISOString() });
+  const jsonPath = jobFilePath(config.jobsDir, job.id);
+  writeFileSync(jsonPath, `${JSON.stringify(next, null, 2)}\n`);
+  return next;
+}
+
 export function renderAddedJob(job: Job, jsonPath: string): string {
   const lines = [`added ${job.id}`, `repo ${job.repo}`, `workflow ${job.workflow}`, `spec ${job.spec}`];
   if (job.issue) lines.push(`issue ${job.issue}`);

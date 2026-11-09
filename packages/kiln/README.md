@@ -271,13 +271,23 @@ Two triggers are built in. `review-requests` is a schedule, cron `0 * * * *` (mi
 }
 ```
 
-`every` defaults to `5m` (`30s`, `5m`, `1h`). `label` and `status` compile to JQL. A `jql` string replaces them. `enabled` defaults to true. The Triggers page and `PUT /api/settings` send `{ "triggers": [{ "id", "enabled" }] }` and leave cron, JQL, and repo on the file.
+`every` defaults to `5m` (`30s`, `5m`, `1h`). `label` and `status` compile to JQL. A `jql` string replaces them. `enabled` defaults to true. The Triggers page and `PUT /api/settings` send `{ "triggers": [{ "id", "enabled" }] }` and leave cron, JQL, label, and repo on the file. The Triggers page shows each trigger's schedule, whether it is enabled, and, for `review-requests`, the label and the two caps. Times on that page are the browser's local time.
 
 A cron fires once per slot. While serve was down, startup fires the latest missed slot once and does not replay the ones behind it. A Jira poll that was missed does the same: one search, not one per skipped interval. The router writes `trigger.routed` with a `dedupe` property (`review:<repo>:<number>:<head sha>`, `jira:<trigger>:<issue>`, `pr:<job>:<comment>`). A later tick that sees that value does not create another job. Comments and commits from `kiln`, a `[bot]` login, a `kiln:` subject, or a `Kiln-Job` trailer are ignored.
 
-A failed fire stores `last_error` and `lastErrorAt` under `<kiln-home>/triggers/state.json`, appends `trigger.failed`, and waits for the next slot. It does not retry on the next tick. Pause and the daily dollar cap append `trigger.skipped` with reason `paused` or `capped` and do not queue the fire.
+A failed fire stores `last_error` and `lastErrorAt` under `<kiln-home>/triggers/state.json`, appends `trigger.failed`, and waits for the next slot. It does not retry on the next tick. Pause and the daily dollar cap append `trigger.skipped` with reason `paused` or `capped` and do not queue the fire. A review over the per-fire cap is `burst-cap`. A review that would pass the number of queued or running review jobs is `queued-cap`. Those two are not queued, so the next fire can pick them up. A disable is read again after the pull-request list returns and before each job is created, including the startup fire, so a trigger that is already disabled does not fire.
 
-`review-requests` lists open pull requests where your `gh` user is the requested reviewer (`gh pr list --search review-requested:@me` in each registered GitHub repo). A pull request already drafted at that head SHA is skipped. The `review` workflow returns findings (severity, file, line, suggested comment) and stops on a gate in the Inbox. Approving that gate posts the draft as a pull request comment (`COMMENT` only) under your `gh` user: the markdown is the body, and findings with a file and line are inline comments. Kiln does not approve the pull request or merge it. Rejecting or revising the gate does not post. Pause and the daily cap do not post. Posting the same repo, pull request, and head SHA again does not create a second review. A failed post stays in Needs a hand with `review.failed` and does not count as posted. `reviewPrompt` is a path to your own prompt file. Omitted, Kiln uses `prompts/kiln/review.md`.
+`review-requests` lists open pull requests where your `gh` user is the requested reviewer and the pull request carries a label (`gh pr list --search 'review-requested:@me label:"kiln-review"'` in each registered GitHub repo). The label defaults to `kiln-review` when `triggers[].label` is omitted. That is opt-in: unlabeled pull requests are not picked. Set `label` on the `review-requests` trigger to use a different one. `repos.<name>.reviewLabel` overrides it for that checkout. One fire creates at most `maxNew` new review jobs (default 3). At most `maxQueued` review jobs may be queued or running at once (default 5). A review waiting on the Inbox gate does not count. A pull request already drafted at that head SHA is skipped and does not use a slot. The `review` workflow returns findings (severity, file, line, suggested comment) and stops on a gate in the Inbox. Approving that gate posts the draft as a pull request comment (`COMMENT` only) under your `gh` user: the markdown is the body, and findings with a file and line are inline comments. Kiln does not approve the pull request or merge it. Rejecting or revising the gate does not post. Pause and the daily cap do not post. Posting the same repo, pull request, and head SHA again does not create a second review. A failed post stays in Needs a hand with `review.failed` and does not count as posted. `reviewPrompt` is a path to your own prompt file. Omitted, Kiln uses `prompts/kiln/review.md`.
+
+```json
+{
+  "triggers": [
+    { "id": "review-requests", "kind": "schedule", "label": "kiln-review", "maxNew": 3, "maxQueued": 5 }
+  ]
+}
+```
+
+`kiln cancel --queued` cancels jobs that have not started. `--repo` and `--workflow` narrow it. `POST /api/jobs/cancel` with `{ "queued": true }` does the same for the board. Both are idempotent: a second call cancels nothing new and writes no second `job.cancelled` event. Running, blocked, and finished jobs stay. Cancelling does not delete branches.
 
 Jira search sends `JIRA_API_TOKEN` only as a Basic header in a child process. The token is not written into the job, the spec, or the event log. Polling is the only Jira ingress. A webhook can later call the same issue-to-event function.
 
@@ -311,6 +321,7 @@ State is derived from the yak journal, the gate files, and (for `deliver=pr`) `g
 | State | Meaning |
 | --- | --- |
 | `queued` | Dependencies are met, and the job has not started |
+| `cancelled` | Cancelled before it started. Tick does not launch it. No branch is deleted |
 | `blocked` | An after-merged dependency is not `done`, or a stacked dependency has not landed. A missing job id is named |
 | `running` | Yak is alive, or the launch process is alive and has not written a journal |
 | `needs-human` | A gate is open, feedback is exhausted or ambiguous, the attempt cap is used, or the same fingerprint has failed `maxSameFingerprint` times. `kiln retry` clears an attempt-cap or fingerprint stop. `kiln revise --note` sends a gate back with a note |

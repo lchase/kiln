@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { AUTH_PREFLIGHT_PREFIX } from "./auth.js";
 import { loadKilnConfig, type LoadedKilnConfig } from "./config.js";
-import { answerJob, readStatus, retryJob, reviseJob, runTick, startupRecovery } from "./driver.js";
+import { answerJob, cancelQueuedJobs, readStatus, retryJob, reviseJob, runTick, startupRecovery } from "./driver.js";
 import { browse } from "./fs-browse.js";
 import {
   branchOf,
@@ -218,6 +218,10 @@ async function handle(
       await createJob(req, res, state, raw);
       return;
     }
+    if (path === "/api/jobs/cancel") {
+      await cancelQueued(res, config, secrets, raw);
+      return;
+    }
     if (path === "/api/pause" || path === "/api/resume") {
       const pausing = path === "/api/pause";
       const changed = pausing ? pauseFactory(config.kilnDir) : resumeFactory(config.kilnDir);
@@ -397,6 +401,49 @@ async function handle(
 
   if (path.startsWith("/api/")) sendJson(res, 404, { error: "Not found." }, secrets);
   else sendHtml(res, 404, renderMessagePage(css, "Not found", "Not found."), secrets);
+}
+
+async function cancelQueued(
+  res: ServerResponse,
+  config: LoadedKilnConfig,
+  secrets: string[],
+  raw: string,
+): Promise<void> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw || "{}");
+  } catch {
+    sendJson(res, 400, { error: "Request body is not JSON." }, secrets);
+    return;
+  }
+  if (!isRecord(parsed) || parsed.queued !== true) {
+    sendJson(res, 400, { error: "Cancel requires queued: true." }, secrets);
+    return;
+  }
+  const repo = parsed.repo;
+  const workflow = parsed.workflow;
+  if (repo !== undefined && typeof repo !== "string") {
+    sendJson(res, 400, { error: "repo must be a string." }, secrets);
+    return;
+  }
+  if (workflow !== undefined && typeof workflow !== "string") {
+    sendJson(res, 400, { error: "workflow must be a string." }, secrets);
+    return;
+  }
+  try {
+    const result = cancelQueuedJobs(config, {
+      ...(typeof repo === "string" && repo.length > 0 ? { repo } : {}),
+      ...(typeof workflow === "string" && workflow.length > 0 ? { workflow } : {}),
+    });
+    sendJson(res, 200, { ok: true, cancelled: result.cancelled }, secrets);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendJson(res, 400, { error: message }, secrets);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function answer(

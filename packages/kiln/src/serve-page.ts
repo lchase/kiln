@@ -197,6 +197,12 @@ function triggersHtml(rows: readonly TriggerRow[]): string {
 function triggerCard(row: TriggerRow): string {
   const on = row.enabled;
   const bits = [row.kind, row.schedule, on ? "enabled" : "disabled"];
+  if (row.label) bits.push(`label ${row.label}`);
+  if (row.maxNew !== undefined) bits.push(`${row.maxNew} new/fire`);
+  if (row.maxQueued !== undefined) bits.push(`${row.maxQueued} queued or running`);
+  if (row.repoLabels && row.repoLabels.length > 0) {
+    bits.push(row.repoLabels.map((item) => `${item.repo} label ${item.label}`).join(", "));
+  }
   const next = row.nextFire ? `<p class="meta">next <time datetime="${escapeHtml(row.nextFire)}" data-time>${escapeHtml(row.nextFire)}</time></p>` : "";
   const last = row.lastFire ? `<p class="meta">last fire <time datetime="${escapeHtml(row.lastFire)}" data-time>${escapeHtml(row.lastFire)}</time></p>` : `<p class="meta">last fire none</p>`;
   const error = row.lastError

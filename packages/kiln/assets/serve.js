@@ -189,7 +189,7 @@
     var date = new Date(iso);
     if (!isFinite(date.getTime())) return iso;
     if (!withDate) return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-    return date.toLocaleString();
+    return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
   }
 
   function localizeIso(text) {
@@ -1215,6 +1215,7 @@
   });
 
   function stamp(ok) {
+    localizeTimes(document);
     var el = document.getElementById("status");
     if (!el) return;
     if (!ok) {
@@ -1225,7 +1226,6 @@
     el.className = "status";
     var jobs = document.querySelectorAll(".job").length;
     el.textContent = jobs + (jobs === 1 ? " job · " : " jobs · ") + new Date().toLocaleTimeString();
-    localizeTimes(document);
   }
 
   function poll() {

@@ -113,12 +113,23 @@ export interface ReviewRequest {
   headSha: string;
 }
 
+/** GitHub label `review-requests` requires when the trigger sets none. */
+export const DEFAULT_REVIEW_LABEL = "kiln-review";
+
+/** `gh pr list --search` query. Opt-in: the pull request must carry `label`. */
+export function reviewSearchQuery(label: string): string {
+  const trimmed = label.trim();
+  if (!trimmed || /[\r\n]/.test(trimmed)) throw new Error("Review label must be a single line.");
+  return `review-requested:@me label:${quoteSearch(trimmed)}`;
+}
+
 export interface ReviewRequestSource {
   /**
-   * Open pull requests where the authenticated user's review is requested.
+   * Open pull requests where the authenticated user's review is requested
+   * and the pull request carries `label` (default `kiln-review`).
    * Read-only. Uses the operator's gh auth. Does not post, approve, or merge.
    */
-  list(repos: readonly { name: string; path: string }[]): ReviewRequest[];
+  list(repos: readonly { name: string; path: string; label?: string }[]): ReviewRequest[];
 }
 
 export interface KilnHost {
@@ -146,15 +157,28 @@ export function productionHost(): KilnHost {
 
 /**
  * Open pull requests awaiting the authenticated user's review, per registered repo.
- * A remote that is not GitHub is skipped, so a local test origin does not call gh.
+ * The search is opt-in: a pull request must carry `label`, or `kiln-review` when
+ * that is omitted. A remote that is not GitHub is skipped, so a local test origin does not call gh.
  */
-export function listReviewRequests(repos: readonly { name: string; path: string }[]): ReviewRequest[] {
+export function listReviewRequests(repos: readonly { name: string; path: string; label?: string }[]): ReviewRequest[] {
   const found: ReviewRequest[] = [];
   for (const repo of repos) {
     if (!githubRemote(repo.path)) continue;
+    const label = repo.label?.trim() || DEFAULT_REVIEW_LABEL;
     const result = spawnSync(
       ghBin(),
-      ["pr", "list", "--search", "review-requested:@me", "--state", "open", "--limit", "50", "--json", "number,title,url,headRefOid"],
+      [
+        "pr",
+        "list",
+        "--search",
+        reviewSearchQuery(label),
+        "--state",
+        "open",
+        "--limit",
+        "50",
+        "--json",
+        "number,title,url,headRefOid,labels",
+      ],
       {
         cwd: repo.path,
         encoding: "utf8",
@@ -174,16 +198,34 @@ export function listReviewRequests(repos: readonly { name: string; path: string 
     if (!Array.isArray(parsed)) throw new HostError("gh pr list returned data that is not a list.");
     for (const item of parsed) {
       if (typeof item !== "object" || item === null) continue;
-      const record = item as { number?: unknown; title?: unknown; url?: unknown; headRefOid?: unknown };
+      const record = item as { number?: unknown; title?: unknown; url?: unknown; headRefOid?: unknown; labels?: unknown };
       const number = typeof record.number === "number" ? record.number : Number.NaN;
       const sha = typeof record.headRefOid === "string" ? record.headRefOid.trim().toLowerCase() : "";
       if (!Number.isInteger(number) || number <= 0 || !/^[0-9a-f]{7,64}$/.test(sha)) continue;
+      if (!carriesLabel(record.labels, label)) continue;
       const title = typeof record.title === "string" && record.title.trim() ? record.title.trim() : `PR ${number}`;
       const url = typeof record.url === "string" ? record.url : "";
       found.push({ repo: repo.name, number, title, url, headSha: sha });
     }
   }
   return found;
+}
+
+/** Missing `labels` trusts the search. A present list must include `label`. */
+function carriesLabel(labels: unknown, label: string): boolean {
+  if (labels === undefined) return true;
+  if (!Array.isArray(labels)) return false;
+  const want = label.trim().toLowerCase();
+  return labels.some((item) => {
+    if (typeof item === "string") return item.trim().toLowerCase() === want;
+    if (typeof item !== "object" || item === null || !("name" in item)) return false;
+    const name = (item as { name?: unknown }).name;
+    return typeof name === "string" && name.trim().toLowerCase() === want;
+  });
+}
+
+function quoteSearch(value: string): string {
+  return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
 function githubRemote(checkout: string): boolean {

@@ -358,7 +358,7 @@ describe("serve pages", () => {
     assert.match(html, /id="job-spec-run"/);
     assert.match(html, /2026-10-26T05:01:22\.000Z/);
     assert.match(html, /toLocaleTimeString\(\)/);
-    assert.match(html, /toLocaleString\(\)/);
+    assert.match(html, /toLocaleString\(/);
     assert.doesNotMatch(html, /timeZone/);
     assert.doesNotMatch(html, /toUTCString/);
     assert.doesNotMatch(html, /toISOString\(/);

@@ -26,6 +26,7 @@ import { redactDeep } from "./redact.js";
 
 export const EVENT_NAMES = [
   "job.added",
+  "job.cancelled",
   "job.retried",
   "run.started",
   "phase.started",
@@ -65,6 +66,11 @@ const JobAdded = z.object({
 const JobRetried = z.object({
   by: z.literal("human"),
   repo: z.string().min(1),
+  once,
+});
+const JobCancelled = z.object({
+  repo: z.string().min(1),
+  workflow: z.string().min(1),
   once,
 });
 const RunStarted = z.object({
@@ -178,7 +184,9 @@ const TriggerFailed = z.object({
 });
 const TriggerSkipped = z.object({
   trigger_id: z.string().min(1),
-  reason: z.enum(["paused", "capped"]),
+  reason: z.enum(["paused", "capped", "burst-cap", "queued-cap"]),
+  /** Pull request or issue the skip applies to, when the fire skipped one item. */
+  external_id: z.string().min(1).optional(),
   once,
 });
 const ReviewPosted = z.object({
@@ -213,6 +221,7 @@ const envelope = {
 
 export const EventSchema = z.discriminatedUnion("event", [
   z.object({ ...envelope, event: z.literal("job.added"), job_id: z.string().min(1), properties: JobAdded }),
+  z.object({ ...envelope, event: z.literal("job.cancelled"), job_id: z.string().min(1), properties: JobCancelled }),
   z.object({ ...envelope, event: z.literal("job.retried"), job_id: z.string().min(1), properties: JobRetried }),
   z.object({ ...envelope, event: z.literal("run.started"), job_id: z.string().min(1), properties: RunStarted }),
   z.object({ ...envelope, event: z.literal("phase.started"), job_id: z.string().min(1), properties: PhaseStarted }),

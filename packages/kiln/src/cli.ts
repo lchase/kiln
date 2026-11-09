@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { addRepo, renderRepoList, resolveKilnConfig } from "./config.js";
 import { renderSandboxStatus, runSandboxBuild } from "./sandbox.js";
-import { answerJob, retryJob, reviseJob, runStatus, runTick } from "./driver.js";
+import { answerJob, cancelQueuedJobs, retryJob, reviseJob, runStatus, runTick } from "./driver.js";
 import { productionHost } from "./host.js";
 import { pauseFactory, resumeFactory } from "./rails.js";
 import { parseSince, renderLedgerFile } from "./ledger.js";
@@ -25,6 +25,7 @@ function usage(): never {
       "       kiln reject <jobId> [--config <file>]",
       "       kiln revise <jobId> --note <text> [--config <file>]",
       "       kiln retry <jobId> [--config <file>]",
+      "       kiln cancel --queued [--repo <name>] [--workflow <name>] [--config <file>]",
       "       kiln pause [--config <file>]",
       "       kiln resume [--config <file>]",
       "       kiln ledger [--since 7d] [--repo <name>] [--config <file>]",
@@ -98,6 +99,12 @@ function usage(): never {
       "when a slot was missed. Jira polls are per repo. Kiln-owned pull",
       "request activity uses the same read as the fix loop. A failed fire",
       "waits for the next slot. Pause and the daily cap skip the fire.",
+      "review-requests only picks pull requests labeled kiln-review, unless",
+      "the trigger sets label (repos.<name>.reviewLabel overrides that repo).",
+      "One fire creates at most 3 new review jobs, and at most 5 review jobs",
+      "may be queued or running. The rest are skipped until a later fire.",
+      "kiln cancel --queued cancels jobs that have not started. It does not",
+      "delete branches. A second cancel changes nothing.",
       "",
       "serve listens on 127.0.0.1. The page is a board of workflow stages:",
       "queued, spec, build, review, approve, land, PR review, Done (landed locally),",
@@ -135,6 +142,7 @@ interface FlagBag {
   context?: string;
   dryRun: boolean;
   stack: boolean;
+  queued: boolean;
   deliver?: "local" | "pr";
   base?: string;
   after: string[];
@@ -146,7 +154,7 @@ interface FlagBag {
 }
 
 function parseFlags(argv: string[]): FlagBag {
-  const bag: FlagBag = { positionals: [], after: [], dryRun: false, stack: false, noTick: false };
+  const bag: FlagBag = { positionals: [], after: [], dryRun: false, stack: false, noTick: false, queued: false };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const next = argv[i + 1];
@@ -222,6 +230,10 @@ function parseFlags(argv: string[]): FlagBag {
     }
     if (flag === "--stack") {
       bag.stack = true;
+      continue;
+    }
+    if (flag === "--queued") {
+      bag.queued = true;
       continue;
     }
     if (flag === "--deliver") {
@@ -436,6 +448,40 @@ function statusCommand(argv: string[]): void {
   process.stdout.write(runStatus(config, flags.positionals[0]));
 }
 
+function cancelCommand(argv: string[]): void {
+  const flags = parseFlags(argv);
+  rejectServeFlags(flags);
+  if (
+    !flags.queued ||
+    flags.positionals.length !== 0 ||
+    flags.test ||
+    flags.spec ||
+    flags.prompt ||
+    flags.jira ||
+    flags.title ||
+    flags.issue ||
+    flags.context ||
+    flags.dryRun ||
+    flags.stack ||
+    flags.after.length > 0 ||
+    flags.deliver ||
+    flags.base ||
+    flags.note
+  ) {
+    usage();
+  }
+  const config = resolveKilnConfig({ configPath: flags.configPath });
+  const result = cancelQueuedJobs(config, {
+    ...(flags.repo ? { repo: flags.repo } : {}),
+    ...(flags.workflow ? { workflow: flags.workflow } : {}),
+  });
+  if (result.cancelled.length === 0) {
+    process.stdout.write("cancelled 0\n");
+    return;
+  }
+  process.stdout.write(`${result.cancelled.map((id) => `cancelled ${id}`).join("\n")}\n`);
+}
+
 function retryCommand(argv: string[]): void {
   const flags = parseFlags(argv);
   rejectServeFlags(flags);
@@ -594,6 +640,10 @@ async function main(): Promise<void> {
   }
   if (command === "retry") {
     retryCommand(argv.slice(1));
+    return;
+  }
+  if (command === "cancel") {
+    cancelCommand(argv.slice(1));
     return;
   }
   if (command === "revise") {

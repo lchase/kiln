@@ -40,6 +40,8 @@ export interface LoadedKilnConfig {
       maxAttempts?: number;
       /** Overrides `maxFixRounds` for jobs in this repo. */
       maxFixRounds?: number;
+      /** GitHub label for `review-requests` in this checkout. Overrides the trigger label. */
+      reviewLabel?: string;
     }
   >;
   /**
@@ -133,6 +135,7 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
       ...(entry.branch ? { branchTemplate: entry.branch } : {}),
       ...(entry.maxAttempts !== undefined ? { maxAttempts: entry.maxAttempts } : {}),
       ...(entry.maxFixRounds !== undefined ? { maxFixRounds: entry.maxFixRounds } : {}),
+      ...(entry.reviewLabel ? { reviewLabel: entry.reviewLabel } : {}),
     };
   }
 

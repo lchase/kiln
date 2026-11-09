@@ -198,6 +198,8 @@ export interface ObservedJob {
   feedbackPlan?: FeedbackPlan;
   /** Agent steps for this job run inside yak's Docker sandbox. */
   sandboxed?: boolean;
+  /** The job file has `cancelledAt`. A not-yet-started job stays cancelled. */
+  cancelled?: boolean;
   /** Attempt cap that applies to this job (repo override or global). */
   attemptCap?: number;
   /** The job file could not be used. Decide skips it. */
@@ -259,6 +261,7 @@ function inFlight(job: ObservedJob, observation: Observation): boolean {
  * | launching breadcrumb | running |
  * | dependencies unmet | blocked |
  * | launch error | failed |
+ * | cancelled before start | cancelled |
  * | otherwise | queued |
  *
  * `deliver=local`: `done` is a finished run whose gate says approve.
@@ -273,6 +276,7 @@ function inFlight(job: ObservedJob, observation: Observation): boolean {
 export function jobState(job: ObservedJob, observation: Observation): JobState {
   if (job.fixAwaitingPublish) return "in-review";
   if (job.launching && (!job.run || job.runRetired || job.fixInProgress)) return "running";
+  if (job.cancelled && !job.run && !job.launching) return "cancelled";
   if ((job.feedbackExhausted || job.feedbackAmbiguous) && isLanded(job) && !job.fixInProgress) {
     if (job.delivery?.merged || job.delivery?.prState === "MERGED") return "done";
     if (job.delivery?.prState === "CLOSED") return "failed";
@@ -359,7 +363,7 @@ function needsDelivery(job: ObservedJob): boolean {
 }
 
 function canLaunch(job: ObservedJob, observation: Observation): boolean {
-  if (job.error || job.run || job.launching || job.launchFailed || job.fixInProgress) return false;
+  if (job.cancelled || job.error || job.run || job.launching || job.launchFailed || job.fixInProgress) return false;
   return dependenciesMet(job, observation);
 }
 
@@ -371,7 +375,7 @@ function canStartFix(job: ObservedJob): boolean {
 
 /** A recorded transient failure whose backoff has elapsed. One retry per tick, ahead of a new job. */
 function canRetry(job: ObservedJob, observation: Observation, now: Date): boolean {
-  if (job.error || job.launching || job.retriesExhausted || job.stopReason || job.ledgerError) return false;
+  if (job.cancelled || job.error || job.launching || job.retriesExhausted || job.stopReason || job.ledgerError) return false;
   if (job.run && !job.runRetired) return false;
   if (!job.nextRetryAt) return false;
   const due = Date.parse(job.nextRetryAt);
