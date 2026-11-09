@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, join, sep } from "node:path";
+import { createRequire } from "node:module";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { jobBasename, packageRoot } from "./paths.js";
 
 const FACTORY_DIRECTIVE = /^<!--\s*factory:\s*(prompts\/factory\/[a-z0-9-]+\.md)\s*-->/;
@@ -41,33 +42,29 @@ const INPUT_VALUES: Record<string, (input: LaunchInput) => string> = {
   acceptance: (input) => input.specText,
 };
 
-/** Workflow names from `workflows/*.yaml`, sorted. */
-export function listWorkflowNames(): string[] {
-  const dir = join(packageRoot(), "workflows");
-  let names: string[] = [];
-  try {
-    names = readdirSync(dir);
-  } catch {
-    return [];
-  }
-  return names
-    .filter((name) => name.endsWith(".yaml") && !name.startsWith("."))
-    .map((name) => name.slice(0, -".yaml".length))
-    .filter((name) => WORKFLOW_NAME.test(name))
-    .sort();
+/** Shipped names plus local `workflows/*.yaml`, sorted. A reused shipped name throws. */
+export function listWorkflowNames(workflowsDir?: string): string[] {
+  const packaged = workflowNamesIn(join(packageRoot(), "workflows"));
+  const local = workflowsDir ? workflowNamesIn(workflowsDir) : [];
+  assertNoShippedCollision(local, packaged);
+  return [...packaged, ...local].sort();
 }
 
-export function assertWorkflowName(name: string): string {
+export function assertWorkflowName(name: string, workflowsDir?: string): string {
   if (!WORKFLOW_NAME.test(name)) {
     throw new Error(
       `Workflow name ${JSON.stringify(name)} must start with a letter or digit and contain only letters, digits, dots, underscores, and hyphens.`,
     );
   }
-  const path = join(packageRoot(), "workflows", `${name}.yaml`);
-  if (!existsSync(path)) {
-    throw new Error(`Unknown workflow ${name}. Expected ${path}.`);
-  }
-  return path;
+  const packaged = join(packageRoot(), "workflows", `${name}.yaml`);
+  const local = workflowsDir ? join(workflowsDir, `${name}.yaml`) : undefined;
+  const hasPackaged = existsSync(packaged);
+  const hasLocal = local !== undefined && existsSync(local);
+  if (hasLocal && hasPackaged) assertNoShippedCollision([name], [name]);
+  if (hasLocal && local) return local;
+  if (hasPackaged) return packaged;
+  const expected = local ? `${packaged} or ${local}` : packaged;
+  throw new Error(`Unknown workflow ${name}. Expected ${expected}.`);
 }
 
 /**
@@ -82,8 +79,17 @@ export function assertWorkflowName(name: string): string {
  * stored as itself. `prompts/kiln/investigation.md` uses the second form.
  */
 export interface MaterializeOptions {
-  /** Absolute file that replaces `prompts/kiln/review.md`. The operator's own review prompt. */
+  /**
+   * Absolute file for `prompts/kiln/review.md`. Wins over the local prompts
+   * tree and over the packaged file. The same lookup as every other prompt.
+   */
   reviewPrompt?: string;
+  /** Local prompts directory. A file here wins over the packaged prompt at the same relative path. */
+  promptsDir?: string;
+  /** Local workflows directory. A shipped name in this directory is an error. */
+  workflowsDir?: string;
+  /** Existing skill directories, injected on every agent step. Empty leaves the YAML unchanged. */
+  skillDirs?: readonly string[];
 }
 
 export function materializeWorkflow(
@@ -92,17 +98,16 @@ export function materializeWorkflow(
   workflowName: string,
   options: MaterializeOptions = {},
 ): string {
-  const sourcePath = assertWorkflowName(workflowName);
+  const sourcePath = assertWorkflowName(workflowName, options.workflowsDir);
   const source = readFileSync(sourcePath, "utf8");
   const destDir = join(kilnDir, "rendered", jobBasename(jobId));
   mkdirSync(destDir, { recursive: true });
 
   let count = 0;
-  const rendered = source.replace(/file: prompts\/kiln\/([a-z0-9-]+)\.md/g, (_full, name: string) => {
+  let rendered = source.replace(/file: prompts\/kiln\/([a-z0-9-]+)\.md/g, (_full, name: string) => {
     count += 1;
     const rel = `prompts/kiln/${name}.md`;
-    const override = name === "review" ? options.reviewPrompt : undefined;
-    const absolute = writeCombinedPrompt(rel, destDir, override);
+    const absolute = writeCombinedPrompt(rel, destDir, options);
     return `file: ${yamlDoubleQuote(absolute)}`;
   });
   const expected = PROMPT_COUNTS[workflowName];
@@ -113,6 +118,9 @@ export function materializeWorkflow(
   }
   if (rendered.includes("file: prompts/")) {
     throw new Error(`Rendered ${workflowName} workflow still has a checkout-relative prompt path.`);
+  }
+  if (options.skillDirs && options.skillDirs.length > 0) {
+    rendered = injectSkillDirs(rendered, options.skillDirs);
   }
 
   const workflowPath = join(destDir, `${workflowName}.yaml`);
@@ -188,11 +196,19 @@ export function leafStepIds(steps: unknown): string[] {
   return ids;
 }
 
-/** Leaf steps of a packaged workflow. An unknown name is an empty plan, not an error. */
-export function workflowStepPlan(name: string): string[] {
+/**
+ * Leaf steps of a packaged or local workflow. An unknown name is an empty
+ * plan. A local file that reuses a shipped name throws.
+ */
+export function workflowStepPlan(name: string, workflowsDir?: string): string[] {
   if (!WORKFLOW_NAME.test(name)) return [];
-  const path = join(packageRoot(), "workflows", `${name}.yaml`);
-  if (!existsSync(path)) return [];
+  const packaged = join(packageRoot(), "workflows", `${name}.yaml`);
+  const local = workflowsDir ? join(workflowsDir, `${name}.yaml`) : undefined;
+  const hasPackaged = existsSync(packaged);
+  const hasLocal = local !== undefined && existsSync(local);
+  if (hasLocal && hasPackaged) assertNoShippedCollision([name], [name]);
+  const path = hasLocal && local ? local : hasPackaged ? packaged : undefined;
+  if (!path) return [];
   return workflowLeafSteps(readFileSync(path, "utf8"));
 }
 
@@ -221,38 +237,140 @@ function declaredInputProperties(yaml: string): string[] {
   return names;
 }
 
-function writeCombinedPrompt(preambleRel: string, destDir: string, overridePath?: string): string {
-  const root = packageRoot();
-  if (overridePath) {
-    if (!existsSync(overridePath) || !statSync(overridePath).isFile()) {
-      throw new Error("Review prompt file was not found.");
-    }
-    const combined = `${readFileSync(overridePath, "utf8").trimEnd()}\n`;
-    const digest = createHash("sha256").update(combined).digest("hex").slice(0, 16);
-    const outPath = join(destDir, `${basename(preambleRel, ".md")}-${digest}.md`);
-    writeFileSync(outPath, combined);
-    return outPath;
+/** Text Kiln searches for in the installed `@lchase/yak` bundle. Keep the property access in yak. */
+export const YAK_SKILL_DIRS_MARKER = "raw.agent.skillDirs";
+
+/** True when the installed yak keeps `agent.skillDirs` instead of dropping it while loading YAML. */
+export function installedYakLoadsSkillDirs(): boolean {
+  try {
+    const require = createRequire(import.meta.url);
+    const pkgPath = require.resolve("@lchase/yak/package.json");
+    const dist = readFileSync(join(dirname(pkgPath), "dist", "index.js"), "utf8");
+    return dist.includes(YAK_SKILL_DIRS_MARKER);
+  } catch {
+    return false;
   }
-  const preamblePath = join(root, preambleRel);
-  const preamble = readFileSync(preamblePath, "utf8");
+}
+
+/**
+ * Insert `skillDirs` under every `agent:` block that does not already set it.
+ * Command steps and gates are left alone. An empty list leaves the YAML unchanged.
+ */
+export function injectSkillDirs(yaml: string, skillDirs: readonly string[]): string {
+  if (skillDirs.length === 0) return yaml;
+  const lines = yaml.split("\n");
+  const out: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    out.push(line);
+    const match = /^(\s*)agent:\s*(?:#.*)?$/.exec(line);
+    if (!match) continue;
+    const base = match[1]?.length ?? 0;
+    if (blockHasKey(lines, index + 1, base, "skillDirs")) continue;
+    const pad = " ".repeat(childIndent(lines, index + 1, base));
+    out.push(`${pad}skillDirs:`);
+    for (const dir of skillDirs) out.push(`${pad}  - ${yamlDoubleQuote(dir)}`);
+  }
+  return out.join("\n");
+}
+
+function writeCombinedPrompt(preambleRel: string, destDir: string, options: MaterializeOptions): string {
+  const preamble = readPromptFile(preambleRel, options);
   const directive = preamble.match(FACTORY_DIRECTIVE);
   let combined: string;
   if (!directive?.[1]) {
     combined = `${preamble.trimEnd()}\n`;
   } else {
     const factoryRel = directive[1];
-    const factoryPath = join(root, factoryRel);
-    const factoryRoot = join(root, "prompts", "factory") + sep;
-    if (!factoryPath.startsWith(factoryRoot)) {
-      throw new Error(`${preambleRel} factory path ${factoryRel} escapes prompts/factory.`);
-    }
-    const factory = readFileSync(factoryPath, "utf8");
+    const factory = readPromptFile(factoryRel, options);
     combined = `${preamble.trimEnd()}\n\n${factory.trimStart()}`;
   }
   const digest = createHash("sha256").update(combined).digest("hex").slice(0, 16);
   const outPath = join(destDir, `${basename(preambleRel, ".md")}-${digest}.md`);
   writeFileSync(outPath, combined);
   return outPath;
+}
+
+/**
+ * Local prompts tree, then the packaged file. `reviewPrompt` is the overlay
+ * file for `prompts/kiln/review.md` and wins over both when it is set.
+ */
+function readPromptFile(rel: string, options: MaterializeOptions): string {
+  if (!/^prompts\/[a-z0-9-]+\/[a-z0-9-]+\.md$/.test(rel)) {
+    throw new Error(`Prompt path ${rel} is not under prompts/.`);
+  }
+  if (rel === "prompts/kiln/review.md" && options.reviewPrompt) {
+    if (!existsSync(options.reviewPrompt) || !statSync(options.reviewPrompt).isFile()) {
+      throw new Error("Review prompt file was not found.");
+    }
+    return readFileSync(options.reviewPrompt, "utf8");
+  }
+  if (options.promptsDir) {
+    const local = resolve(options.promptsDir, rel.slice("prompts/".length));
+    const root = options.promptsDir.endsWith(sep) ? options.promptsDir : options.promptsDir + sep;
+    if (local !== options.promptsDir && !local.startsWith(root)) {
+      throw new Error(`${rel} escapes the local prompts directory.`);
+    }
+    if (existsSync(local) && statSync(local).isFile()) return readFileSync(local, "utf8");
+  }
+  const packaged = join(packageRoot(), rel);
+  const packagedRoot = join(packageRoot(), "prompts") + sep;
+  if (!packaged.startsWith(packagedRoot)) {
+    throw new Error(`${rel} escapes prompts/.`);
+  }
+  if (!existsSync(packaged) || !statSync(packaged).isFile()) {
+    throw new Error(`Prompt file was not found: ${rel}.`);
+  }
+  return readFileSync(packaged, "utf8");
+}
+
+function workflowNamesIn(dir: string): string[] {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return [];
+    if (code === "ENOTDIR") throw new Error(`Workflow directory ${dir} is not a directory.`);
+    throw error;
+  }
+  return names
+    .filter((name) => name.endsWith(".yaml") && !name.startsWith("."))
+    .map((name) => name.slice(0, -".yaml".length))
+    .filter((name) => WORKFLOW_NAME.test(name))
+    .sort();
+}
+
+function assertNoShippedCollision(local: readonly string[], packaged: readonly string[]): void {
+  const shipped = new Set(packaged);
+  const collisions = local.filter((name) => shipped.has(name));
+  if (collisions.length === 0) return;
+  const names = collisions.map((name) => `${name}.yaml`).join(", ");
+  throw new Error(
+    `Local workflow ${names} reuses a shipped workflow name. Copy it to a new name, or override a prompt file under prompts/.`,
+  );
+}
+
+function childIndent(lines: string[], start: number, base: number): number {
+  for (let index = start; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (line.trim().length === 0) continue;
+    const indent = /^(\s*)/.exec(line)?.[1]?.length ?? 0;
+    if (indent <= base) break;
+    return indent;
+  }
+  return base + 2;
+}
+
+function blockHasKey(lines: string[], start: number, base: number, key: string): boolean {
+  for (let index = start; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (line.trim().length === 0) continue;
+    const indent = /^(\s*)/.exec(line)?.[1]?.length ?? 0;
+    if (indent <= base) return false;
+    if (new RegExp(`^\\s*${key}:\\s*`).test(line)) return true;
+  }
+  return false;
 }
 
 function yamlDoubleQuote(value: string): string {

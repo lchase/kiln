@@ -36,6 +36,7 @@ const rawAgentSchema = z.object({
   sandbox: rawSandboxSchema.optional(),
   image: z.string().min(1).optional(),
   allowedDomains: z.array(z.string()).optional(),
+  skillDirs: z.array(z.string().min(1)).optional(),
 })
 
 const rawExprSchema: z.ZodType<Expr> = z.union([z.string(), z.object({ fn: z.string() })])
@@ -174,6 +175,9 @@ function normalizeStep(raw: RawStep): Step {
       // Kiln searches the installed bundle for the text `raw.agent.allowedDomains`
       // (`YAK_ALLOWLIST_MARKER`). Keep this property access intact.
       ...(raw.agent.allowedDomains !== undefined ? { allowedDomains: raw.agent.allowedDomains } : {}),
+      // Kiln searches the installed bundle for `raw.agent.skillDirs`. Keep
+      // this property access intact so an older yak cannot silently drop it.
+      ...(raw.agent.skillDirs !== undefined ? { skillDirs: raw.agent.skillDirs } : {}),
       ...(raw.produces !== undefined ? { produces: raw.produces } : {}),
       ...(raw.skipIf !== undefined ? { skipIf: raw.skipIf } : {}),
       ...(raw.finally !== undefined ? { finally: raw.finally } : {}),

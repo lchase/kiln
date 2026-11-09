@@ -12,6 +12,7 @@ import {
 import type { StepFailure } from '../ir/types.js'
 import { AgentStepFailedError } from '../steps/agent.js'
 import { createAgentSandboxNetwork, type AgentSandboxNetwork } from './sandbox-network.js'
+import { prepareSkillSearch } from './skill-dirs.js'
 import type { AgentAdapter, AgentAdapterRequest, AgentAdapterResponse } from './types.js'
 
 /** Ticket 07/08 (roadmap map): `docker/agent-sandbox/`'s default image
@@ -28,7 +29,11 @@ const CONTAINER_WORKDIR = '/workspace'
  * process. Pure/exported for testing, same pattern as
  * `command.ts`'s `dockerRunArgs`. Credentials cross via explicit env-var
  * passthrough (ticket 07) — never a mounted `~/.claude`, which would hand
- * the container broader host state than this one run's auth needs. */
+ * the container broader host state than this one run's auth needs.
+ *
+ * `skillMounts` are absolute host directories mounted read-only at the
+ * same path. They are the configured skill trees and the private wrapper
+ * that points Claude Code at them. An empty list adds no mounts. */
 export function dockerAgentRunArgs(
   image: string | undefined,
   cwd: string,
@@ -36,10 +41,12 @@ export function dockerAgentRunArgs(
   proxyUrl: string,
   args: string[],
   hostEnv: NodeJS.ProcessEnv = process.env,
+  skillMounts: readonly string[] = [],
 ): string[] {
   const credentialEnv = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']
     .filter((key) => hostEnv[key] !== undefined)
     .flatMap((key) => ['-e', `${key}=${hostEnv[key]}`])
+  const skillVolumes = skillMountArgs(skillMounts)
 
   return [
     'run',
@@ -49,6 +56,7 @@ export function dockerAgentRunArgs(
     networkName,
     '-v',
     `${cwd}:${CONTAINER_WORKDIR}`,
+    ...skillVolumes,
     '-w',
     CONTAINER_WORKDIR,
     '-e',
@@ -60,6 +68,19 @@ export function dockerAgentRunArgs(
     CONTAINER_CLI_PATH,
     ...args,
   ]
+}
+
+function skillMountArgs(skillMounts: readonly string[]): string[] {
+  const args: string[] = []
+  for (const hostPath of skillMounts) {
+    if (!hostPath.startsWith('/') || hostPath.includes(':') || hostPath.includes('\0')) {
+      throw new Error(
+        `Skill mount ${JSON.stringify(hostPath)} must be an absolute path without ':' so it can be mounted read-only.`,
+      )
+    }
+    args.push('-v', `${hostPath}:${hostPath}:ro`)
+  }
+  return args
 }
 
 /**
@@ -130,6 +151,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
      * is `undefined` for the yak-shipped default. `allowedDomains`, when
      * set, replaces `DEFAULT_ALLOWED_DOMAINS`. See ticket 07/08. */
     private readonly sandbox?: { image?: string; allowedDomains?: string[] },
+    /** Host skill directories. Omitted or empty leaves discovery and mounts unchanged. */
+    private readonly skillDirs?: readonly string[],
   ) {}
 
   async run(req: AgentAdapterRequest): Promise<AgentAdapterResponse> {
@@ -137,122 +160,134 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     if (req.signal.aborted) abortController.abort(req.signal.reason)
     else req.signal.addEventListener('abort', () => abortController.abort(req.signal.reason))
 
+    const skills = prepareSkillSearch(this.skillDirs)
     let network: AgentSandboxNetwork | undefined
-    if (this.sandbox) {
-      network =
-        this.sandbox.allowedDomains !== undefined
-          ? await createAgentSandboxNetwork(this.stepId, this.sandbox.allowedDomains)
-          : await createAgentSandboxNetwork(this.stepId)
-    }
-
-    const options: Options = {
-      ...FIXED_OPTIONS,
-      abortController,
-      cwd: req.cwd,
-      tools: req.tools,
-      ...(req.model !== undefined ? { model: req.model } : {}),
-      ...(req.systemPrompt !== undefined ? { systemPrompt: req.systemPrompt } : {}),
-      // §3.4 `context: { session }` resume vs `'fresh'` (ticket 06): a
-      // prior sessionId genuinely replays that session's transcript via
-      // `resume`; omitting it is `'fresh'` — no explicit teardown needed,
-      // and this Options object is always freshly built per call, never
-      // reused/mutated across steps.
-      ...(req.sessionId !== undefined ? { resume: req.sessionId } : {}),
-      ...(req.schema !== undefined
-        ? { outputFormat: { type: 'json_schema', schema: req.schema as Record<string, unknown> } }
-        : {}),
-      // Ticket 07/08: substitutes a `docker run` wrapping the CLI child
-      // process for the SDK's default local spawn. `spawnOptions.command`
-      // (a host path) is deliberately dropped — see dockerAgentRunArgs's
-      // doc comment — only `.args` (portable CLI flags) crosses over.
-      ...(network
-        ? {
-            spawnClaudeCodeProcess: (spawnOptions: SdkSpawnOptions): SpawnedProcess =>
-              spawn(
-                'docker',
-                dockerAgentRunArgs(
-                  this.sandbox!.image,
-                  req.cwd,
-                  network!.networkName,
-                  network!.proxyUrl,
-                  spawnOptions.args,
-                ),
-                { signal: spawnOptions.signal },
-              ),
-          }
-        : {}),
-    }
-
     try {
-      const sessionLogPath = path.join(this.runDir, 'sessions', `${this.stepId}.jsonl`)
-      await mkdir(path.dirname(sessionLogPath), { recursive: true })
+      if (this.sandbox) {
+        network =
+          this.sandbox.allowedDomains !== undefined
+            ? await createAgentSandboxNetwork(this.stepId, this.sandbox.allowedDomains)
+            : await createAgentSandboxNetwork(this.stepId)
+      }
 
-      const filesChanged = new Set<string>()
-      let result: Extract<SDKMessage, { type: 'result' }> | undefined
+      const options: Options = {
+        ...FIXED_OPTIONS,
+        abortController,
+        cwd: req.cwd,
+        tools: req.tools,
+        ...(req.model !== undefined ? { model: req.model } : {}),
+        ...(req.systemPrompt !== undefined ? { systemPrompt: req.systemPrompt } : {}),
+        // §3.4 `context: { session }` resume vs `'fresh'` (ticket 06): a
+        // prior sessionId genuinely replays that session's transcript via
+        // `resume`; omitting it is `'fresh'` — no explicit teardown needed,
+        // and this Options object is always freshly built per call, never
+        // reused/mutated across steps.
+        ...(req.sessionId !== undefined ? { resume: req.sessionId } : {}),
+        ...(req.schema !== undefined
+          ? { outputFormat: { type: 'json_schema', schema: req.schema as Record<string, unknown> } }
+          : {}),
+        // Project settings stay at the SDK default so `--add-dir` skills load.
+        // Setting `settingSources` here would be a second switch for every run.
+        ...(skills.additionalDirectories.length > 0
+          ? { additionalDirectories: skills.additionalDirectories }
+          : {}),
+        // Ticket 07/08: substitutes a `docker run` wrapping the CLI child
+        // process for the SDK's default local spawn. `spawnOptions.command`
+        // (a host path) is deliberately dropped — see dockerAgentRunArgs's
+        // doc comment — only `.args` (portable CLI flags) crosses over.
+        ...(network
+          ? {
+              spawnClaudeCodeProcess: (spawnOptions: SdkSpawnOptions): SpawnedProcess =>
+                spawn(
+                  'docker',
+                  dockerAgentRunArgs(
+                    this.sandbox!.image,
+                    req.cwd,
+                    network!.networkName,
+                    network!.proxyUrl,
+                    spawnOptions.args,
+                    process.env,
+                    skills.mountPaths,
+                  ),
+                  { signal: spawnOptions.signal },
+                ),
+            }
+          : {}),
+      }
 
-      // `query()` itself throwing (bad options, the CLI process failing to
-      // spawn at all) is a hard infra failure — left to propagate unwrapped,
-      // same as a thrown/rejected promise before any message ever arrived.
-      // Once the stream is iterating, though, an error thrown mid-stream is
-      // a genuine per-turn failure (the SDK wraps some structured-output
-      // exhaustion cases this way instead of a `result` message) — same
-      // class of thing `mapResultError` below handles, so it needs the same
-      // `AgentStepFailedError` wrapping to go through the typed StepFailure
-      // path (and, inside a `map`, respect `onItemFailure` instead of
-      // hard-failing the whole run).
-      const stream = query({ prompt: req.prompt, options })
       try {
-        // Ticket 03: write the raw SDKMessage stream verbatim, one JSON
-        // object per line, unfiltered — already JSONL-shaped, matches the
-        // SDK's own on-disk session format.
-        for await (const message of stream) {
-          await appendFile(sessionLogPath, `${JSON.stringify(message)}\n`, 'utf8')
-          collectFilesChanged(message, filesChanged)
-          if (message.type === 'result') result = message
+        const sessionLogPath = path.join(this.runDir, 'sessions', `${this.stepId}.jsonl`)
+        await mkdir(path.dirname(sessionLogPath), { recursive: true })
+
+        const filesChanged = new Set<string>()
+        let result: Extract<SDKMessage, { type: 'result' }> | undefined
+
+        // `query()` itself throwing (bad options, the CLI process failing to
+        // spawn at all) is a hard infra failure — left to propagate unwrapped,
+        // same as a thrown/rejected promise before any message ever arrived.
+        // Once the stream is iterating, though, an error thrown mid-stream is
+        // a genuine per-turn failure (the SDK wraps some structured-output
+        // exhaustion cases this way instead of a `result` message) — same
+        // class of thing `mapResultError` below handles, so it needs the same
+        // `AgentStepFailedError` wrapping to go through the typed StepFailure
+        // path (and, inside a `map`, respect `onItemFailure` instead of
+        // hard-failing the whole run).
+        const stream = query({ prompt: req.prompt, options })
+        try {
+          // Ticket 03: write the raw SDKMessage stream verbatim, one JSON
+          // object per line, unfiltered — already JSONL-shaped, matches the
+          // SDK's own on-disk session format.
+          for await (const message of stream) {
+            await appendFile(sessionLogPath, `${JSON.stringify(message)}\n`, 'utf8')
+            collectFilesChanged(message, filesChanged)
+            if (message.type === 'result') result = message
+          }
+        } catch (err) {
+          throw new AgentStepFailedError({
+            reason: 'adapter-error',
+            detail: `claude-code adapter for step "${this.stepId}": query() stream errored: ${(err as Error).message}`,
+            recoverable: true,
+          })
         }
-      } catch (err) {
-        throw new AgentStepFailedError({
-          reason: 'adapter-error',
-          detail: `claude-code adapter for step "${this.stepId}": query() stream errored: ${(err as Error).message}`,
-          recoverable: true,
-        })
-      }
 
-      if (!result) {
-        // Ticket 04: a thrown/rejected promise around the `for await` loop is
-        // one failure mode; a stream that ends with no result message at all
-        // (still possible if the process exits without yielding one) is the
-        // same class of failure — treated identically.
-        throw new AgentStepFailedError({
-          reason: 'adapter-error',
-          detail: `claude-code adapter for step "${this.stepId}": query() stream ended without a result message`,
-          recoverable: true,
-        })
-      }
+        if (!result) {
+          // Ticket 04: a thrown/rejected promise around the `for await` loop is
+          // one failure mode; a stream that ends with no result message at all
+          // (still possible if the process exits without yielding one) is the
+          // same class of failure — treated identically.
+          throw new AgentStepFailedError({
+            reason: 'adapter-error',
+            detail: `claude-code adapter for step "${this.stepId}": query() stream ended without a result message`,
+            recoverable: true,
+          })
+        }
 
-      if (result.permission_denials.length > 0) {
-        throw new AgentStepFailedError({
-          reason: 'tool-denied',
-          detail: `tool call(s) denied: ${result.permission_denials.map((d) => d.tool_name).join(', ')}`,
-          recoverable: false,
-        })
-      }
+        if (result.permission_denials.length > 0) {
+          throw new AgentStepFailedError({
+            reason: 'tool-denied',
+            detail: `tool call(s) denied: ${result.permission_denials.map((d) => d.tool_name).join(', ')}`,
+            recoverable: false,
+          })
+        }
 
-      if (result.subtype !== 'success') {
-        throw new AgentStepFailedError(mapResultError(result))
-      }
+        if (result.subtype !== 'success') {
+          throw new AgentStepFailedError(mapResultError(result))
+        }
 
-      const usd = reportedUsd(result)
-      return {
-        output: result.structured_output ?? result.result,
-        sessionId: result.session_id,
-        tokens: { input: result.usage.input_tokens, output: result.usage.output_tokens },
-        ...(usd !== undefined ? { usd } : {}),
-        filesChanged: [...filesChanged].sort(),
-        stopReason: 'complete',
+        const usd = reportedUsd(result)
+        return {
+          output: result.structured_output ?? result.result,
+          sessionId: result.session_id,
+          tokens: { input: result.usage.input_tokens, output: result.usage.output_tokens },
+          ...(usd !== undefined ? { usd } : {}),
+          filesChanged: [...filesChanged].sort(),
+          stopReason: 'complete',
+        }
+      } finally {
+        await network?.teardown()
       }
     } finally {
-      await network?.teardown()
+      skills.cleanup()
     }
   }
 }

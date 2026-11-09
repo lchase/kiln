@@ -40,6 +40,13 @@ export interface AgentStep extends BaseStep {
   sandbox?: 'docker' | 'none'          // default 'none' — see ticket 07/08, roadmap map
   image?: string                       // overrides the yak-shipped default agent-sandbox image
   allowedDomains?: string[]            // proxy allowlist (hostnames). Omitted → api.anthropic.com only.
+  /**
+   * Host directories of Claude Code skills (`<name>/SKILL.md`). The
+   * claude-code adapter offers them to the Skill tool. With `sandbox:
+   * docker` only these directories are mounted, read-only. Omitted means
+   * no extra skill directories and no extra mounts.
+   */
+  skillDirs?: string[]
 }
 
 export interface CommandStep extends BaseStep {

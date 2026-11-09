@@ -66,7 +66,7 @@ export interface WriteJobInput {
 
 /** Persist one job. Intake adapters call this; they do not write job files themselves. */
 export function writeJob(config: LoadedKilnConfig, input: WriteJobInput): { job: Job; jsonPath: string } {
-  assertWorkflowName(input.workflow);
+  assertWorkflowName(input.workflow, config.overlay.workflowsDir);
   if (!config.repos[input.repo]) {
     const known = Object.keys(config.repos).sort();
     const suffix = known.length > 0 ? ` Known repos: ${known.join(", ")}.` : " No repos are registered.";

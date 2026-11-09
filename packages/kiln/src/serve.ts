@@ -825,7 +825,7 @@ function pageOptions(state: LiveConfig, csrf: string): ServePageOptions {
   return {
     csrf,
     repos: repoList(state.config),
-    workflows: listWorkflowNames(),
+    workflows: listWorkflowNames(state.config.overlay.workflowsDir),
     paused: isPaused(state.config.kilnDir),
     spend,
     ...(state.configError ? { configError: state.configError } : {}),

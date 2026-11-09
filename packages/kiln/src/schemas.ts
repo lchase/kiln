@@ -154,7 +154,8 @@ const maxFixRounds = z
 /**
  * The subset `kiln serve` settings can edit. The file schema below uses these
  * same field validators. Settings does not accept jira, tokens, adapter,
- * workflows, or sandbox image. Trigger edits are enable/disable only.
+ * workflows, overlay paths, skill file bodies, or sandbox image. Trigger
+ * edits are enable/disable only.
  */
 const TRIGGER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -267,6 +268,21 @@ export const KilnConfigFileSchema = z.object({
    * Omitted uses the packaged `prompts/kiln/review.md`.
    */
   reviewPrompt: z.string().min(1).optional(),
+  /**
+   * Local overlay beside the published package. Omitted fields use
+   * `<kiln home>/workflows`, `<kiln home>/prompts`, and `<kiln home>/skills`.
+   * Paths resolve from the config directory, the same way `reviewPrompt` does.
+   * `skillPaths` adds skill directories. Missing directories are empty.
+   */
+  overlay: z
+    .object({
+      workflows: z.string().min(1).optional(),
+      prompts: z.string().min(1).optional(),
+      skills: z.string().min(1).optional(),
+      skillPaths: z.array(z.string().min(1)).optional(),
+    })
+    .strict()
+    .optional(),
   /** Board appearance. Omitted theme means Kiln. */
   board: BoardFileSchema.optional(),
 });
