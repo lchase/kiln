@@ -563,7 +563,7 @@ describe("pull request feedback", { concurrency: 1 }, () => {
     assert.equal(still, fixSha);
   });
 
-  it("renders feedback rounds on the PR review card and your call only when exhausted", () => {
+  it("renders feedback rounds on the PR review card and Needs a decision only when exhausted", () => {
     const box = world();
     writeFeedbackLedger(box.config.kilnDir, {
       jobId: box.jobId,
@@ -609,7 +609,7 @@ describe("pull request feedback", { concurrency: 1 }, () => {
     assert.match(openHtml, /https:\/\/example\.com\/sample\/widget\/pull\/4\/checks\/sample-check/);
     assert.match(openHtml, /data-state="in-review"/);
     assert.match(openHtml, /PR review/);
-    assert.doesNotMatch(openHtml, /your call/);
+    assert.doesNotMatch(openHtml, /Needs a decision/);
 
     const ledger = readFeedbackLedger(box.config.kilnDir, box.jobId);
     assert.ok(ledger && ledger !== "corrupt");
@@ -617,7 +617,7 @@ describe("pull request feedback", { concurrency: 1 }, () => {
     const closed = readStatus(box.config, box.jobId, box.host);
     const closedHtml = renderConsole("", buildAttention(closed.jobs), { csrf: "", repos: [], workflows: [], section: "hand" });
     assert.equal(closed.jobs[0]?.state, "needs-human");
-    assert.match(closedHtml, /your call/);
+    assert.match(closedHtml, /Needs a decision/);
     assert.match(closedHtml, /data-state="needs-human"/);
     assert.match(closedHtml, /Fix round cap/);
   });

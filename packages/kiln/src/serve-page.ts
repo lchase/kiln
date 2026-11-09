@@ -29,6 +29,7 @@ import { renderMarkdown } from "./markdown.js";
 import { kilnVersion } from "./project.js";
 import type { StatusJobView } from "./report.js";
 import { formatSpend, type SpendSnapshot } from "./rails.js";
+import { BOARD_THEME_CHOICES, DEFAULT_BOARD_THEME, type BoardThemeId } from "./theme.js";
 import type { TriggerRow } from "./triggers.js";
 import { listWorkflowNames } from "./workflow.js";
 
@@ -47,8 +48,10 @@ export interface ServePageOptions {
   paused?: boolean;
   spend?: SpendSnapshot;
   /** Which list `renderConsole` draws. The serve shell passes this through `renderApp`. */
-  section?: "pipeline" | "inbox" | "hand" | "repos" | "history";
+  section?: "pipeline" | "inbox" | "hand" | "repos" | "history" | "settings";
   repo?: string;
+  /** Board palette. Missing uses Kiln. */
+  theme?: BoardThemeId;
 }
 
 export interface AppModel {
@@ -83,7 +86,7 @@ export function renderApp(model: AppModel): string {
   const capNote = page.spend?.blocked ? `<span class="cap" id="cap-note">cap hit</span>` : `<span class="cap" id="cap-note" hidden>cap hit</span>`;
   const body = `<div class="shell">
 <aside class="nav" aria-label="Kiln">
-<div class="brand"><span class="logo" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12V6l5-3 5 3v6l-5 3-5-3z"/><path d="M3 6l5 3 5-3M8 9v6"/></svg></span><div><h1>Kiln</h1>${version}</div></div>
+<div class="brand"><span class="logo" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12V6l5-3 5 3v6l-5 3-5-3z"/><path d="M3 6l5 3 5-3M8 9v6"/></svg></span><div><h1>Kiln</h1>${version}</div></div>
 <div class="runstate" id="runstate">
 <span class="live-dot${paused ? " paused" : ""}" id="run-dot" aria-hidden="true"></span>
 <span id="run-label">${paused ? "Paused" : "Running"}</span>
@@ -110,19 +113,21 @@ ${intakeSheet(page, model.attention)}
     revision: model.attention.revision,
     csrf: page.csrf,
     section: model.section,
+    theme: page.theme ?? DEFAULT_BOARD_THEME,
     ...(job ? { jobId: job.jobId, latest: job.latestEventAt } : {}),
     live: true,
     body,
   });
 }
 
-export function renderTextPage(css: string, title: string, text: string): string {
+export function renderTextPage(css: string, title: string, text: string, theme: BoardThemeId = DEFAULT_BOARD_THEME): string {
   return document({
     css,
     title,
     needsYou: 0,
     revision: "",
     section: "job",
+    theme,
     live: false,
     body: `<a class="back" href="/">Pipeline</a>
 <div class="page"><h1>${escapeHtml(title)}</h1>
@@ -130,13 +135,19 @@ export function renderTextPage(css: string, title: string, text: string): string
   });
 }
 
-export function renderMessagePage(css: string, title: string, message: string): string {
+export function renderMessagePage(
+  css: string,
+  title: string,
+  message: string,
+  theme: BoardThemeId = DEFAULT_BOARD_THEME,
+): string {
   return document({
     css,
     title,
     needsYou: 0,
     revision: "",
     section: "job",
+    theme,
     live: false,
     body: `<a class="back" href="/">Pipeline</a>
 <div class="page"><h1>${escapeHtml(title)}</h1>
@@ -176,7 +187,7 @@ ${item("/settings", "open-settings", "Settings", "settings")}
 function mainHtml(model: AppModel, page: ServePageOptions): string {
   const error = `<p class="meta config-error" id="config-error" role="status"${page.configError ? "" : " hidden"}>${escapeHtml(page.configError ?? "")}</p>`;
   if (model.section === "settings") {
-    return `${error}<main class="main"><h2>Settings</h2><section id="settings" aria-label="Settings">${settingsForm()}</section></main>`;
+    return `${error}<main class="main"><h2>Settings</h2><section id="settings" aria-label="Settings">${settingsForm(page.theme ?? DEFAULT_BOARD_THEME)}</section></main>`;
   }
   if (model.section === "stats" && model.stats) {
     return `${error}<main class="main">${statsHtml(model.stats)}</main>`;
@@ -339,7 +350,7 @@ function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", 
   if (section === "inbox") classes.push("decision");
   if (job.scheduledRetry) classes.push("retrying");
   if (section === "inbox" || (section === "hand" && !job.scheduledRetry)) classes.push("human");
-  const flag = classes.includes("human") ? `<span class="flag">your call</span>` : "";
+  const flag = classes.includes("human") ? `<span class="flag">Needs a decision</span>` : "";
   const repo = section === "repos" ? "" : `<span class="meta">${escapeHtml(job.repo)}</span>`;
   const sandbox = job.sandboxed ? `<span class="meta">sandbox · docker</span>` : "";
   const pr = section === "repos" && job.state === "in-review" ? `<span class="meta">PR review</span>` : "";
@@ -740,6 +751,9 @@ function reportHtml(report: DayReport): string {
 <section class="stat"><h3>What ran</h3>${runs}</section>`;
 }
 
+/** Chips wrap up to this many choices. Past it, use a select or combobox. */
+const PICK_CHIP_MAX = 5;
+
 function tableRows(rows: string[][], empty: string): string {
   if (rows.length === 0) return `<p class="empty">${escapeHtml(empty)}</p>`;
   return `<table><tbody>${rows.map((row) => `<tr><td>${escapeHtml(row[0] ?? "")}</td><td class="num">${escapeHtml(row[1] ?? "")}</td></tr>`).join("")}</tbody></table>`;
@@ -758,32 +772,52 @@ function intakeSheet(intake: ServePageOptions, attention: AttentionView): string
 <button type="button" class="close" data-close aria-label="Close">×</button>
 </div>
 <form id="add-form" class="intake-form">
-<div class="field"><span class="k">Repo</span><div class="picks" id="repo-pick">${repoButtons(intake.repos)}</div></div>
-<label class="field"><span class="k">Workflow</span><select id="workflow" name="workflow">${workflowOptions(intake.workflows)}</select></label>
-<div class="seg" role="tablist" aria-label="Source">
+<div class="intake-body">
+<div class="field" id="repo-field"><span class="k" id="repo-label">Repo</span>${repoPicker(intake.repos)}
+<p class="field-error" id="repo-error" role="alert" hidden></p></div>
+<div class="field" id="workflow-field"><span class="k" id="workflow-label">Workflow</span>${workflowPicker(intake.workflows)}
+<p class="field-error" id="workflow-error" role="alert" hidden></p></div>
+<div class="field"><span class="k" id="source-label">Source</span>
+<div class="seg" role="group" aria-labelledby="source-label">
 <button type="button" data-source="prompt" aria-pressed="true">Prompt</button>
 <button type="button" data-source="spec" aria-pressed="false">Spec file</button>
 <button type="button" data-source="tickets" aria-pressed="false">Tickets folder</button>
 <button type="button" data-source="jira" aria-pressed="false">Jira</button>
-</div>
-<div data-pane="prompt"><label class="field"><span class="k">Prompt</span><textarea id="prompt-text" rows="4" placeholder="What should this job do?"></textarea></label></div>
-<div id="browser-field" hidden>
+</div></div>
+<div data-pane="prompt"><label class="field"><span class="k">Prompt</span><textarea id="prompt-text" rows="4" placeholder="What should this job do?" aria-describedby="prompt-error"></textarea>
+<p class="field-error" id="prompt-error" role="alert" hidden></p></label></div>
+<div class="field" id="browser-field" hidden>
 <div class="k" id="browser-label">Spec file</div>
 <div class="fs" id="browser"></div>
 <p class="meta" id="picked"></p>
+<p class="field-error" id="source-error" role="alert" hidden></p>
 </div>
-<div data-pane="jira" hidden><label class="field"><span class="k">Jira key</span><input id="jira-key" type="text" placeholder="PROJ-123" autocomplete="off" spellcheck="false"></label></div>
+<div data-pane="jira" hidden><label class="field"><span class="k">Jira key</span><input id="jira-key" type="text" placeholder="PROJ-123" autocomplete="off" spellcheck="false" aria-describedby="jira-error">
+<p class="field-error" id="jira-error" role="alert" hidden></p></label></div>
 <label class="field" id="issue-field"><span class="k">Issue</span><input id="job-issue" type="text" placeholder="ABC-123" autocomplete="off" spellcheck="false"></label>
 <label class="field" id="title-field"><span class="k">Title</span><input id="job-title" type="text" autocomplete="off"></label>
 <fieldset class="field" id="after-field"><legend class="k">After</legend><div id="after-list">${afterOptions(items.map((item) => item.job))}</div></fieldset>
 <pre class="text preview" id="intake-preview" hidden></pre>
 <p class="form-error" id="intake-error" role="alert" hidden></p>
-<div class="d-actions"><button type="button" id="preview-job" hidden>Preview</button><button type="submit">Add</button></div>
+</div>
+<div class="form-footer">
+<button type="button" class="btn" id="preview-job" hidden>Preview</button>
+<button type="button" class="btn" data-close>Cancel</button>
+<button type="submit" class="btn primary" id="add-submit" disabled>Add</button>
+</div>
 </form>
 </section>`;
 }
 
-function settingsForm(): string {
+function themePicker(selected: BoardThemeId): string {
+  const buttons = BOARD_THEME_CHOICES.map((theme) => {
+    const on = theme.id === selected;
+    return `<button type="button" class="theme" data-theme-choice="${theme.id}" aria-pressed="${on ? "true" : "false"}"><span class="theme-swatch" data-theme="${theme.id}" aria-hidden="true"><span class="swatch bg"></span><span class="swatch panel"></span><span class="swatch card"></span><span class="swatch accent"></span></span><span class="theme-label">${escapeHtml(theme.label)}</span></button>`;
+  }).join("");
+  return `<div class="themes" id="theme-pick" role="group" aria-label="Theme">${buttons}</div>`;
+}
+
+function settingsForm(theme: BoardThemeId): string {
   return `<form id="settings-form" class="intake-form">
 <p class="meta" id="settings-path"></p>
 <p class="saved" id="settings-saved" role="status" hidden>Saved</p>
@@ -791,6 +825,7 @@ function settingsForm(): string {
 <div class="seg" role="tablist" aria-label="Settings sections">
 <button type="button" data-settings-tab="repos" aria-pressed="true">Repos</button>
 <button type="button" data-settings-tab="global" aria-pressed="false">Global</button>
+<button type="button" data-settings-tab="appearance" aria-pressed="false">Appearance</button>
 </div>
 <div id="settings-repos">
 <div id="repo-editor" hidden>
@@ -851,32 +886,80 @@ function settingsForm(): string {
 <p class="hint" id="hint-cap"></p>
 <p class="field-error" data-error="dailyDollarCap" hidden></p>
 </div>
-<div class="d-actions"><button type="submit">Save</button></div>
+<div id="settings-appearance" hidden>
+<p class="hint">Color palette for this board. The choice applies immediately and is saved here.</p>
+${themePicker(theme)}
+<p class="field-error" data-error="board.theme" hidden></p>
+</div>
+<div class="form-footer"><button type="submit" class="btn primary">Save</button></div>
 </form>`;
 }
 
-function repoButtons(repos: ServeRepoOption[]): string {
-  if (repos.length === 0) return `<p class="empty">No repos are registered.</p>`;
-  return repos
-    .map(
-      (repo, index) =>
-        `<button type="button" class="pick" data-repo="${escapeHtml(repo.name)}" data-path="${escapeHtml(repo.path)}" aria-pressed="${index === 0 ? "true" : "false"}">${escapeHtml(repo.name)}</button>`,
-    )
-    .join("");
+function repoListKey(repos: readonly ServeRepoOption[]): string {
+  return repos.map((repo) => `${repo.name}\t${repo.path}`).join("\n");
 }
 
-function workflowOptions(names: string[]): string {
-  if (names.length === 0) return `<option value="">none</option>`;
-  return names
-    .map((name) => `<option value="${escapeHtml(name)}"${name === "feature" ? " selected" : ""}>${escapeHtml(name)}</option>`)
+function repoPicker(repos: ServeRepoOption[]): string {
+  const list = escapeHtml(repoListKey(repos));
+  if (repos.length === 0) {
+    return `<div class="picks" id="repo-pick" data-mode="empty" data-value="" data-path="" data-list="${list}" role="group" aria-labelledby="repo-label"><p class="empty">No repos are registered.</p></div>`;
+  }
+  const selected = repos[0];
+  if (!selected) {
+    return `<div class="picks" id="repo-pick" data-mode="empty" data-value="" data-path="" data-list="" role="group" aria-labelledby="repo-label"><p class="empty">No repos are registered.</p></div>`;
+  }
+  if (repos.length > PICK_CHIP_MAX) {
+    const options = repos
+      .map((repo, index) => {
+        const on = repo.name === selected.name;
+        return `<li role="option" id="repo-opt-${index}" data-value="${escapeHtml(repo.name)}" data-path="${escapeHtml(repo.path)}" aria-selected="${on ? "true" : "false"}">${escapeHtml(repo.name)}</li>`;
+      })
+      .join("");
+    return `<div class="combo" id="repo-pick" data-mode="select" data-value="${escapeHtml(selected.name)}" data-path="${escapeHtml(selected.path)}" data-list="${list}"><input id="repo-pick-query" class="combo-input" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="repo-pick-list" aria-labelledby="repo-label" placeholder="Search repos" value="${escapeHtml(selected.name)}" autocomplete="off" spellcheck="false"><ul class="combo-list" id="repo-pick-list" role="listbox" hidden>${options}<li class="empty" role="presentation" hidden>No matching repos.</li></ul></div>`;
+  }
+  const buttons = repos
+    .map((repo, index) => {
+      const on = index === 0;
+      return `<button type="button" class="pick" data-repo="${escapeHtml(repo.name)}" data-path="${escapeHtml(repo.path)}" aria-pressed="${on ? "true" : "false"}">${escapeHtml(repo.name)}</button>`;
+    })
     .join("");
+  return `<div class="picks" id="repo-pick" data-mode="chips" data-value="${escapeHtml(selected.name)}" data-path="${escapeHtml(selected.path)}" data-list="${list}" role="group" aria-labelledby="repo-label">${buttons}</div>`;
+}
+
+function workflowPicker(names: string[]): string {
+  const selected = names.includes("feature") ? "feature" : (names[0] ?? "");
+  if (names.length === 0 || names.length > PICK_CHIP_MAX) {
+    const options =
+      names.length === 0
+        ? `<option value="">none</option>`
+        : names
+            .map((name) => `<option value="${escapeHtml(name)}"${name === selected ? " selected" : ""}>${escapeHtml(name)}</option>`)
+            .join("");
+    return `<select id="workflow" name="workflow" aria-labelledby="workflow-label">${options}</select>`;
+  }
+  const buttons = names
+    .map(
+      (name) =>
+        `<button type="button" data-workflow="${escapeHtml(name)}" aria-pressed="${name === selected ? "true" : "false"}">${escapeHtml(name)}</button>`,
+    )
+    .join("");
+  return `<div class="seg" id="workflow-pick" data-mode="chips" data-workflow="${escapeHtml(selected)}" role="group" aria-labelledby="workflow-label">${buttons}</div>`;
+}
+
+function afterLabel(job: StatusJobView): string {
+  const title = job.title.trim();
+  if (!title || title === job.jobId) return job.jobId;
+  return `${job.jobId} — ${title}`;
 }
 
 function afterOptions(jobs: StatusJobView[]): string {
   const open = jobs.filter((job) => job.state !== "done");
   if (open.length === 0) return `<p class="empty">No open jobs.</p>`;
   return open
-    .map((job) => `<label class="after"><input type="checkbox" name="after" value="${escapeHtml(job.jobId)}"><span class="num">${escapeHtml(job.jobId)}</span><span>${escapeHtml(job.title || job.jobId)}</span></label>`)
+    .map(
+      (job) =>
+        `<label class="after"><input type="checkbox" name="after" value="${escapeHtml(job.jobId)}"><span>${escapeHtml(afterLabel(job))}</span></label>`,
+    )
     .join("");
 }
 
@@ -898,6 +981,7 @@ function document(options: {
   revision: string;
   csrf?: string;
   section: string;
+  theme?: BoardThemeId;
   jobId?: string;
   latest?: string;
   live: boolean;
@@ -905,8 +989,9 @@ function document(options: {
 }): string {
   const job = options.jobId ? ` data-job="${escapeHtml(options.jobId)}"` : "";
   const latest = options.latest ? ` data-latest="${escapeHtml(options.latest)}"` : "";
+  const theme = options.theme ?? DEFAULT_BOARD_THEME;
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="${theme}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -916,7 +1001,7 @@ function document(options: {
 ${options.css}
 </style>
 </head>
-<body data-section="${escapeHtml(options.section)}" data-needs-you="${options.needsYou}" data-revision="${escapeHtml(options.revision)}" data-csrf="${escapeHtml(options.csrf ?? "")}"${job}${latest}>
+<body data-section="${escapeHtml(options.section)}" data-needs-you="${options.needsYou}" data-revision="${escapeHtml(options.revision)}" data-csrf="${escapeHtml(options.csrf ?? "")}" data-pick-limit="${PICK_CHIP_MAX}"${job}${latest}>
 ${options.body}
 ${options.live ? `<script>\n${LIVE_SCRIPT}\n</script>` : ""}
 </body>

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { BOARD_THEME_IDS } from "./theme.js";
 
 /**
  * Kiln config file. `repos` is an open map: any name, not a fixed set.
@@ -207,6 +208,24 @@ export const TriggerToggleSchema = z
   .strict();
 export type TriggerToggle = z.infer<typeof TriggerToggleSchema>;
 
+/** Known board theme ids. An unknown id in a write is rejected. */
+export const BoardThemeSchema = z.enum(BOARD_THEME_IDS);
+
+/**
+ * `board` on disk. `theme` is free text so a typo does not make the whole
+ * file invalid; readers fall back to `kiln`.
+ */
+export const BoardFileSchema = z.object({
+  theme: z.string().optional(),
+});
+
+/** `board` on PUT /api/settings. Only a known theme id is written. */
+export const BoardWriteSchema = z
+  .object({
+    theme: BoardThemeSchema,
+  })
+  .strict();
+
 export const EditableKilnSettingsSchema = z.object({
   repos: KilnReposSchema,
   stallTimeoutMs,
@@ -216,6 +235,7 @@ export const EditableKilnSettingsSchema = z.object({
   dailyDollarCap,
   sandbox: EditableSandboxSchema.optional(),
   triggers: z.array(TriggerToggleSchema).optional(),
+  board: BoardWriteSchema.optional(),
 });
 export type EditableKilnSettings = z.infer<typeof EditableKilnSettingsSchema>;
 
@@ -247,6 +267,8 @@ export const KilnConfigFileSchema = z.object({
    * Omitted uses the packaged `prompts/kiln/review.md`.
    */
   reviewPrompt: z.string().min(1).optional(),
+  /** Board appearance. Omitted theme means Kiln. */
+  board: BoardFileSchema.optional(),
 });
 export type KilnConfigFile = z.infer<typeof KilnConfigFileSchema>;
 

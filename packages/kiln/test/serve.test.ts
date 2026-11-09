@@ -312,7 +312,7 @@ describe("serve pages", () => {
     const inbox = page(jobs, "inbox");
     assert.match(inbox, /\(1\) Kiln/);
     assert.match(hand, /id="job-dead-1"/);
-    assert.match(hand, /your call/);
+    assert.match(hand, /Needs a decision/);
     assert.match(hand, /attempt 3\/3 · stalled/);
     assert.doesNotMatch(hand, /id="job-fail-1"/);
     assert.match(repos, /id="job-fail-1"/);
@@ -322,13 +322,13 @@ describe("serve pages", () => {
     const failStart = repos.indexOf('id="job-fail-1"');
     const failEnd = repos.indexOf('id="job-', failStart + 1);
     const fail = repos.slice(failStart, failEnd === -1 ? undefined : failEnd);
-    assert.doesNotMatch(fail, /your call/);
+    assert.doesNotMatch(fail, /Needs a decision/);
     assert.doesNotMatch(fail, /next retry /);
     const gateStart = inbox.indexOf('id="job-gate-1"');
     const gateEnd = inbox.indexOf('id="job-', gateStart + 1);
     const gate = inbox.slice(gateStart, gateEnd === -1 ? undefined : gateEnd);
     assert.doesNotMatch(gate, /attempt /);
-    assert.match(gate, /your call/);
+    assert.match(gate, /Needs a decision/);
     assert.match(hand, /action="\/api\/jobs\/dead-1\/retry"/);
   });
 
@@ -730,7 +730,7 @@ describe("kiln serve", () => {
         assert.match(repos.body, /attempt 1\/3 · failed/);
         const rowStart = repos.body.indexOf(`id="job-${id}"`);
         const row = repos.body.slice(rowStart, repos.body.indexOf("</article>", rowStart));
-        assert.doesNotMatch(row, /your call/);
+        assert.doesNotMatch(row, /Needs a decision/);
         const hand = await text(`${server.url}/hand`);
         assert.doesNotMatch(hand.body, new RegExp(`id="job-${id}"`));
 

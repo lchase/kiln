@@ -387,9 +387,15 @@ describe("serve intake", () => {
       assert.match(page.body, />Spec file</);
       assert.match(page.body, />Tickets folder</);
       assert.match(page.body, />Jira</);
-      assert.match(page.body, /<option value="feature" selected>/);
-      assert.match(page.body, /<option value="fix">/);
-      assert.match(page.body, /<option value="investigation">/);
+      assert.match(page.body, /data-workflow="feature" aria-pressed="true"/);
+      assert.match(page.body, /data-workflow="fix"/);
+      assert.match(page.body, /data-workflow="investigation"/);
+      assert.match(page.body, /id="add-submit"[^>]*disabled/);
+      const addStart = page.body.indexOf('id="add-form"');
+      const addForm = page.body.slice(addStart, page.body.indexOf("</form>", addStart));
+      assert.match(addForm, /id="prompt-error"[^>]*hidden></);
+      assert.doesNotMatch(addForm, /Prompt is required/);
+      assert.doesNotMatch(addForm, /aria-invalid/);
       assert.match(page.body, /data-csrf="[a-f0-9]{64}"/);
       assert.equal(page.body.includes(TOKEN), false);
       const csrf = csrfFrom(page.body);

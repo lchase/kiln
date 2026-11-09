@@ -15,6 +15,7 @@ import {
   type SandboxSettings,
   type TriggerConfig,
 } from "./schemas.js";
+import { resolveBoardTheme, type BoardThemeId } from "./theme.js";
 
 export interface LoadedKilnConfig {
   configPath: string;
@@ -86,6 +87,8 @@ export interface LoadedKilnConfig {
   routes: RouteConfig[];
   /** Absolute path of the reviewer prompt, when the config sets one. */
   reviewPrompt?: string;
+  /** Board palette. Missing or unknown config values are `kiln`. */
+  boardTheme: BoardThemeId;
 }
 
 export interface LoadKilnConfigOptions {
@@ -163,6 +166,7 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
     ...(parsed.data.reviewPrompt
       ? { reviewPrompt: resolveConfiguredPath(configDir, parsed.data.reviewPrompt, home) }
       : {}),
+    boardTheme: resolveBoardTheme(parsed.data.board?.theme),
   };
 }
 
@@ -347,7 +351,7 @@ function assertNoStaleCwdConfig(cwd: string, homeConfig: string): void {
 }
 
 function readConfigObject(configPath: string): Record<string, unknown> {
-  if (!existsSync(configPath)) return { repos: {} };
+  if (!existsSync(configPath)) return { repos: {}, board: { theme: "kiln" } };
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(configPath, "utf8"));

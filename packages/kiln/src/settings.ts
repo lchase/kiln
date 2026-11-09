@@ -17,6 +17,7 @@ import {
   type RepoEntry,
   type TriggerConfig,
 } from "./schemas.js";
+import { resolveBoardTheme, type BoardThemeId } from "./theme.js";
 import {
   applyTriggerToggles,
   effectiveTriggers,
@@ -66,6 +67,8 @@ export interface SettingsDocument {
     /** Queued or running review jobs at once. Default 5. */
     maxQueued?: number;
   }[];
+  /** Resolved board theme. Unknown or missing file values are `kiln`. */
+  board: { theme: BoardThemeId };
   /** Shown when a field is omitted. Not written back. */
   defaults: {
     deliver: "local";
@@ -166,6 +169,7 @@ function project(path: string, revision: string, file: KilnConfigFile): Settings
     ...(file.dailyDollarCap !== undefined ? { dailyDollarCap: file.dailyDollarCap } : {}),
     ...(sandbox ? { sandbox } : {}),
     triggers: effectiveTriggers(file.triggers).map(triggerView),
+    board: { theme: resolveBoardTheme(file.board?.theme) },
     defaults: DEFAULTS,
   };
 }
@@ -210,6 +214,11 @@ function mergeSettings(raw: Record<string, unknown>, settings: EditableKilnSetti
     setOptional(prior, "allowDomains", settings.sandbox.allowDomains);
     if (Object.keys(prior).length === 0) delete next.sandbox;
     else next.sandbox = prior;
+  }
+  if (settings.board) {
+    const prior = isRecord(raw.board) ? { ...raw.board } : {};
+    prior.theme = settings.board.theme;
+    next.board = prior;
   }
   return next;
 }

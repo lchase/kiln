@@ -435,10 +435,10 @@ describe("attention view", () => {
     assert.match(repos, /retrying <time datetime="2026-10-26T23:35:46.000Z" data-time="clock">/);
     assert.match(repos, /attempt 1\/3 · stalled/);
     const row = repos.slice(repos.indexOf('id="job-again"'), repos.indexOf("</article>", repos.indexOf('id="job-again"')));
-    assert.doesNotMatch(row, /your call/);
+    assert.doesNotMatch(row, /Needs a decision/);
     const hand = renderConsole("", attention, { ...options, section: "hand" });
     assert.match(hand, /id="job-spent"/);
-    assert.match(hand, /your call/);
+    assert.match(hand, /Needs a decision/);
     assert.match(hand, /attempt 3\/3 · crashed/);
     assert.doesNotMatch(hand, /id="job-again"/);
 

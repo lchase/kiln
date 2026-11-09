@@ -59,7 +59,7 @@
       if (slimCount) slimCount.textContent = String(visible);
       var empty = col.querySelector(".empty");
       if (empty) empty.hidden = visible !== 0;
-      tracks.push(slim ? "40px" : "minmax(0, 1fr)");
+      tracks.push(slim ? "var(--col-slim)" : "minmax(var(--col-min), 1fr)");
     }
     board.style.setProperty("--cols", tracks.join(" "));
   }
@@ -284,16 +284,204 @@
   var ticketsDir = "";
   var fsPath = "";
   var sending = false;
+  var intakeTouched = {};
+  var intakeSubmitTried = false;
   var FS_KEY = "kiln-fs-dir";
 
+  function pickLimit() {
+    var n = Number(body.getAttribute("data-pick-limit") || "5");
+    return n > 0 ? n : 5;
+  }
+
   function selectedRepo() {
-    var pressed = document.querySelector("#repo-pick .pick[aria-pressed='true']");
-    return pressed ? pressed.getAttribute("data-repo") || "" : "";
+    var box = document.getElementById("repo-pick");
+    return box ? box.getAttribute("data-value") || "" : "";
   }
 
   function intakeRepoPath() {
-    var pressed = document.querySelector("#repo-pick .pick[aria-pressed='true']");
-    return pressed ? pressed.getAttribute("data-path") || "" : "";
+    var box = document.getElementById("repo-pick");
+    return box ? box.getAttribute("data-path") || "" : "";
+  }
+
+  function selectedWorkflow() {
+    var select = document.getElementById("workflow");
+    if (select) return select.value || "";
+    var host = document.getElementById("workflow-pick");
+    return host ? host.getAttribute("data-workflow") || "" : "";
+  }
+
+  function setFieldError(id, message, reveal) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var on = Boolean(message) && reveal;
+    el.hidden = !on;
+    el.textContent = on ? message : "";
+    var field = el.closest(".field");
+    if (!field) return;
+    var control = field.querySelector("textarea, input, select, [role='combobox'], [role='group']");
+    if (!control) return;
+    if (on) control.setAttribute("aria-invalid", "true");
+    else control.removeAttribute("aria-invalid");
+  }
+
+  function showFieldError(name) {
+    return intakeSubmitTried || intakeTouched[name] === true;
+  }
+
+  function syncValidity() {
+    var repo = selectedRepo();
+    var workflow = selectedWorkflow();
+    var source = sourceBody();
+    var prompt = source.kind === "prompt" && !String(source.text || "").trim() ? "Prompt is required." : "";
+    var spec = source.kind === "spec" && !source.path ? "Choose a spec file." : "";
+    var tickets = source.kind === "tickets" && !source.dir ? "Choose a tickets folder." : "";
+    var jira = source.kind === "jira" && !source.key ? "Enter a Jira key." : "";
+    setFieldError("repo-error", repo ? "" : "Choose a repo.", showFieldError("repo"));
+    setFieldError("workflow-error", workflow ? "" : "Choose a workflow.", showFieldError("workflow"));
+    setFieldError("prompt-error", prompt, showFieldError("prompt"));
+    setFieldError("source-error", spec || tickets, showFieldError("source"));
+    setFieldError("jira-error", jira, showFieldError("jira"));
+    var blocked = !repo || !workflow || Boolean(prompt || spec || tickets || jira);
+    var submit = document.getElementById("add-submit");
+    if (submit) submit.disabled = blocked || sending;
+    var preview = document.getElementById("preview-job");
+    if (preview) preview.disabled = blocked || sending;
+    return !blocked;
+  }
+
+  function repoListKey(repos) {
+    var parts = [];
+    for (var i = 0; i < repos.length; i++) {
+      var repo = repos[i];
+      if (!repo || !repo.name) continue;
+      parts.push(repo.name + "\t" + (repo.path || ""));
+    }
+    return parts.join("\n");
+  }
+
+  function paintRepos(repos) {
+    var box = document.getElementById("repo-pick");
+    if (!box) return;
+    var items = [];
+    for (var i = 0; i < repos.length; i++) if (repos[i] && repos[i].name) items.push(repos[i]);
+    var key = repoListKey(items);
+    if (box.getAttribute("data-list") === key) return;
+    var current = box.getAttribute("data-value") || "";
+    var selected = null;
+    for (var s = 0; s < items.length; s++) if (items[s].name === current) selected = items[s];
+    if (!selected && items.length) selected = items[0];
+    var value = selected ? selected.name : "";
+    var path = selected ? (selected.path || "") : "";
+    var mode = !items.length ? "empty" : items.length > pickLimit() ? "select" : "chips";
+    var html = "";
+    if (mode === "empty") html = '<p class="empty">No repos are registered.</p>';
+    if (mode === "chips") {
+      for (var c = 0; c < items.length; c++) {
+        var chip = items[c];
+        var pressed = chip.name === value;
+        html += '<button type="button" class="pick" data-repo="' + esc(chip.name) + '" data-path="' + esc(chip.path || "") + '" aria-pressed="' + (pressed ? "true" : "false") + '">' + esc(chip.name) + "</button>";
+      }
+    }
+    if (mode === "select") {
+      html = '<input id="repo-pick-query" class="combo-input" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="repo-pick-list" aria-labelledby="repo-label" placeholder="Search repos" value="' + esc(value) + '" autocomplete="off" spellcheck="false">';
+      html += '<ul class="combo-list" id="repo-pick-list" role="listbox" hidden>';
+      for (var o = 0; o < items.length; o++) {
+        var opt = items[o];
+        html += '<li role="option" id="repo-opt-' + o + '" data-value="' + esc(opt.name) + '" data-path="' + esc(opt.path || "") + '" aria-selected="' + (opt.name === value ? "true" : "false") + '">' + esc(opt.name) + "</li>";
+      }
+      html += '<li class="empty" role="presentation" hidden>No matching repos.</li></ul>';
+    }
+    box.className = mode === "select" ? "combo" : "picks";
+    box.setAttribute("data-mode", mode);
+    box.setAttribute("data-value", value);
+    box.setAttribute("data-path", path);
+    box.setAttribute("data-list", key);
+    if (mode === "select") {
+      box.removeAttribute("role");
+      box.removeAttribute("aria-labelledby");
+    } else {
+      box.setAttribute("role", "group");
+      box.setAttribute("aria-labelledby", "repo-label");
+    }
+    box.innerHTML = html;
+    syncValidity();
+  }
+
+  function visibleOptions(box) {
+    var all = box.querySelectorAll("[role='option']");
+    var out = [];
+    for (var i = 0; i < all.length; i++) if (!all[i].hidden) out.push(all[i]);
+    return out;
+  }
+
+  function applyComboFilter(box, query) {
+    var q = String(query || "").trim().toLowerCase();
+    var options = box.querySelectorAll("[role='option']");
+    var shown = 0;
+    for (var i = 0; i < options.length; i++) {
+      var name = (options[i].getAttribute("data-value") || options[i].textContent || "").toLowerCase();
+      var hide = q.length > 0 && name.indexOf(q) === -1;
+      options[i].hidden = hide;
+      if (!hide) shown += 1;
+    }
+    var empty = box.querySelector(".combo-list .empty");
+    if (empty) empty.hidden = shown !== 0;
+    setComboActive(box, 0);
+  }
+
+  function setComboActive(box, index) {
+    var options = visibleOptions(box);
+    var input = box.querySelector("[role='combobox']");
+    if (!options.length) {
+      box.removeAttribute("data-active");
+      if (input) input.removeAttribute("aria-activedescendant");
+      return;
+    }
+    if (index < 0) index = options.length - 1;
+    if (index >= options.length) index = 0;
+    box.setAttribute("data-active", String(index));
+    for (var i = 0; i < options.length; i++) options[i].classList.toggle("active", i === index);
+    if (input && options[index].id) input.setAttribute("aria-activedescendant", options[index].id);
+  }
+
+  function openCombo(box, filter) {
+    if (!box) return;
+    var list = box.querySelector("[role='listbox']");
+    var input = box.querySelector("[role='combobox']");
+    if (!list || !input) return;
+    list.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    applyComboFilter(box, filter ? input.value : "");
+  }
+
+  function closeCombo(box) {
+    var list = box.querySelector("[role='listbox']");
+    var input = box.querySelector("[role='combobox']");
+    if (list) list.hidden = true;
+    if (input) {
+      input.setAttribute("aria-expanded", "false");
+      input.removeAttribute("aria-activedescendant");
+      input.value = box.getAttribute("data-value") || "";
+    }
+    box.removeAttribute("data-active");
+  }
+
+  function closeCombos(except) {
+    var boxes = document.querySelectorAll(".combo");
+    for (var i = 0; i < boxes.length; i++) if (boxes[i] !== except) closeCombo(boxes[i]);
+  }
+
+  function chooseComboOption(box, option) {
+    if (!box || !option) return;
+    var value = option.getAttribute("data-value") || "";
+    box.setAttribute("data-value", value);
+    if (option.hasAttribute("data-path")) box.setAttribute("data-path", option.getAttribute("data-path") || "");
+    var options = box.querySelectorAll("[role='option']");
+    for (var i = 0; i < options.length; i++) {
+      options[i].setAttribute("aria-selected", options[i] === option ? "true" : "false");
+    }
+    closeCombo(box);
+    syncValidity();
   }
 
   function showIntakeError(message) {
@@ -346,6 +534,7 @@
     if (sourceKind === "tickets") html += '<button type="button" class="fs-use" data-path="' + esc(fsPath) + '">Use this folder</button>';
     host.innerHTML = html;
     if (sourceKind === "tickets") setPicked(fsPath);
+    syncValidity();
   }
 
   function chooseSpec(data) {
@@ -356,6 +545,7 @@
       var input = document.getElementById("job-title");
       if (input && heading) input.value = heading;
     }
+    syncValidity();
   }
 
   function loadFs(path, fallback) {
@@ -417,6 +607,7 @@
     }
     syncIssueDefault();
     if (sourceKind === "spec" || sourceKind === "tickets") openBrowser();
+    syncValidity();
   }
 
   function syncIssueDefault() {
@@ -451,15 +642,12 @@
 
   function submitIntake(dryRun) {
     if (sending) return;
+    intakeSubmitTried = true;
+    if (!syncValidity()) return;
     var repo = selectedRepo();
-    var workflow = document.getElementById("workflow");
+    var workflow = selectedWorkflow();
     var source = sourceBody();
-    if (!repo) { showIntakeError("Name a repo."); return; }
-    if (source.kind === "prompt" && !String(source.text || "").trim()) { showIntakeError("Prompt is empty."); return; }
-    if (source.kind === "spec" && !source.path) { showIntakeError("Choose a spec file."); return; }
-    if (source.kind === "tickets" && !source.dir) { showIntakeError("Choose a tickets folder."); return; }
-    if (source.kind === "jira" && !source.key) { showIntakeError("Enter a Jira key."); return; }
-    var payload = { repo: repo, workflow: workflow ? workflow.value : "", source: source };
+    var payload = { repo: repo, workflow: workflow, source: source };
     if (dryRun) payload.dryRun = true;
     if (sourceKind !== "tickets") {
       var issue = document.getElementById("job-issue");
@@ -473,6 +661,7 @@
       }
     }
     sending = true;
+    syncValidity();
     showIntakeError("");
     fetch("/api/jobs", {
       method: "POST",
@@ -488,6 +677,7 @@
       })
       .then(function (result) {
         sending = false;
+        syncValidity();
         if (!result.ok) {
           showIntakeError((result.data && result.data.error) || "Could not add the job.");
           return;
@@ -507,6 +697,7 @@
       })
       .catch(function () {
         sending = false;
+        syncValidity();
         showIntakeError("Could not add the job.");
       });
   }
@@ -523,28 +714,7 @@
       }
     }
     if (!data || !Array.isArray(data.repos)) return;
-    var box = document.getElementById("repo-pick");
-    if (!box) return;
-    var current = selectedRepo();
-    var still = false;
-    var html = "";
-    if (!data.repos.length) html = '<p class="empty">No repos are registered.</p>';
-    for (var i = 0; i < data.repos.length; i++) {
-      var repo = data.repos[i];
-      if (!repo || !repo.name) continue;
-      if (repo.name === current) still = true;
-    }
-    if (data.repos.length) {
-      html = "";
-      for (var j = 0; j < data.repos.length; j++) {
-        var item = data.repos[j];
-        var pressed = still ? item.name === current : j === 0;
-        html += '<button type="button" class="pick" data-repo="' + esc(item.name) + '" data-path="' + esc(item.path || "") + '" aria-pressed="' + (pressed ? "true" : "false") + '">' + esc(item.name) + "</button>";
-      }
-    }
-    if (box.getAttribute("data-repos") === html) return;
-    box.setAttribute("data-repos", html);
-    box.innerHTML = html;
+    paintRepos(data.repos);
   }
 
   function showFresh() {
@@ -598,14 +768,28 @@
     if (message && slot.scrollIntoView) slot.scrollIntoView({ block: "nearest" });
   }
 
+  var settingsEpoch = 0;
+  var themeApplied = document.documentElement.getAttribute("data-theme") || "kiln";
+  var themeQueued = null;
+  var themeSaving = false;
+
   function setSettingsTab(tab) {
     var repos = document.getElementById("settings-repos");
     var globalPane = document.getElementById("settings-global");
+    var appearance = document.getElementById("settings-appearance");
     if (repos) repos.hidden = tab !== "repos";
     if (globalPane) globalPane.hidden = tab !== "global";
+    if (appearance) appearance.hidden = tab !== "appearance";
     var buttons = document.querySelectorAll("#settings-form [data-settings-tab]");
     for (var i = 0; i < buttons.length; i++) {
       buttons[i].setAttribute("aria-pressed", buttons[i].getAttribute("data-settings-tab") === tab ? "true" : "false");
+    }
+  }
+
+  function markTheme(id) {
+    var buttons = document.querySelectorAll("#theme-pick [data-theme-choice]");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].setAttribute("aria-pressed", buttons[i].getAttribute("data-theme-choice") === id ? "true" : "false");
     }
   }
 
@@ -868,7 +1052,85 @@
     if (mode) sandbox.mode = mode;
     if (domains.length) sandbox.allowDomains = domains;
     if (mode || domains.length) body.sandbox = sandbox;
+    var themeButton = document.querySelector('#theme-pick [aria-pressed="true"]');
+    var themeId = themeButton ? themeButton.getAttribute("data-theme-choice") : "";
+    if (themeId) body.board = { theme: themeId };
     return body;
+  }
+
+  function preservedSettings(data) {
+    var body = { revision: data.revision, repos: data.repos || {} };
+    ["stallTimeoutMs", "maxAttempts", "maxFixRounds", "maxSameFingerprint", "dailyDollarCap"].forEach(function (key) {
+      if (data[key] !== undefined && data[key] !== null) body[key] = data[key];
+    });
+    if (data.sandbox) body.sandbox = data.sandbox;
+    return body;
+  }
+
+  function chooseTheme(id) {
+    if (!id) return;
+    settingsEpoch += 1;
+    document.documentElement.setAttribute("data-theme", id);
+    markTheme(id);
+    themeQueued = id;
+    if (!themeSaving) pumpTheme();
+  }
+
+  function pumpTheme() {
+    if (!themeQueued) return;
+    var id = themeQueued;
+    themeQueued = null;
+    themeSaving = true;
+    fetch("/api/settings", { cache: "no-store", headers: { Accept: "application/json" } })
+      .then(function (response) { return response.json().then(function (data) { return { ok: response.ok, data: data }; }); })
+      .then(function (result) {
+        if (!result.ok) throw new Error((result.data && result.data.error) || "Could not load settings.");
+        var body = preservedSettings(result.data);
+        body.board = { theme: id };
+        return fetch("/api/settings", {
+          method: "PUT",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "X-Kiln-CSRF": bodyCsrf(),
+          },
+          body: JSON.stringify(body),
+        });
+      })
+      .then(function (response) { return response.json().then(function (data) { return { ok: response.ok, data: data }; }); })
+      .then(function (result) {
+        themeSaving = false;
+        if (!result.ok) {
+          if (!themeQueued) restoreTheme();
+          showSettingsError((result.data && result.data.error) || "Could not save the theme.");
+          var fields = result.data && result.data.fields;
+          if (fields && fields["board.theme"]) showSlot("board.theme", fields["board.theme"]);
+          if (themeQueued) pumpTheme();
+          return;
+        }
+        themeApplied = (result.data.board && result.data.board.theme) || id;
+        if (!settingsDoc) applySettingsDocument(result.data);
+        else if (result.data.revision) {
+          settingsDoc.revision = result.data.revision;
+          settingsDoc.board = result.data.board;
+        }
+        if (themeQueued) pumpTheme();
+      })
+      .catch(function (err) {
+        themeSaving = false;
+        if (!themeQueued) restoreTheme();
+        showSettingsError(err && err.message ? err.message : "Could not save the theme.");
+        if (themeQueued) pumpTheme();
+      });
+  }
+
+  function restoreTheme() {
+    document.documentElement.setAttribute("data-theme", themeApplied);
+    markTheme(themeApplied);
+  }
+
+  function bodyCsrf() {
+    return body.getAttribute("data-csrf") || "";
   }
 
   function applyFieldErrors(fields) {
@@ -896,6 +1158,11 @@
         showSlot(key, message);
         continue;
       }
+      if (key === "board.theme") {
+        setSettingsTab("appearance");
+        showSlot("board.theme", message);
+        continue;
+      }
       if (key === "name" || key.indexOf("repos.") === 0) {
         setSettingsTab("repos");
         showSlot("name", message);
@@ -910,6 +1177,12 @@
     var pathEl = document.getElementById("settings-path");
     if (pathEl) pathEl.textContent = data.path || "";
     fillGlobal(data);
+    var themeId = data.board && data.board.theme ? data.board.theme : "kiln";
+    if (!themeSaving && !themeQueued) {
+      themeApplied = themeId;
+      document.documentElement.setAttribute("data-theme", themeId);
+      markTheme(themeId);
+    }
     if (editing && editing.original && Object.prototype.hasOwnProperty.call(repoDraft, editing.original)) {
       fillEditor(editing.original, repoDraft[editing.original]);
     } else {
@@ -922,11 +1195,13 @@
     clearSettingsErrors();
     var saved = document.getElementById("settings-saved");
     if (saved) saved.hidden = true;
+    var epoch = settingsEpoch;
     fetch("/api/settings", { cache: "no-store", headers: { Accept: "application/json" } })
       .then(function (response) {
         return response.json().then(function (data) { return { ok: response.ok, status: response.status, data: data }; });
       })
       .then(function (result) {
+        if (epoch !== settingsEpoch) return;
         if (!result.ok) {
           showSettingsError((result.data && result.data.error) || "Could not load settings.");
           return;
@@ -959,11 +1234,8 @@
           if (buttonId === id) on = enabled;
           toggles.push({ id: buttonId, enabled: on });
         }
-        var body = { revision: data.revision, repos: data.repos || {}, triggers: toggles };
-        ["stallTimeoutMs", "maxAttempts", "maxFixRounds", "maxSameFingerprint", "dailyDollarCap"].forEach(function (key) {
-          if (data[key] !== undefined && data[key] !== null) body[key] = data[key];
-        });
-        if (data.sandbox) body.sandbox = data.sandbox;
+        var body = preservedSettings(data);
+        body.triggers = toggles;
         return fetch("/api/settings", {
           method: "PUT",
           headers: {
@@ -999,7 +1271,7 @@
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        "X-Kiln-CSRF": body.getAttribute("data-csrf") || "",
+        "X-Kiln-CSRF": bodyCsrf(),
       },
       body: JSON.stringify(payload),
     })
@@ -1088,6 +1360,17 @@
   document.addEventListener("click", function (event) {
     var target = event.target;
     if (!target || !target.closest) return;
+    var option = target.closest(".combo [role='option']");
+    if (option) {
+      chooseComboOption(option.closest(".combo"), option);
+      return;
+    }
+    var query = target.closest(".combo [role='combobox']");
+    if (query) {
+      openCombo(query.closest(".combo"), false);
+      return;
+    }
+    if (!target.closest(".combo")) closeCombos();
     var triggerToggle = target.closest("[data-trigger-toggle]");
     if (triggerToggle) {
       toggleTrigger(triggerToggle);
@@ -1107,10 +1390,30 @@
       setSource(sourceBtn.getAttribute("data-source") || "prompt");
       return;
     }
+    var flowPick = target.closest("#workflow-pick [data-workflow]");
+    if (flowPick) {
+      var flows = document.querySelectorAll("#workflow-pick [data-workflow]");
+      for (var f = 0; f < flows.length; f++) flows[f].setAttribute("aria-pressed", flows[f] === flowPick ? "true" : "false");
+      var flowHost = document.getElementById("workflow-pick");
+      if (flowHost) flowHost.setAttribute("data-workflow", flowPick.getAttribute("data-workflow") || "");
+      syncValidity();
+      return;
+    }
     var pick = target.closest("#repo-pick .pick");
     if (pick) {
       var picks = document.querySelectorAll("#repo-pick .pick");
       for (var p = 0; p < picks.length; p++) picks[p].setAttribute("aria-pressed", picks[p] === pick ? "true" : "false");
+      var repoBox = document.getElementById("repo-pick");
+      if (repoBox) {
+        repoBox.setAttribute("data-value", pick.getAttribute("data-repo") || "");
+        repoBox.setAttribute("data-path", pick.getAttribute("data-path") || "");
+      }
+      syncValidity();
+      return;
+    }
+    var themeChoice = target.closest("#theme-pick [data-theme-choice]");
+    if (themeChoice) {
+      chooseTheme(themeChoice.getAttribute("data-theme-choice") || "");
       return;
     }
     var settingsTab = target.closest("#settings-form [data-settings-tab]");
@@ -1173,6 +1476,7 @@
       if (fsButton.classList.contains("fs-use")) {
         ticketsDir = next;
         setPicked(next);
+        syncValidity();
         return;
       }
       loadFs(next, false);
@@ -1245,6 +1549,33 @@
   });
 
   document.addEventListener("keydown", function (event) {
+    var keyTarget = event.target;
+    if (keyTarget && keyTarget.getAttribute && keyTarget.getAttribute("role") === "combobox") {
+      var combo = keyTarget.closest(".combo");
+      var list = combo ? combo.querySelector("[role='listbox']") : null;
+      var comboOpen = list && !list.hidden;
+      if (combo && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+        event.preventDefault();
+        if (!comboOpen) openCombo(combo, false);
+        else setComboActive(combo, Number(combo.getAttribute("data-active") || "0") + (event.key === "ArrowDown" ? 1 : -1));
+        return;
+      }
+      if (combo && event.key === "Enter") {
+        event.preventDefault();
+        if (comboOpen) {
+          var choices = visibleOptions(combo);
+          var index = Number(combo.getAttribute("data-active") || "0");
+          if (choices[index]) chooseComboOption(combo, choices[index]);
+        }
+        return;
+      }
+      if (combo && event.key === "Escape" && comboOpen) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeCombo(combo);
+        return;
+      }
+    }
     if (event.key === "Escape") closeDrawer();
     var el = event.target;
     if ((event.key === "Enter" || event.key === " ") && el && el.classList && el.classList.contains("card")) {
@@ -1320,7 +1651,48 @@
   var issueInput = document.getElementById("job-issue");
   if (issueInput) issueInput.addEventListener("input", function () { issueDirty = true; });
   var jiraKey = document.getElementById("jira-key");
-  if (jiraKey) jiraKey.addEventListener("input", syncIssueDefault);
+  if (jiraKey) jiraKey.addEventListener("input", function () {
+    syncIssueDefault();
+    syncValidity();
+  });
+  document.addEventListener("input", function (event) {
+    var field = event.target;
+    if (!field || !field.getAttribute) return;
+    if (field.getAttribute("role") === "combobox") {
+      openCombo(field.closest(".combo"), true);
+      return;
+    }
+    if (field.id === "prompt-text" || field.id === "workflow") syncValidity();
+  });
+  function intakeFieldName(target) {
+    if (!target || !target.closest || !target.closest("#add-form")) return "";
+    if (target.id === "prompt-text") return "prompt";
+    if (target.id === "jira-key") return "jira";
+    if (target.id === "workflow" || target.closest("#workflow-pick")) return "workflow";
+    if (target.id === "repo-pick-query" || target.closest("#repo-pick")) return "repo";
+    if (target.closest("#browser-field")) return "source";
+    return "";
+  }
+
+  document.addEventListener("focusout", function (event) {
+    var name = intakeFieldName(event.target);
+    if (!name) return;
+    var next = event.relatedTarget;
+    var stay = { prompt: "#prompt-text", jira: "#jira-key", workflow: "#workflow-field", repo: "#repo-field", source: "#browser-field" };
+    if (next && next.closest && next.closest(stay[name])) return;
+    intakeTouched[name] = true;
+    syncValidity();
+  });
+  document.addEventListener("focusin", function (event) {
+    var field = event.target;
+    if (!field || !field.getAttribute || field.getAttribute("role") !== "combobox") return;
+    openCombo(field.closest(".combo"), false);
+    if (field.select) field.select();
+  });
+  document.addEventListener("change", function (event) {
+    var field = event.target;
+    if (field && field.id === "workflow") syncValidity();
+  });
   var addForm = document.getElementById("add-form");
   if (addForm) addForm.addEventListener("submit", function (event) {
     event.preventDefault();
@@ -1396,6 +1768,7 @@
   }
 
   showFresh();
+  syncValidity();
   renderCompact();
   notifyLabel();
   applyRepo();
