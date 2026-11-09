@@ -754,8 +754,6 @@ function formatDollars(value: number): string {
 
 function intakeSheet(intake: ServePageOptions, attention: AttentionView): string {
   const items = [...attention.needsYou, ...attention.inFlight, ...attention.doneRecently];
-  const repoMissing = intake.repos.length === 0;
-  const workflowMissing = intake.workflows.length === 0;
   return `<section class="sheet intake" id="intake" aria-label="Add job" hidden>
 <div class="d-head">
 <div class="num">kiln add</div>
@@ -765,9 +763,9 @@ function intakeSheet(intake: ServePageOptions, attention: AttentionView): string
 <form id="add-form" class="intake-form">
 <div class="intake-body">
 <div class="field" id="repo-field"><span class="k" id="repo-label">Repo</span>${repoPicker(intake.repos)}
-<p class="field-error" id="repo-error" role="alert"${repoMissing ? "" : " hidden"}>${repoMissing ? "Choose a repo." : ""}</p></div>
+<p class="field-error" id="repo-error" role="alert" hidden></p></div>
 <div class="field" id="workflow-field"><span class="k" id="workflow-label">Workflow</span>${workflowPicker(intake.workflows)}
-<p class="field-error" id="workflow-error" role="alert"${workflowMissing ? "" : " hidden"}>${workflowMissing ? "Choose a workflow." : ""}</p></div>
+<p class="field-error" id="workflow-error" role="alert" hidden></p></div>
 <div class="field"><span class="k" id="source-label">Source</span>
 <div class="seg" role="group" aria-labelledby="source-label">
 <button type="button" data-source="prompt" aria-pressed="true">Prompt</button>
@@ -775,8 +773,8 @@ function intakeSheet(intake: ServePageOptions, attention: AttentionView): string
 <button type="button" data-source="tickets" aria-pressed="false">Tickets folder</button>
 <button type="button" data-source="jira" aria-pressed="false">Jira</button>
 </div></div>
-<div data-pane="prompt"><label class="field"><span class="k">Prompt</span><textarea id="prompt-text" rows="4" placeholder="What should this job do?" aria-invalid="true" aria-describedby="prompt-error"></textarea>
-<p class="field-error" id="prompt-error" role="alert">Prompt is required.</p></label></div>
+<div data-pane="prompt"><label class="field"><span class="k">Prompt</span><textarea id="prompt-text" rows="4" placeholder="What should this job do?" aria-describedby="prompt-error"></textarea>
+<p class="field-error" id="prompt-error" role="alert" hidden></p></label></div>
 <div class="field" id="browser-field" hidden>
 <div class="k" id="browser-label">Spec file</div>
 <div class="fs" id="browser"></div>
@@ -923,11 +921,20 @@ function workflowPicker(names: string[]): string {
   return `<div class="seg" id="workflow-pick" data-mode="chips" data-workflow="${escapeHtml(selected)}" role="group" aria-labelledby="workflow-label">${buttons}</div>`;
 }
 
+function afterLabel(job: StatusJobView): string {
+  const title = job.title.trim();
+  if (!title || title === job.jobId) return job.jobId;
+  return `${job.jobId} — ${title}`;
+}
+
 function afterOptions(jobs: StatusJobView[]): string {
   const open = jobs.filter((job) => job.state !== "done");
   if (open.length === 0) return `<p class="empty">No open jobs.</p>`;
   return open
-    .map((job) => `<label class="after"><input type="checkbox" name="after" value="${escapeHtml(job.jobId)}"><span class="num">${escapeHtml(job.jobId)}</span><span>${escapeHtml(job.title || job.jobId)}</span></label>`)
+    .map(
+      (job) =>
+        `<label class="after"><input type="checkbox" name="after" value="${escapeHtml(job.jobId)}"><span>${escapeHtml(afterLabel(job))}</span></label>`,
+    )
     .join("");
 }
 

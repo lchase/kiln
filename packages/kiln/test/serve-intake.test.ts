@@ -391,7 +391,11 @@ describe("serve intake", () => {
       assert.match(page.body, /data-workflow="fix"/);
       assert.match(page.body, /data-workflow="investigation"/);
       assert.match(page.body, /id="add-submit"[^>]*disabled/);
-      assert.match(page.body, /Prompt is required\./);
+      const addStart = page.body.indexOf('id="add-form"');
+      const addForm = page.body.slice(addStart, page.body.indexOf("</form>", addStart));
+      assert.match(addForm, /id="prompt-error"[^>]*hidden></);
+      assert.doesNotMatch(addForm, /Prompt is required/);
+      assert.doesNotMatch(addForm, /aria-invalid/);
       assert.match(page.body, /data-csrf="[a-f0-9]{64}"/);
       assert.equal(page.body.includes(TOKEN), false);
       const csrf = csrfFrom(page.body);

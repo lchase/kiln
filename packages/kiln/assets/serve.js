@@ -284,6 +284,8 @@
   var ticketsDir = "";
   var fsPath = "";
   var sending = false;
+  var intakeTouched = {};
+  var intakeSubmitTried = false;
   var FS_KEY = "kiln-fs-dir";
 
   function pickLimit() {
@@ -308,18 +310,22 @@
     return host ? host.getAttribute("data-workflow") || "" : "";
   }
 
-  function setFieldError(id, message) {
+  function setFieldError(id, message, reveal) {
     var el = document.getElementById(id);
     if (!el) return;
-    var on = Boolean(message);
+    var on = Boolean(message) && reveal;
     el.hidden = !on;
-    el.textContent = message || "";
+    el.textContent = on ? message : "";
     var field = el.closest(".field");
     if (!field) return;
     var control = field.querySelector("textarea, input, select, [role='combobox'], [role='group']");
     if (!control) return;
     if (on) control.setAttribute("aria-invalid", "true");
     else control.removeAttribute("aria-invalid");
+  }
+
+  function showFieldError(name) {
+    return intakeSubmitTried || intakeTouched[name] === true;
   }
 
   function syncValidity() {
@@ -330,11 +336,11 @@
     var spec = source.kind === "spec" && !source.path ? "Choose a spec file." : "";
     var tickets = source.kind === "tickets" && !source.dir ? "Choose a tickets folder." : "";
     var jira = source.kind === "jira" && !source.key ? "Enter a Jira key." : "";
-    setFieldError("repo-error", repo ? "" : "Choose a repo.");
-    setFieldError("workflow-error", workflow ? "" : "Choose a workflow.");
-    setFieldError("prompt-error", prompt);
-    setFieldError("source-error", spec || tickets);
-    setFieldError("jira-error", jira);
+    setFieldError("repo-error", repo ? "" : "Choose a repo.", showFieldError("repo"));
+    setFieldError("workflow-error", workflow ? "" : "Choose a workflow.", showFieldError("workflow"));
+    setFieldError("prompt-error", prompt, showFieldError("prompt"));
+    setFieldError("source-error", spec || tickets, showFieldError("source"));
+    setFieldError("jira-error", jira, showFieldError("jira"));
     var blocked = !repo || !workflow || Boolean(prompt || spec || tickets || jira);
     var submit = document.getElementById("add-submit");
     if (submit) submit.disabled = blocked || sending;
@@ -636,6 +642,7 @@
 
   function submitIntake(dryRun) {
     if (sending) return;
+    intakeSubmitTried = true;
     if (!syncValidity()) return;
     var repo = selectedRepo();
     var workflow = selectedWorkflow();
@@ -1549,6 +1556,25 @@
       return;
     }
     if (field.id === "prompt-text" || field.id === "workflow") syncValidity();
+  });
+  function intakeFieldName(target) {
+    if (!target || !target.closest || !target.closest("#add-form")) return "";
+    if (target.id === "prompt-text") return "prompt";
+    if (target.id === "jira-key") return "jira";
+    if (target.id === "workflow" || target.closest("#workflow-pick")) return "workflow";
+    if (target.id === "repo-pick-query" || target.closest("#repo-pick")) return "repo";
+    if (target.closest("#browser-field")) return "source";
+    return "";
+  }
+
+  document.addEventListener("focusout", function (event) {
+    var name = intakeFieldName(event.target);
+    if (!name) return;
+    var next = event.relatedTarget;
+    var stay = { prompt: "#prompt-text", jira: "#jira-key", workflow: "#workflow-field", repo: "#repo-field", source: "#browser-field" };
+    if (next && next.closest && next.closest(stay[name])) return;
+    intakeTouched[name] = true;
+    syncValidity();
   });
   document.addEventListener("focusin", function (event) {
     var field = event.target;

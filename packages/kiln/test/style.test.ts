@@ -16,10 +16,10 @@ function outsideTokens(source: string): string {
   return source.slice(0, start) + source.slice(end + "/* tokens:end */".length);
 }
 
-function job(id: string, state: StatusState, repo: string): StatusJobView {
+function job(id: string, state: StatusState, repo: string, title = id): StatusJobView {
   return {
     jobId: id,
-    title: id,
+    title,
     repo,
     workflow: "feature",
     state,
@@ -126,5 +126,32 @@ describe("board style", () => {
     );
     assert.match(wide, /<select id="workflow"/);
     assert.doesNotMatch(wide, /id="workflow-pick"/);
+  });
+
+  it("labels each After job once", () => {
+    const attention = buildAttention([
+      job("SAMPLE-1", "queued", "web"),
+      job("j202611090001", "queued", "api", "Show the empty state"),
+      job("SAMPLE-3", "queued", "docs", "   "),
+      job("SAMPLE-4", "done", "web", "Finished work"),
+    ]);
+    const html = addForm(renderConsole(css, attention, { csrf: "abc", repos: repos(["web"]), workflows, section: "pipeline" }));
+    const after = html.slice(html.indexOf('id="after-list"'), html.indexOf("</fieldset>"));
+    const text = (id: string) => {
+      const start = after.indexOf(`<label class="after"><input type="checkbox" name="after" value="${id}">`);
+      assert.ok(start >= 0, id);
+      return after
+        .slice(start, after.indexOf("</label>", start))
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    };
+    assert.equal(text("SAMPLE-1"), "SAMPLE-1");
+    assert.equal(text("j202611090001"), "j202611090001 — Show the empty state");
+    assert.equal(text("SAMPLE-3"), "SAMPLE-3");
+    assert.equal(after.includes("SAMPLE-4"), false);
+    assert.equal(after.includes("Finished work"), false);
+    assert.match(html, /id="prompt-error"[^>]*hidden></);
+    assert.doesNotMatch(html, /Prompt is required/);
   });
 });
