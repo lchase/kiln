@@ -327,7 +327,7 @@ async function handle(
     if (listed === "stats") {
       const window = parseStatsWindow(url.searchParams.get("window"));
       if (!window) {
-        sendHtml(res, 400, renderMessagePage(css, "Stats", "window must be today, 7d, or 30d."), secrets);
+        sendHtml(res, 400, renderMessagePage(css, "Stats", "window must be today, 7d, or 30d.", config.boardTheme), secrets);
         return;
       }
       sendHtml(res, 200, renderShell(state, css, csrf, "stats", { window }), secrets);
@@ -343,11 +343,11 @@ async function handle(
     try {
       name = decodeURIComponent(repoPage[1]);
     } catch {
-      sendHtml(res, 404, renderMessagePage(css, "Not found", "Not found."), secrets);
+      sendHtml(res, 404, renderMessagePage(css, "Not found", "Not found.", config.boardTheme), secrets);
       return;
     }
     if (!state.config.repos[name]) {
-      sendHtml(res, 404, renderMessagePage(css, "Not found", `No repo ${name}.`), secrets);
+      sendHtml(res, 404, renderMessagePage(css, "Not found", `No repo ${name}.`, config.boardTheme), secrets);
       return;
     }
     sendHtml(res, 200, renderShell(state, css, csrf, "repos", { repo: name }), secrets);
@@ -359,12 +359,12 @@ async function handle(
     const jobId = parseJobId(jobPage[1]);
     const job = jobId ? findJob(config, jobId) : undefined;
     if (!job) {
-      sendHtml(res, 404, renderMessagePage(css, "Not found", jobId ? `No job ${jobId}.` : "Not found."), secrets);
+      sendHtml(res, 404, renderMessagePage(css, "Not found", jobId ? `No job ${jobId}.` : "Not found.", config.boardTheme), secrets);
       return;
     }
     const tabRaw = url.searchParams.get("tab");
     if (tabRaw && tabRaw !== "overview" && tabRaw !== "changes" && tabRaw !== "timeline") {
-      sendHtml(res, 400, renderMessagePage(css, "Job", "tab must be overview, changes, or timeline."), secrets);
+      sendHtml(res, 400, renderMessagePage(css, "Job", "tab must be overview, changes, or timeline.", config.boardTheme), secrets);
       return;
     }
     const tab = tabRaw === "changes" || tabRaw === "timeline" ? tabRaw : "overview";
@@ -377,7 +377,7 @@ async function handle(
     const jobId = parseJobId(page[1]);
     const job = jobId ? findJob(config, jobId) : undefined;
     if (!job) {
-      sendHtml(res, 404, renderMessagePage(css, "Not found", jobId ? `No job ${jobId}.` : "Not found."), secrets);
+      sendHtml(res, 404, renderMessagePage(css, "Not found", jobId ? `No job ${jobId}.` : "Not found.", config.boardTheme), secrets);
       return;
     }
     if (page[2] === "findings") {
@@ -386,21 +386,21 @@ async function handle(
     }
     const target = page[2] === "spec" ? job.specPath : job.logPath;
     if (!target) {
-      sendHtml(res, 404, renderMessagePage(css, "Not found", page[2] === "log" ? "No log yet." : "No spec."), secrets);
+      sendHtml(res, 404, renderMessagePage(css, "Not found", page[2] === "log" ? "No log yet." : "No spec.", config.boardTheme), secrets);
       return;
     }
     const text = readInside(config.kilnDir, target);
     if (text === undefined) {
-      sendHtml(res, 404, renderMessagePage(css, "Not found", "That file is not in the kiln directory."), secrets);
+      sendHtml(res, 404, renderMessagePage(css, "Not found", "That file is not in the kiln directory.", config.boardTheme), secrets);
       return;
     }
     const title = page[2] === "spec" ? `${job.title} spec` : `${job.title} log`;
-    sendHtml(res, 200, renderTextPage(css, title, text), secrets);
+    sendHtml(res, 200, renderTextPage(css, title, text, config.boardTheme), secrets);
     return;
   }
 
   if (path.startsWith("/api/")) sendJson(res, 404, { error: "Not found." }, secrets);
-  else sendHtml(res, 404, renderMessagePage(css, "Not found", "Not found."), secrets);
+  else sendHtml(res, 404, renderMessagePage(css, "Not found", "Not found.", config.boardTheme), secrets);
 }
 
 async function cancelQueued(
@@ -461,7 +461,7 @@ async function answer(
     const message = error instanceof Error ? error.message : String(error);
     const status = message.startsWith("No job ") ? 404 : 409;
     if (wantsJson(req)) sendJson(res, status, { error: message }, secrets);
-    else sendHtml(res, status, renderMessagePage(css, "Could not answer", message), secrets);
+    else sendHtml(res, status, renderMessagePage(css, "Could not answer", message, config.boardTheme), secrets);
     return;
   }
   const job = findJob(config, jobId);
@@ -485,7 +485,7 @@ async function revise(
   if (!note) {
     const message = "A revise note is required.";
     if (wantsJson(req)) sendJson(res, 400, { error: message }, secrets);
-    else sendHtml(res, 400, renderMessagePage(css, "Could not revise", message), secrets);
+    else sendHtml(res, 400, renderMessagePage(css, "Could not revise", message, config.boardTheme), secrets);
     return;
   }
   try {
@@ -494,7 +494,7 @@ async function revise(
     const message = error instanceof Error ? error.message : String(error);
     const status = message.startsWith("No job ") ? 404 : 409;
     if (wantsJson(req)) sendJson(res, status, { error: message }, secrets);
-    else sendHtml(res, status, renderMessagePage(css, "Could not revise", message), secrets);
+    else sendHtml(res, status, renderMessagePage(css, "Could not revise", message, config.boardTheme), secrets);
     return;
   }
   const job = findJob(config, jobId);
@@ -532,7 +532,7 @@ async function retry(
     const message = error instanceof Error ? error.message : String(error);
     const status = message.startsWith("No job ") ? 404 : 409;
     if (wantsJson(req)) sendJson(res, status, { error: message }, secrets);
-    else sendHtml(res, status, renderMessagePage(css, "Could not retry", message), secrets);
+    else sendHtml(res, status, renderMessagePage(css, "Could not retry", message, config.boardTheme), secrets);
     return;
   }
   const job = findJob(config, jobId);
@@ -551,19 +551,19 @@ function sendFindings(
   job: StatusJobView,
 ): void {
   if (job.workflow !== INVESTIGATION_WORKFLOW) {
-    sendHtml(res, 404, renderMessagePage(css, "Not found", "Not found."), secrets);
+    sendHtml(res, 404, renderMessagePage(css, "Not found", "Not found.", config.boardTheme), secrets);
     return;
   }
   if (!job.findingsPath) {
-    sendHtml(res, 404, renderMessagePage(css, "Not found", "No findings yet."), secrets);
+    sendHtml(res, 404, renderMessagePage(css, "Not found", "No findings yet.", config.boardTheme), secrets);
     return;
   }
   const text = readInside(config.kilnDir, job.findingsPath);
   if (text === undefined) {
-    sendHtml(res, 404, renderMessagePage(css, "Not found", "That file is not in the kiln directory."), secrets);
+    sendHtml(res, 404, renderMessagePage(css, "Not found", "That file is not in the kiln directory.", config.boardTheme), secrets);
     return;
   }
-  sendHtml(res, 200, renderTextPage(css, `${job.title} findings`, text), secrets);
+  sendHtml(res, 200, renderTextPage(css, `${job.title} findings`, text, config.boardTheme), secrets);
 }
 
 function findJob(config: LoadedKilnConfig, jobId: string): StatusJobView | undefined {
@@ -829,6 +829,7 @@ function pageOptions(state: LiveConfig, csrf: string): ServePageOptions {
     paused: isPaused(state.config.kilnDir),
     spend,
     ...(state.configError ? { configError: state.configError } : {}),
+    theme: state.config.boardTheme,
   };
 }
 

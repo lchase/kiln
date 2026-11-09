@@ -29,6 +29,7 @@ import { renderMarkdown } from "./markdown.js";
 import { kilnVersion } from "./project.js";
 import type { StatusJobView } from "./report.js";
 import { formatSpend, type SpendSnapshot } from "./rails.js";
+import { BOARD_THEME_CHOICES, DEFAULT_BOARD_THEME, type BoardThemeId } from "./theme.js";
 import type { TriggerRow } from "./triggers.js";
 import { listWorkflowNames } from "./workflow.js";
 
@@ -47,8 +48,10 @@ export interface ServePageOptions {
   paused?: boolean;
   spend?: SpendSnapshot;
   /** Which list `renderConsole` draws. The serve shell passes this through `renderApp`. */
-  section?: "pipeline" | "inbox" | "hand" | "repos" | "history";
+  section?: "pipeline" | "inbox" | "hand" | "repos" | "history" | "settings";
   repo?: string;
+  /** Board palette. Missing uses Kiln. */
+  theme?: BoardThemeId;
 }
 
 export interface AppModel {
@@ -110,19 +113,21 @@ ${intakeSheet(page, model.attention)}
     revision: model.attention.revision,
     csrf: page.csrf,
     section: model.section,
+    theme: page.theme ?? DEFAULT_BOARD_THEME,
     ...(job ? { jobId: job.jobId, latest: job.latestEventAt } : {}),
     live: true,
     body,
   });
 }
 
-export function renderTextPage(css: string, title: string, text: string): string {
+export function renderTextPage(css: string, title: string, text: string, theme: BoardThemeId = DEFAULT_BOARD_THEME): string {
   return document({
     css,
     title,
     needsYou: 0,
     revision: "",
     section: "job",
+    theme,
     live: false,
     body: `<a class="back" href="/">Pipeline</a>
 <div class="page"><h1>${escapeHtml(title)}</h1>
@@ -130,13 +135,19 @@ export function renderTextPage(css: string, title: string, text: string): string
   });
 }
 
-export function renderMessagePage(css: string, title: string, message: string): string {
+export function renderMessagePage(
+  css: string,
+  title: string,
+  message: string,
+  theme: BoardThemeId = DEFAULT_BOARD_THEME,
+): string {
   return document({
     css,
     title,
     needsYou: 0,
     revision: "",
     section: "job",
+    theme,
     live: false,
     body: `<a class="back" href="/">Pipeline</a>
 <div class="page"><h1>${escapeHtml(title)}</h1>
@@ -176,7 +187,7 @@ ${item("/settings", "open-settings", "Settings", "settings")}
 function mainHtml(model: AppModel, page: ServePageOptions): string {
   const error = `<p class="meta config-error" id="config-error" role="status"${page.configError ? "" : " hidden"}>${escapeHtml(page.configError ?? "")}</p>`;
   if (model.section === "settings") {
-    return `${error}<main class="main"><h2>Settings</h2><section id="settings" aria-label="Settings">${settingsForm()}</section></main>`;
+    return `${error}<main class="main"><h2>Settings</h2><section id="settings" aria-label="Settings">${settingsForm(page.theme ?? DEFAULT_BOARD_THEME)}</section></main>`;
   }
   if (model.section === "stats" && model.stats) {
     return `${error}<main class="main">${statsHtml(model.stats)}</main>`;
@@ -798,7 +809,15 @@ function intakeSheet(intake: ServePageOptions, attention: AttentionView): string
 </section>`;
 }
 
-function settingsForm(): string {
+function themePicker(selected: BoardThemeId): string {
+  const buttons = BOARD_THEME_CHOICES.map((theme) => {
+    const on = theme.id === selected;
+    return `<button type="button" class="theme" data-theme-choice="${theme.id}" aria-pressed="${on ? "true" : "false"}"><span class="theme-swatch" data-theme="${theme.id}" aria-hidden="true"><span class="swatch bg"></span><span class="swatch panel"></span><span class="swatch card"></span><span class="swatch accent"></span></span><span class="theme-label">${escapeHtml(theme.label)}</span></button>`;
+  }).join("");
+  return `<div class="themes" id="theme-pick" role="group" aria-label="Theme">${buttons}</div>`;
+}
+
+function settingsForm(theme: BoardThemeId): string {
   return `<form id="settings-form" class="intake-form">
 <p class="meta" id="settings-path"></p>
 <p class="saved" id="settings-saved" role="status" hidden>Saved</p>
@@ -806,6 +825,7 @@ function settingsForm(): string {
 <div class="seg" role="tablist" aria-label="Settings sections">
 <button type="button" data-settings-tab="repos" aria-pressed="true">Repos</button>
 <button type="button" data-settings-tab="global" aria-pressed="false">Global</button>
+<button type="button" data-settings-tab="appearance" aria-pressed="false">Appearance</button>
 </div>
 <div id="settings-repos">
 <div id="repo-editor" hidden>
@@ -865,6 +885,11 @@ function settingsForm(): string {
 <label class="field"><span class="k">Daily dollar cap</span><input id="daily-dollar-cap" type="number" min="0" step="0.01"></label>
 <p class="hint" id="hint-cap"></p>
 <p class="field-error" data-error="dailyDollarCap" hidden></p>
+</div>
+<div id="settings-appearance" hidden>
+<p class="hint">Color palette for this board. The choice applies immediately and is saved here.</p>
+${themePicker(theme)}
+<p class="field-error" data-error="board.theme" hidden></p>
 </div>
 <div class="form-footer"><button type="submit" class="btn primary">Save</button></div>
 </form>`;
@@ -956,6 +981,7 @@ function document(options: {
   revision: string;
   csrf?: string;
   section: string;
+  theme?: BoardThemeId;
   jobId?: string;
   latest?: string;
   live: boolean;
@@ -963,8 +989,9 @@ function document(options: {
 }): string {
   const job = options.jobId ? ` data-job="${escapeHtml(options.jobId)}"` : "";
   const latest = options.latest ? ` data-latest="${escapeHtml(options.latest)}"` : "";
+  const theme = options.theme ?? DEFAULT_BOARD_THEME;
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="${theme}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

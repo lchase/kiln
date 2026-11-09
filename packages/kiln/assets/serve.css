@@ -1,32 +1,6 @@
 /* kiln-serve */
 /* tokens:start */
 :root {
-  --bg: #020617;
-  --panel: #0f172a;
-  --card: #1e293b;
-  --card-hover: #334155;
-  --line: #334155;
-  --line-strong: #475569;
-  --ink: #e2e8f0;
-  --muted: #94a3b8;
-  --faint: #64748b;
-  --live: #3dd6c6;
-  --pass: #8dcea8;
-  --changes: #e6c36a;
-  --human: #ff7a45;
-  --primary: #6d4aff;
-  --code: #cbd5e1;
-  --code-bg: #0f172a;
-  --on-primary: #ffffff;
-  --scrim: rgba(2, 6, 23, 0.72);
-  --focus: #cbd5e1;
-  --state-queued: var(--faint);
-  --state-running: var(--live);
-  --state-needs-you: var(--human);
-  --state-needs-hand: var(--changes);
-  --state-done: var(--pass);
-  --state-failed: #f07178;
-  --state-cancelled: #8b93a1;
   --font-sans: Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   --font-mono: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --mono: var(--font-mono);
@@ -86,6 +60,337 @@
   --disabled: 0.45;
 }
 /* tokens:end */
+
+/* theme:kiln */
+/* Kiln's own warmed neutral. Surfaces are the Tailwind Stone ramp. Accent and state colors are Kiln's. */
+:where(:root),
+[data-theme="kiln"] {
+  color-scheme: dark;
+  --bg: #0c0a09;
+  --panel: #1c1917;
+  --card: #292524;
+  --card-hover: #44403c;
+  --line: #44403c;
+  --line-strong: #57534e;
+  --ink: #e7e5e4;
+  --muted: #a8a29e;
+  --faint: #78716c;
+  --live: #3dd6c6;
+  --pass: #8dcea8;
+  --changes: #e6c36a;
+  --human: #ff7a45;
+  --primary: #6d4aff;
+  --code: #d6d3d1;
+  --code-bg: #1c1917;
+  --on-primary: #ffffff;
+  --scrim: rgba(12, 10, 9, 0.72);
+  --focus: #d6d3d1;
+  --state-queued: #78716c;
+  --state-running: #3dd6c6;
+  --state-needs-you: #ff7a45;
+  --state-needs-hand: #e6c36a;
+  --state-done: #8dcea8;
+  --state-failed: #f07178;
+  --state-cancelled: #78716c;
+}
+/* theme:end */
+
+/* theme:nord */
+/* Nord polar night, snow storm, frost, and aurora. https://www.nordtheme.com/docs/colors-and-palettes */
+[data-theme="nord"] {
+  color-scheme: dark;
+  --bg: #2e3440;
+  --panel: #3b4252;
+  --card: #434c5e;
+  --card-hover: #4c566a;
+  --line: #4c566a;
+  --line-strong: #d8dee9;
+  --ink: #eceff4;
+  --muted: #e5e9f0;
+  --faint: #d8dee9;
+  --live: #8fbcbb;
+  --pass: #a3be8c;
+  --changes: #ebcb8b;
+  --human: #d08770;
+  --primary: #88c0d0;
+  --code: #81a1c1;
+  --code-bg: #3b4252;
+  --on-primary: #2e3440;
+  --scrim: rgba(46, 52, 64, 0.72);
+  --focus: #eceff4;
+  --state-queued: #d8dee9;
+  --state-running: #8fbcbb;
+  --state-needs-you: #d08770;
+  --state-needs-hand: #ebcb8b;
+  --state-done: #a3be8c;
+  --state-failed: #bf616a;
+  --state-cancelled: #d8dee9;
+}
+/* theme:end */
+
+/* theme:gruvbox-dark */
+/* Gruvbox dark, medium contrast. Bright accents. https://github.com/morhetz/gruvbox */
+[data-theme="gruvbox-dark"] {
+  color-scheme: dark;
+  --bg: #1d2021;
+  --panel: #282828;
+  --card: #3c3836;
+  --card-hover: #504945;
+  --line: #504945;
+  --line-strong: #665c54;
+  --ink: #ebdbb2;
+  --muted: #bdae93;
+  --faint: #a89984;
+  --live: #8ec07c;
+  --pass: #b8bb26;
+  --changes: #fabd2f;
+  --human: #fe8019;
+  --primary: #fe8019;
+  --code: #83a598;
+  --code-bg: #282828;
+  --on-primary: #1d2021;
+  --scrim: rgba(29, 32, 33, 0.72);
+  --focus: #ebdbb2;
+  --state-queued: #a89984;
+  --state-running: #8ec07c;
+  --state-needs-you: #fe8019;
+  --state-needs-hand: #fabd2f;
+  --state-done: #b8bb26;
+  --state-failed: #fb4934;
+  --state-cancelled: #928374;
+}
+/* theme:end */
+
+/* theme:gruvbox-light */
+/* Gruvbox light. Faded accents. https://github.com/morhetz/gruvbox */
+[data-theme="gruvbox-light"] {
+  color-scheme: light;
+  --bg: #fbf1c7;
+  --panel: #f2e5bc;
+  --card: #ebdbb2;
+  --card-hover: #d5c4a1;
+  --line: #d5c4a1;
+  --line-strong: #bdae93;
+  --ink: #3c3836;
+  --muted: #665c54;
+  --faint: #7c6f64;
+  --live: #076678;
+  --pass: #79740e;
+  --changes: #b57614;
+  --human: #af3a03;
+  --primary: #af3a03;
+  --code: #076678;
+  --code-bg: #f9f5d7;
+  --on-primary: #fbf1c7;
+  --scrim: rgba(40, 40, 40, 0.45);
+  --focus: #282828;
+  --state-queued: #7c6f64;
+  --state-running: #076678;
+  --state-needs-you: #af3a03;
+  --state-needs-hand: #b57614;
+  --state-done: #79740e;
+  --state-failed: #9d0006;
+  --state-cancelled: #928374;
+}
+/* theme:end */
+
+/* theme:catppuccin-mocha */
+/* Catppuccin Mocha, palette 1.8.0. Mauve is the accent. https://catppuccin.com/palette */
+[data-theme="catppuccin-mocha"] {
+  color-scheme: dark;
+  --bg: #1e1e2e;
+  --panel: #181825;
+  --card: #313244;
+  --card-hover: #45475a;
+  --line: #45475a;
+  --line-strong: #585b70;
+  --ink: #cdd6f4;
+  --muted: #bac2de;
+  --faint: #9399b2;
+  --live: #94e2d5;
+  --pass: #a6e3a1;
+  --changes: #f9e2af;
+  --human: #fab387;
+  --primary: #cba6f7;
+  --code: #b4befe;
+  --code-bg: #11111b;
+  --on-primary: #11111b;
+  --scrim: rgba(17, 17, 27, 0.72);
+  --focus: #cdd6f4;
+  --state-queued: #9399b2;
+  --state-running: #94e2d5;
+  --state-needs-you: #fab387;
+  --state-needs-hand: #f9e2af;
+  --state-done: #a6e3a1;
+  --state-failed: #f38ba8;
+  --state-cancelled: #7f849c;
+}
+/* theme:end */
+
+/* theme:catppuccin-macchiato */
+/* Catppuccin Macchiato, palette 1.8.0. Mauve is the accent. */
+[data-theme="catppuccin-macchiato"] {
+  color-scheme: dark;
+  --bg: #24273a;
+  --panel: #1e2030;
+  --card: #363a4f;
+  --card-hover: #494d64;
+  --line: #494d64;
+  --line-strong: #5b6078;
+  --ink: #cad3f5;
+  --muted: #b8c0e0;
+  --faint: #939ab7;
+  --live: #8bd5ca;
+  --pass: #a6da95;
+  --changes: #eed49f;
+  --human: #f5a97f;
+  --primary: #c6a0f6;
+  --code: #b7bdf8;
+  --code-bg: #181926;
+  --on-primary: #181926;
+  --scrim: rgba(24, 25, 38, 0.72);
+  --focus: #cad3f5;
+  --state-queued: #939ab7;
+  --state-running: #8bd5ca;
+  --state-needs-you: #f5a97f;
+  --state-needs-hand: #eed49f;
+  --state-done: #a6da95;
+  --state-failed: #ed8796;
+  --state-cancelled: #8087a2;
+}
+/* theme:end */
+
+/* theme:catppuccin-frappe */
+/* Catppuccin Frappé, palette 1.8.0. Mauve is the accent. */
+[data-theme="catppuccin-frappe"] {
+  color-scheme: dark;
+  --bg: #303446;
+  --panel: #292c3c;
+  --card: #414559;
+  --card-hover: #51576d;
+  --line: #51576d;
+  --line-strong: #626880;
+  --ink: #c6d0f5;
+  --muted: #b5bfe2;
+  --faint: #949cbb;
+  --live: #81c8be;
+  --pass: #a6d189;
+  --changes: #e5c890;
+  --human: #ef9f76;
+  --primary: #ca9ee6;
+  --code: #babbf1;
+  --code-bg: #232634;
+  --on-primary: #232634;
+  --scrim: rgba(35, 38, 52, 0.72);
+  --focus: #c6d0f5;
+  --state-queued: #949cbb;
+  --state-running: #81c8be;
+  --state-needs-you: #ef9f76;
+  --state-needs-hand: #e5c890;
+  --state-done: #a6d189;
+  --state-failed: #e78284;
+  --state-cancelled: #838ba7;
+}
+/* theme:end */
+
+/* theme:catppuccin-latte */
+/* Catppuccin Latte, palette 1.8.0. Mauve is the accent. */
+[data-theme="catppuccin-latte"] {
+  color-scheme: light;
+  --bg: #eff1f5;
+  --panel: #e6e9ef;
+  --card: #ccd0da;
+  --card-hover: #bcc0cc;
+  --line: #bcc0cc;
+  --line-strong: #acb0be;
+  --ink: #4c4f69;
+  --muted: #5c5f77;
+  --faint: #7c7f93;
+  --live: #179299;
+  --pass: #40a02b;
+  --changes: #df8e1d;
+  --human: #fe640b;
+  --primary: #8839ef;
+  --code: #1e66f5;
+  --code-bg: #dce0e8;
+  --on-primary: #eff1f5;
+  --scrim: rgba(76, 79, 105, 0.45);
+  --focus: #4c4f69;
+  --state-queued: #7c7f93;
+  --state-running: #179299;
+  --state-needs-you: #fe640b;
+  --state-needs-hand: #df8e1d;
+  --state-done: #40a02b;
+  --state-failed: #d20f39;
+  --state-cancelled: #8c8fa1;
+}
+/* theme:end */
+
+/* theme:monospace-dark */
+/* Monospace Dark. Keksi's VS Code theme, via the Orca port's published UI colors. */
+[data-theme="monospace-dark"] {
+  color-scheme: dark;
+  --bg: #171f2b;
+  --panel: #10151d;
+  --card: #242e3f;
+  --card-hover: #1f2939;
+  --line: #333e4f;
+  --line-strong: #333e4f;
+  --ink: #d9dfe7;
+  --muted: #8b98a9;
+  --faint: #7f8d9f;
+  --live: #25a6e9;
+  --pass: #17b877;
+  --changes: #ffa23e;
+  --human: #ffa23e;
+  --primary: #a87ffb;
+  --code: #92a9ff;
+  --code-bg: #10151d;
+  --on-primary: #10151d;
+  --scrim: rgba(16, 21, 29, 0.72);
+  --focus: #d9dfe7;
+  --state-queued: #8b98a9;
+  --state-running: #25a6e9;
+  --state-needs-you: #ffa23e;
+  --state-needs-hand: #ffd395;
+  --state-done: #17b877;
+  --state-failed: #fd8da3;
+  --state-cancelled: #7f8d9f;
+}
+/* theme:end */
+
+/* theme:monospace-light */
+/* Monospace Light. Keksi's VS Code theme, via the Orca port's published UI colors. */
+[data-theme="monospace-light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --panel: #f4f7fd;
+  --card: #fafbfe;
+  --card-hover: #d9dfe7;
+  --line: #d9dfe7;
+  --line-strong: #bfc7d2;
+  --ink: #1f2939;
+  --muted: #5d6a7d;
+  --faint: #637083;
+  --live: #0075a2;
+  --pass: #007b49;
+  --changes: #a65921;
+  --human: #d07826;
+  --primary: #6f4cde;
+  --code: #264dcb;
+  --code-bg: #f4f7fd;
+  --on-primary: #ffffff;
+  --scrim: rgba(31, 41, 57, 0.45);
+  --focus: #1f2939;
+  --state-queued: #5d6a7d;
+  --state-running: #0075a2;
+  --state-needs-you: #d07826;
+  --state-needs-hand: #a65921;
+  --state-done: #007b49;
+  --state-failed: #c43058;
+  --state-cancelled: #637083;
+}
+/* theme:end */
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -653,6 +958,42 @@ body.open .drawer { transform: none; }
 .trigger .recent { margin-top: var(--space-3); }
 .trigger .recent li { margin: var(--space-1) 0; font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--muted); }
 .trigger .ev { color: var(--ink); }
+.themes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--col-min), 1fr));
+  gap: var(--space-3);
+}
+.theme {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+  height: auto;
+  margin: 0;
+  padding: var(--space-2);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.theme:hover { background: var(--card-hover); }
+.theme[aria-pressed="true"] { border-color: var(--ink); }
+.theme-swatch {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr auto;
+  height: var(--space-7);
+  overflow: hidden;
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.theme-swatch .swatch { display: block; min-width: 0; }
+.theme-swatch .bg { background: var(--bg); }
+.theme-swatch .panel { background: var(--panel); }
+.theme-swatch .card { background: var(--card); }
+.theme-swatch .accent { width: var(--space-4); background: var(--primary); }
+.theme-label { font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--ink); }
 .form-footer { justify-content: flex-end; }
 .sheet .form-footer {
   position: sticky;

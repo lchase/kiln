@@ -768,14 +768,28 @@
     if (message && slot.scrollIntoView) slot.scrollIntoView({ block: "nearest" });
   }
 
+  var settingsEpoch = 0;
+  var themeApplied = document.documentElement.getAttribute("data-theme") || "kiln";
+  var themeQueued = null;
+  var themeSaving = false;
+
   function setSettingsTab(tab) {
     var repos = document.getElementById("settings-repos");
     var globalPane = document.getElementById("settings-global");
+    var appearance = document.getElementById("settings-appearance");
     if (repos) repos.hidden = tab !== "repos";
     if (globalPane) globalPane.hidden = tab !== "global";
+    if (appearance) appearance.hidden = tab !== "appearance";
     var buttons = document.querySelectorAll("#settings-form [data-settings-tab]");
     for (var i = 0; i < buttons.length; i++) {
       buttons[i].setAttribute("aria-pressed", buttons[i].getAttribute("data-settings-tab") === tab ? "true" : "false");
+    }
+  }
+
+  function markTheme(id) {
+    var buttons = document.querySelectorAll("#theme-pick [data-theme-choice]");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].setAttribute("aria-pressed", buttons[i].getAttribute("data-theme-choice") === id ? "true" : "false");
     }
   }
 
@@ -1038,7 +1052,85 @@
     if (mode) sandbox.mode = mode;
     if (domains.length) sandbox.allowDomains = domains;
     if (mode || domains.length) body.sandbox = sandbox;
+    var themeButton = document.querySelector('#theme-pick [aria-pressed="true"]');
+    var themeId = themeButton ? themeButton.getAttribute("data-theme-choice") : "";
+    if (themeId) body.board = { theme: themeId };
     return body;
+  }
+
+  function preservedSettings(data) {
+    var body = { revision: data.revision, repos: data.repos || {} };
+    ["stallTimeoutMs", "maxAttempts", "maxFixRounds", "maxSameFingerprint", "dailyDollarCap"].forEach(function (key) {
+      if (data[key] !== undefined && data[key] !== null) body[key] = data[key];
+    });
+    if (data.sandbox) body.sandbox = data.sandbox;
+    return body;
+  }
+
+  function chooseTheme(id) {
+    if (!id) return;
+    settingsEpoch += 1;
+    document.documentElement.setAttribute("data-theme", id);
+    markTheme(id);
+    themeQueued = id;
+    if (!themeSaving) pumpTheme();
+  }
+
+  function pumpTheme() {
+    if (!themeQueued) return;
+    var id = themeQueued;
+    themeQueued = null;
+    themeSaving = true;
+    fetch("/api/settings", { cache: "no-store", headers: { Accept: "application/json" } })
+      .then(function (response) { return response.json().then(function (data) { return { ok: response.ok, data: data }; }); })
+      .then(function (result) {
+        if (!result.ok) throw new Error((result.data && result.data.error) || "Could not load settings.");
+        var body = preservedSettings(result.data);
+        body.board = { theme: id };
+        return fetch("/api/settings", {
+          method: "PUT",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "X-Kiln-CSRF": bodyCsrf(),
+          },
+          body: JSON.stringify(body),
+        });
+      })
+      .then(function (response) { return response.json().then(function (data) { return { ok: response.ok, data: data }; }); })
+      .then(function (result) {
+        themeSaving = false;
+        if (!result.ok) {
+          if (!themeQueued) restoreTheme();
+          showSettingsError((result.data && result.data.error) || "Could not save the theme.");
+          var fields = result.data && result.data.fields;
+          if (fields && fields["board.theme"]) showSlot("board.theme", fields["board.theme"]);
+          if (themeQueued) pumpTheme();
+          return;
+        }
+        themeApplied = (result.data.board && result.data.board.theme) || id;
+        if (!settingsDoc) applySettingsDocument(result.data);
+        else if (result.data.revision) {
+          settingsDoc.revision = result.data.revision;
+          settingsDoc.board = result.data.board;
+        }
+        if (themeQueued) pumpTheme();
+      })
+      .catch(function (err) {
+        themeSaving = false;
+        if (!themeQueued) restoreTheme();
+        showSettingsError(err && err.message ? err.message : "Could not save the theme.");
+        if (themeQueued) pumpTheme();
+      });
+  }
+
+  function restoreTheme() {
+    document.documentElement.setAttribute("data-theme", themeApplied);
+    markTheme(themeApplied);
+  }
+
+  function bodyCsrf() {
+    return body.getAttribute("data-csrf") || "";
   }
 
   function applyFieldErrors(fields) {
@@ -1066,6 +1158,11 @@
         showSlot(key, message);
         continue;
       }
+      if (key === "board.theme") {
+        setSettingsTab("appearance");
+        showSlot("board.theme", message);
+        continue;
+      }
       if (key === "name" || key.indexOf("repos.") === 0) {
         setSettingsTab("repos");
         showSlot("name", message);
@@ -1080,6 +1177,12 @@
     var pathEl = document.getElementById("settings-path");
     if (pathEl) pathEl.textContent = data.path || "";
     fillGlobal(data);
+    var themeId = data.board && data.board.theme ? data.board.theme : "kiln";
+    if (!themeSaving && !themeQueued) {
+      themeApplied = themeId;
+      document.documentElement.setAttribute("data-theme", themeId);
+      markTheme(themeId);
+    }
     if (editing && editing.original && Object.prototype.hasOwnProperty.call(repoDraft, editing.original)) {
       fillEditor(editing.original, repoDraft[editing.original]);
     } else {
@@ -1092,11 +1195,13 @@
     clearSettingsErrors();
     var saved = document.getElementById("settings-saved");
     if (saved) saved.hidden = true;
+    var epoch = settingsEpoch;
     fetch("/api/settings", { cache: "no-store", headers: { Accept: "application/json" } })
       .then(function (response) {
         return response.json().then(function (data) { return { ok: response.ok, status: response.status, data: data }; });
       })
       .then(function (result) {
+        if (epoch !== settingsEpoch) return;
         if (!result.ok) {
           showSettingsError((result.data && result.data.error) || "Could not load settings.");
           return;
@@ -1129,11 +1234,8 @@
           if (buttonId === id) on = enabled;
           toggles.push({ id: buttonId, enabled: on });
         }
-        var body = { revision: data.revision, repos: data.repos || {}, triggers: toggles };
-        ["stallTimeoutMs", "maxAttempts", "maxFixRounds", "maxSameFingerprint", "dailyDollarCap"].forEach(function (key) {
-          if (data[key] !== undefined && data[key] !== null) body[key] = data[key];
-        });
-        if (data.sandbox) body.sandbox = data.sandbox;
+        var body = preservedSettings(data);
+        body.triggers = toggles;
         return fetch("/api/settings", {
           method: "PUT",
           headers: {
@@ -1169,7 +1271,7 @@
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        "X-Kiln-CSRF": body.getAttribute("data-csrf") || "",
+        "X-Kiln-CSRF": bodyCsrf(),
       },
       body: JSON.stringify(payload),
     })
@@ -1307,6 +1409,11 @@
         repoBox.setAttribute("data-path", pick.getAttribute("data-path") || "");
       }
       syncValidity();
+      return;
+    }
+    var themeChoice = target.closest("#theme-pick [data-theme-choice]");
+    if (themeChoice) {
+      chooseTheme(themeChoice.getAttribute("data-theme-choice") || "");
       return;
     }
     var settingsTab = target.closest("#settings-form [data-settings-tab]");

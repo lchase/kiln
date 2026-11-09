@@ -6,6 +6,7 @@ import { buildAttention } from "../src/attention.js";
 import { packageRoot } from "../src/paths.js";
 import type { StatusJobView, StatusState } from "../src/report.js";
 import { renderConsole } from "../src/serve-page.js";
+import { BOARD_THEME_IDS } from "../src/theme.js";
 
 const css = readFileSync(join(packageRoot(), "assets", "serve.css"), "utf8");
 
@@ -14,6 +15,27 @@ function outsideTokens(source: string): string {
   const end = source.indexOf("/* tokens:end */");
   assert.ok(start !== -1 && end > start, "serve.css is missing the tokens block");
   return source.slice(0, start) + source.slice(end + "/* tokens:end */".length);
+}
+
+function themeBlocks(source: string): Map<string, string> {
+  const blocks = new Map<string, string>();
+  const pattern = /\/\* theme:([a-z0-9-]+) \*\/([\s\S]*?)\/\* theme:end \*\//g;
+  for (const match of source.matchAll(pattern)) {
+    const id = match[1];
+    const body = match[2];
+    assert.ok(id && body !== undefined);
+    assert.equal(blocks.has(id), false, `duplicate theme ${id}`);
+    blocks.set(id, body);
+  }
+  return blocks;
+}
+
+function withoutTokenOrTheme(source: string): string {
+  return outsideTokens(source).replace(/\/\* theme:[a-z0-9-]+ \*\/[\s\S]*?\/\* theme:end \*\//g, "");
+}
+
+function colorProps(block: string): string[] {
+  return [...block.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((match) => match[1] ?? "").filter(Boolean).sort();
 }
 
 function job(id: string, state: StatusState, repo: string, title = id): StatusJobView {
@@ -52,8 +74,8 @@ function addForm(html: string): string {
 }
 
 describe("board style", () => {
-  it("keeps px spacing and color literals inside the token block", () => {
-    const rest = outsideTokens(css)
+  it("keeps px spacing and color literals inside the token and theme blocks", () => {
+    const rest = withoutTokenOrTheme(css)
       .split("\n")
       .filter((line) => !line.includes("@media"))
       .join("\n")
@@ -65,6 +87,74 @@ describe("board style", () => {
       if (color.test(line) || px.test(line)) bad.push(line.trim());
     }
     assert.deepEqual(bad, []);
+  });
+
+  it("gives every theme the same color tokens and paints the appearance grid", () => {
+    const blocks = themeBlocks(css);
+    assert.deepEqual([...blocks.keys()], [...BOARD_THEME_IDS]);
+    const kiln = blocks.get("kiln");
+    assert.ok(kiln);
+    assert.match(kiln, /:where\(:root\)/);
+    assert.match(kiln, /color-scheme:\s*dark/);
+    const expected = colorProps(kiln);
+    const required = [
+      "--bg",
+      "--panel",
+      "--card",
+      "--card-hover",
+      "--line",
+      "--line-strong",
+      "--ink",
+      "--muted",
+      "--faint",
+      "--primary",
+      "--on-primary",
+      "--focus",
+      "--code",
+      "--code-bg",
+      "--scrim",
+      "--live",
+      "--pass",
+      "--changes",
+      "--human",
+      "--state-queued",
+      "--state-running",
+      "--state-needs-you",
+      "--state-needs-hand",
+      "--state-done",
+      "--state-failed",
+      "--state-cancelled",
+    ];
+    for (const name of required) assert.equal(expected.includes(name), true, name);
+    const light = new Set(["gruvbox-light", "catppuccin-latte", "monospace-light"]);
+    for (const [id, block] of blocks) {
+      assert.deepEqual(colorProps(block), expected, id);
+      assert.equal(/\d+px\b/.test(block), false, id);
+      assert.match(block, new RegExp(`\\[data-theme="${id}"\\]`));
+      assert.match(block, light.has(id) ? /color-scheme:\s*light/ : /color-scheme:\s*dark/);
+    }
+
+    const attention = buildAttention([job("SAMPLE-1", "needs-human", "web"), job("SAMPLE-2", "queued", "api")]);
+    const html = renderConsole(css, attention, {
+      csrf: "abc",
+      repos: repos(["web", "api"]),
+      workflows,
+      section: "settings",
+      theme: "nord",
+    });
+    assert.match(html, /<html lang="en" data-theme="nord">/);
+    assert.match(html, /data-settings-tab="appearance"/);
+    assert.match(html, /id="theme-pick"/);
+    const picker = html.slice(html.indexOf('id="theme-pick"'), html.indexOf('data-error="board.theme"'));
+    assert.doesNotMatch(picker, /role="combobox"/);
+    assert.doesNotMatch(picker, /class="pick"/);
+    for (const id of BOARD_THEME_IDS) {
+      assert.match(html, new RegExp(`data-theme-choice="${id}"`));
+      assert.match(html, new RegExp(`class="theme-swatch" data-theme="${id}"`));
+    }
+    assert.match(html, /data-theme-choice="nord" aria-pressed="true"/);
+    const fallback = renderConsole(css, attention, { csrf: "abc", repos: repos(["web"]), workflows, section: "pipeline" });
+    assert.match(fallback, /<html lang="en" data-theme="kiln">/);
   });
 
   it("pads the drawer, pins the footer, and switches the repo picker past five", () => {
