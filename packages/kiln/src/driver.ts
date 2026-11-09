@@ -81,6 +81,7 @@ import {
   type ReliabilityNote,
 } from "./reliability.js";
 import { projectRunJournal, promptsHash } from "./project.js";
+import { postApprovedReview, reviewPostForJob } from "./review-post.js";
 import {
   gateAnswerCommand,
   renderStatus,
@@ -251,6 +252,19 @@ export function answerJob(
   const gate = gateForChoice(job.run.gates, choice);
   if (!gate) {
     throw new Error(`Job ${jobId} has no open gate that accepts ${choice}.`);
+  }
+  if (choice === "approve" && job.workflow === REVIEW_WORKFLOW) {
+    postApprovedReview({
+      kilnDir: config.kilnDir,
+      jobId,
+      runId: job.run.runId,
+      repo: job.repo,
+      sourceRef: job.source?.kind === "trigger" ? job.source.ref : undefined,
+      checkout: job.run.checkout,
+      host,
+      paused: world.observation.paused === true,
+      spendBlocked: world.observation.spendBlocked === true,
+    });
   }
   const command = gateAnswerCommand(job.run.checkout, job.run.runId, gate, choice, job.run.title ?? job.title);
   const result = spawnSync("sh", ["-c", command], { encoding: "utf8" });
@@ -478,6 +492,9 @@ function observe(config: LoadedKilnConfig, host: KilnHost, now = new Date()): Wo
       entry.job?.workflow === INVESTIGATION_WORKFLOW
         ? existingFindingsPath(config.kilnDir, entry.job.id)
         : undefined;
+    const reviewPost = entry.job
+      ? reviewPostForJob(events, { jobId: entry.job.id, repo: entry.job.repo, source: entry.job.source })
+      : {};
     const logTail = readLogTail(logPath);
     const stepPlan = entry.job ? workflowStepPlan(entry.job.workflow) : undefined;
     const diffSummary =
@@ -498,6 +515,8 @@ function observe(config: LoadedKilnConfig, host: KilnHost, now = new Date()): Wo
       ...(entry.job?.stack ? { stack: true } : {}),
       ...(delivery ? { delivery } : {}),
       ...(findingsPath ? { findingsPath } : {}),
+      ...(reviewPost.error ? { reviewPostError: reviewPost.error } : {}),
+      ...(reviewPost.url ? { reviewUrl: reviewPost.url } : {}),
       launching,
       launchFailed,
       ...(launchError ? { launchError } : {}),

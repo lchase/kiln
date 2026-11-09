@@ -122,6 +122,16 @@ interface CronExpr {
 
 const REVIEW_REF = /^review:([^:]+):(\d+):([0-9a-f]{7,64})$/i;
 
+/** `review:<repo>:<number>:<head sha>` from a review-request job. SHA is lowercase. */
+export function parseReviewSource(ref: string): { repo: string; number: number; sha: string } | undefined {
+  const match = REVIEW_REF.exec(ref);
+  const repo = match?.[1];
+  const number = Number(match?.[2]);
+  const sha = match?.[3]?.toLowerCase();
+  if (!repo || !sha || !Number.isInteger(number) || number <= 0) return undefined;
+  return { repo, number, sha };
+}
+
 export function effectiveTriggers(file: readonly TriggerConfig[] | undefined): TriggerConfig[] {
   const byId = new Map<string, TriggerConfig>();
   for (const trigger of BUILTIN_TRIGGERS) byId.set(trigger.id, { ...trigger });
@@ -325,7 +335,7 @@ export function jiraIssueEvent(triggerId: string, repo: string, issue: JiraPollI
 
 export function reviewHeadOf(job: { workflow: string; source?: { kind: string; ref: string } }): string | undefined {
   if (job.workflow !== REVIEW_WORKFLOW || job.source?.kind !== "trigger") return undefined;
-  return REVIEW_REF.exec(job.source.ref)?.[3];
+  return parseReviewSource(job.source.ref)?.sha;
 }
 
 /** Download the pull request head when the checkout does not have that commit yet. */
@@ -610,7 +620,7 @@ function reviewSpec(input: { title: string; url?: string; number: number; sha: s
   lines.push(
     "Read the change and return a draft review.",
     "Do not post, approve, merge, or push.",
-    "Approving the gate keeps the draft. Kiln does not post it to GitHub.",
+    "Approving the gate posts this draft as a pull request comment. Kiln does not approve the pull request or merge it.",
     "",
   );
   return lines.join("\n");

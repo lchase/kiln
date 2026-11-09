@@ -327,7 +327,7 @@ describe("review request drafts", () => {
       assert.equal(state, "needs-human", `${rendered}\n${detail}`);
       runTick(config, host, { startup: false, triggerStartup: false, now: new Date(now.getTime() + 3_600_000) });
       assert.equal(jobs(config).length, 1, "the same head SHA does not open a second draft");
-      assert.match(rendered, /does not post it to GitHub/);
+      assert.match(rendered, /does not approve the pull request or merge it/);
       assert.match(rendered, /warning/);
       assert.match(rendered, /src\/sample\.ts:12/);
       const board = buildBoard(readStatus(config).jobs, readEvents(config.kilnDir, { warn: () => {} }));

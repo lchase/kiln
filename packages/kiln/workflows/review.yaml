@@ -1,9 +1,9 @@
 # Draft review of one pull request, run by yak (@lchase/yak).
 #
 # The agent returns findings (severity, file, line, suggested comment).
-# A person approves or rejects the draft in the Inbox. Approving does not
-# post, approve, or merge on GitHub: Kiln has no gated posting path for a
-# review comment, so the draft stops here.
+# A person approves or rejects the draft in the Inbox. Approving posts the
+# draft as a pull request comment. Kiln does not approve the pull request
+# or merge it. Rejecting or revising does not post.
 #
 # `reviewPrompt` in the kiln config replaces prompts/kiln/review.md.
 # The packaged file is the generic default.
@@ -60,5 +60,5 @@ steps:
             decision: { type: string, enum: [approve, reject] }
           required: [decision]
       render:
-        inline: "Draft review for \"{{input.title}}\"?\n\nApproving keeps this draft. Kiln does not post it to GitHub.\n\n{{draft.markdown}}"
+        inline: "Draft review for \"{{input.title}}\"?\n\nApproving posts this draft as a pull request comment. Kiln does not approve the pull request or merge it.\n\n{{draft.markdown}}"
     produces: approval

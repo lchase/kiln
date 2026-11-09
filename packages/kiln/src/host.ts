@@ -40,6 +40,37 @@ export interface GitHubHost {
   }): PullRequestRef;
   /** `gh pr view --json state,mergedAt`. Squash merges set `mergedAt`. */
   view(checkout: string, number: number): { state: PullRequestState; mergedAt: string | null };
+  /**
+   * Submit one pull request review as a comment.
+   * The event is COMMENT. This does not approve, request changes, or merge,
+   * and it does not leave a pending review.
+   * Optional so older test doubles keep compiling. Production always sets it.
+   */
+  postCommentReview?(input: PullRequestCommentReview): PostedPullRequestReview;
+}
+
+/** One inline comment. `line` is a line that was already in the draft. */
+export interface PullRequestReviewComment {
+  path: string;
+  line: number;
+  body: string;
+}
+
+/**
+ * A submitted COMMENT review. `event` is not a field: the only review Kiln
+ * submits is a comment.
+ */
+export interface PullRequestCommentReview {
+  checkout: string;
+  number: number;
+  commitId: string;
+  body: string;
+  comments: readonly PullRequestReviewComment[];
+}
+
+export interface PostedPullRequestReview {
+  id: string;
+  url: string;
 }
 
 export interface GitRemote {
@@ -280,11 +311,12 @@ function ghBin(): string {
   return process.env.KILN_GH && process.env.KILN_GH.length > 0 ? process.env.KILN_GH : "gh";
 }
 
-function runGh(checkout: string, args: string[]): { status: number; stdout: string; stderr: string } {
+function runGh(checkout: string, args: string[], input?: string): { status: number; stdout: string; stderr: string } {
   const bin = ghBin();
   const result = spawnSync(bin, args, {
     cwd: checkout,
     encoding: "utf8",
+    input,
     env: { ...process.env, GH_PROMPT_DISABLED: "1", GIT_TERMINAL_PROMPT: "0" },
   });
   if (result.error) {
@@ -417,4 +449,67 @@ export const realGitHub: GitHubHost = {
     }
     return { state: asState(parsed.state), mergedAt: asMergedAt(parsed.mergedAt) };
   },
+
+  postCommentReview(input) {
+    return submitCommentReview(input);
+  },
 };
+
+/**
+ * `POST /repos/{owner}/{repo}/pulls/{number}/reviews` with `event: COMMENT`.
+ * One call submits the review. There is no pending-review step, no approve,
+ * and no merge.
+ */
+export function submitCommentReview(input: PullRequestCommentReview): PostedPullRequestReview {
+  const repo = githubOwnerRepo(input.checkout);
+  const event = "COMMENT" as const;
+  const payload: {
+    commit_id: string;
+    body: string;
+    event: "COMMENT";
+    comments?: { path: string; body: string; line: number; side: "RIGHT" }[];
+  } = {
+    commit_id: input.commitId,
+    body: input.body,
+    event,
+  };
+  if (input.comments.length > 0) {
+    payload.comments = input.comments.map((comment) => ({
+      path: comment.path,
+      body: comment.body,
+      line: comment.line,
+      side: "RIGHT" as const,
+    }));
+  }
+  const result = runGh(
+    input.checkout,
+    ["api", "--method", "POST", `repos/${repo.owner}/${repo.name}/pulls/${input.number}/reviews`, "--input", "-"],
+    JSON.stringify(payload),
+  );
+  if (result.status !== 0) {
+    const detail = (result.stderr || result.stdout).trim() || "gh api failed";
+    throw new HostError(`Could not post the pull request review: ${detail}`);
+  }
+  let parsed: { id?: unknown; html_url?: unknown };
+  try {
+    parsed = JSON.parse(result.stdout) as { id?: unknown; html_url?: unknown };
+  } catch {
+    throw new HostError("gh api returned data that is not a pull request review.");
+  }
+  const id = typeof parsed.id === "number" || typeof parsed.id === "string" ? String(parsed.id) : "";
+  const url = typeof parsed.html_url === "string" ? parsed.html_url.trim() : "";
+  if (!id || !url) throw new HostError("gh api did not return a review id and URL.");
+  return { id, url };
+}
+
+function githubOwnerRepo(checkout: string): { owner: string; name: string } {
+  const result = runGh(checkout, ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
+  const name = result.stdout.trim();
+  const [owner, repo] = name.split("/");
+  if (result.status !== 0 || !owner || !repo || name.split("/").length !== 2) {
+    throw new HostError(
+      `Could not read owner/name for the review: ${(result.stderr || result.stdout).trim() || name || "gh repo view failed"}`,
+    );
+  }
+  return { owner, name: repo };
+}
