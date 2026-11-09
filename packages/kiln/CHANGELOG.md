@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/lchase/kiln/compare/kiln-v0.12.0...kiln-v0.13.0) (2026-11-09)
+
+
+### Features
+
+* post approved review drafts to GitHub ([#50](https://github.com/lchase/kiln/issues/50)) ([134df9b](https://github.com/lchase/kiln/commit/134df9b27c33056a8bb4052fd187d292bc9d9910))
+
 ## [0.12.0](https://github.com/lchase/kiln/compare/kiln-v0.11.0...kiln-v0.12.0) (2026-11-03)
 
 
