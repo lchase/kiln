@@ -516,7 +516,14 @@ describe("kiln serve", () => {
 
     const server = await startServe(["--port", "0", "--no-tick"], { cwd, home });
     try {
-      const inbox = await text(`${server.url}/`);
+      const landing = await text(`${server.url}/`);
+      assert.equal(landing.status, 200);
+      assert.match(landing.body, /id="board"/);
+      assert.match(landing.body, /Show the weekly summary/);
+      assert.match(landing.body, /data-column="queued"/);
+      assert.match(landing.body, /data-column="needs-you"/);
+
+      const inbox = await text(`${server.url}/inbox`);
       assert.equal(inbox.status, 200);
       assert.match(inbox.body, /Show the weekly summary/);
       assert.match(inbox.body, /web/);

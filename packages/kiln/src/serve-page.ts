@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { packageRoot } from "./paths.js";
 import type { AttentionView } from "./attention.js";
 import {
   buildBoard,
@@ -7,10 +8,25 @@ import {
   type BoardJob,
   type DayReport,
   type JobDetail,
-  type PhaseCard,
   type StatsDocument,
 } from "./board-view.js";
-import { packageRoot } from "./paths.js";
+import {
+  COLUMN_LABEL,
+  PIPELINE_COLUMNS,
+  formatCost,
+  formatDuration,
+  formatLocal,
+  formatRelative,
+  shortSha,
+  stateTone,
+  type FindingView,
+  type JobView,
+  type PhaseView,
+  type PipelineColumn,
+  type ReviewDeliverable,
+} from "./job-view.js";
+import { renderMarkdown } from "./markdown.js";
+import { kilnVersion } from "./project.js";
 import type { StatusJobView } from "./report.js";
 import { formatSpend, type SpendSnapshot } from "./rails.js";
 import type { TriggerRow } from "./triggers.js";
@@ -21,7 +37,7 @@ export interface ServeRepoOption {
   path: string;
 }
 
-export type AppSection = "inbox" | "hand" | "repos" | "history" | "stats" | "report" | "settings" | "job" | "triggers";
+export type AppSection = "pipeline" | "inbox" | "hand" | "repos" | "history" | "stats" | "report" | "settings" | "job" | "triggers";
 
 export interface ServePageOptions {
   csrf: string;
@@ -31,7 +47,7 @@ export interface ServePageOptions {
   paused?: boolean;
   spend?: SpendSnapshot;
   /** Which list `renderConsole` draws. The serve shell passes this through `renderApp`. */
-  section?: "inbox" | "hand" | "repos" | "history";
+  section?: "pipeline" | "inbox" | "hand" | "repos" | "history";
   repo?: string;
 }
 
@@ -51,17 +67,6 @@ export interface AppModel {
 
 const LIVE_SCRIPT = readFileSync(join(packageRoot(), "assets", "serve.js"), "utf8");
 
-function kilnVersion(): string {
-  try {
-    const parsed = JSON.parse(readFileSync(join(packageRoot(), "package.json"), "utf8")) as { version?: unknown };
-    return typeof parsed.version === "string" ? parsed.version : "";
-  } catch {
-    return "";
-  }
-}
-
-const VERSION = kilnVersion();
-
 export function renderConsole(css: string, attention: AttentionView, page?: ServePageOptions): string {
   const jobs = [...attention.needsYou, ...attention.inFlight, ...attention.doneRecently].map((item) => item.job);
   const board = buildBoard(jobs, []);
@@ -72,7 +77,8 @@ export function renderConsole(css: string, attention: AttentionView, page?: Serv
 export function renderApp(model: AppModel): string {
   const page = model.page ?? { csrf: "", repos: [], workflows: listWorkflowNames() };
   const paused = page.paused === true;
-  const version = VERSION ? `<span class="ver">v${escapeHtml(VERSION)}</span>` : "";
+  const versionText = kilnVersion();
+  const version = versionText && versionText !== "unknown" ? `<span class="ver">v${escapeHtml(versionText)}</span>` : "";
   const spend = page.spend ? `<span class="spend" id="spend">${escapeHtml(formatSpend(page.spend))}</span>` : `<span class="spend" id="spend"></span>`;
   const capNote = page.spend?.blocked ? `<span class="cap" id="cap-note">cap hit</span>` : `<span class="cap" id="cap-note" hidden>cap hit</span>`;
   const body = `<div class="shell">
@@ -118,7 +124,7 @@ export function renderTextPage(css: string, title: string, text: string): string
     revision: "",
     section: "job",
     live: false,
-    body: `<a class="back" href="/">Inbox</a>
+    body: `<a class="back" href="/">Pipeline</a>
 <div class="page"><h1>${escapeHtml(title)}</h1>
 <pre class="text">${escapeHtml(text)}</pre></div>`,
   });
@@ -132,7 +138,7 @@ export function renderMessagePage(css: string, title: string, message: string): 
     revision: "",
     section: "job",
     live: false,
-    body: `<a class="back" href="/">Inbox</a>
+    body: `<a class="back" href="/">Pipeline</a>
 <div class="page"><h1>${escapeHtml(title)}</h1>
 <p class="empty">${escapeHtml(message)}</p></div>`,
   });
@@ -153,6 +159,7 @@ function navHtml(model: AppModel): string {
     })
     .join("");
   return `<nav class="side" aria-label="Sections">
+${item("/", "pipeline", "Pipeline", "pipeline")}
 ${item("/inbox", "inbox", "Inbox", "inbox", board.inboxCount)}
 <p class="unseen" id="inbox-unseen" hidden></p>
 ${item("/hand", "hand", "Needs a hand", "hand", board.handCount)}
@@ -182,6 +189,9 @@ function mainHtml(model: AppModel, page: ServePageOptions): string {
   }
   if (model.section === "triggers") {
     return `${error}<main class="main">${triggersHtml(model.triggers ?? [])}</main>`;
+  }
+  if (model.section === "pipeline") {
+    return `${error}<main class="main">${pipelineHtml(allJobs(model.board))}</main>`;
   }
   return `${error}<main class="main">${listHtml(model, page.csrf)}</main>`;
 }
@@ -226,10 +236,14 @@ ${recent}
 </article>`;
 }
 
+function allJobs(board: BoardDocument): JobView[] {
+  return board.repos.flatMap((group) => group.jobs);
+}
+
 function listHtml(model: AppModel, csrf: string): string {
   const board = model.board;
   if (model.section === "inbox") {
-    return `<header class="list-head"><h2>Inbox</h2><p class="meta">Approve, reject, or revise. Kiln does not do this on its own.</p></header>${jobList(board.inbox, "inbox", "Nothing is waiting on a gate.", csrf)}`;
+    return `<header class="list-head"><h2>Inbox</h2><p class="meta">Approve, reject, or revise. Approving a review posts the draft as a comment. Kiln does not approve or merge.</p></header>${jobList(board.inbox, "inbox", "Nothing is waiting on a gate.", csrf)}`;
   }
   if (model.section === "hand") {
     return `<header class="list-head"><h2>Needs a hand</h2><p class="meta">A breaker tripped, a cap was hit, a review could not be posted, or a run failed with no retry left.</p></header>${jobList(board.hand, "hand", "Nothing needs a person.", csrf)}`;
@@ -239,12 +253,74 @@ function listHtml(model: AppModel, csrf: string): string {
   }
   const groups = model.repo ? board.repos.filter((group) => group.repo === model.repo) : board.repos;
   if (groups.length === 0) return `<header class="list-head"><h2>Repos</h2></header><p class="empty">No jobs.</p>`;
-  return `<header class="list-head"><h2>${model.repo ? escapeHtml(model.repo) : "Repos"}</h2></header>${groups
-    .map(
-      (group) =>
-        `<section class="repo-block"><h3>${escapeHtml(group.repo)}</h3>${jobList(group.jobs, "repos", "No jobs.", csrf)}</section>`,
-    )
+  const heading = model.repo ? escapeHtml(model.repo) : "Repos";
+  return `<header class="list-head"><h2>${heading}</h2></header>${groups
+    .map((group) => {
+      const label = model.repo ? "" : `<h3>${escapeHtml(group.repo)}</h3>`;
+      return `<section class="repo-block">${label}${groupedJobs(group.jobs, "repos", csrf)}</section>`;
+    })
     .join("")}`;
+}
+
+function pipelineHtml(jobs: readonly JobView[]): string {
+  const columns = PIPELINE_COLUMNS.map((column) => {
+    const cards = jobs.filter((job) => job.column === column).map((job) => pipeCard(job)).join("");
+    return `<section class="col" data-column="${column}">
+<header class="full"><h2>${escapeHtml(COLUMN_LABEL[column])}</h2><span class="count"></span></header>
+<div class="slim-face"><span>${escapeHtml(COLUMN_LABEL[column])}</span><span class="count"></span></div>
+${cards}<p class="empty">${escapeHtml(emptyColumn(column))}</p>
+</section>`;
+  }).join("");
+  return `<header class="list-head"><div class="head-row"><h2>Pipeline</h2><button type="button" id="compact" aria-pressed="true" aria-label="collapse empty columns"></button></div><p class="meta">Jobs moving through queued, running, needs you, needs a hand, and done.</p></header>${filtersHtml(jobs)}<div class="board-scroll"><div class="board" id="board">${columns}</div></div>`;
+}
+
+function emptyColumn(column: PipelineColumn): string {
+  switch (column) {
+    case "queued":
+      return "Nothing queued.";
+    case "running":
+      return "Nothing running.";
+    case "needs-you":
+      return "Nothing needs you.";
+    case "needs-hand":
+      return "Nothing needs a hand.";
+    case "done":
+      return "Nothing finished.";
+  }
+}
+
+function filtersHtml(jobs: readonly JobView[]): string {
+  const repos = [...new Set(jobs.map((job) => job.repo))].sort((left, right) => left.localeCompare(right));
+  const workflows = [...new Set(jobs.map((job) => job.workflow))].sort((left, right) => left.localeCompare(right));
+  const repoButtons = [`<button type="button" class="repo-f" data-repo="" aria-pressed="true">All</button>`]
+    .concat(repos.map((repo) => `<button type="button" class="repo-f" data-repo="${escapeHtml(repo)}">${escapeHtml(repo)}</button>`))
+    .join("");
+  const workflowButtons = [`<button type="button" class="wf-f" data-workflow="" aria-pressed="true">All</button>`]
+    .concat(workflows.map((workflow) => `<button type="button" class="wf-f" data-workflow="${escapeHtml(workflow)}">${escapeHtml(workflow)}</button>`))
+    .join("");
+  return `<div class="filters"><div class="filter"><span class="k">Repo</span>${repoButtons}</div><div class="filter"><span class="k">Workflow</span>${workflowButtons}</div></div>`;
+}
+
+function pipeCard(job: JobView): string {
+  const id = encodeURIComponent(job.jobId);
+  const cost = formatCost(job.costUsd);
+  const age = job.since ? timeHtml(job.since, "rel") : "";
+  const phase = job.currentPhase ? `<span class="meta">${escapeHtml(job.currentPhase)}</span>` : "";
+  return `<article class="card" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}"${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
+<a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a>
+<div class="job-meta"><span class="meta">${escapeHtml(job.repo)}</span><span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}${phase}</div>
+</article>`;
+}
+
+function groupedJobs(jobs: readonly JobView[], section: "repos" | "history", csrf: string): string {
+  const blocks = PIPELINE_COLUMNS.flatMap((column) => {
+    const rows = jobs.filter((job) => job.column === column);
+    if (rows.length === 0) return [];
+    return [
+      `<section class="state-group"><h3><span class="chip ${column}">${escapeHtml(COLUMN_LABEL[column])}</span><span class="badge">${rows.length}</span></h3><div class="jobs">${rows.map((job) => jobRow(job, section, csrf)).join("\n")}</div></section>`,
+    ];
+  });
+  return blocks.length === 0 ? `<p class="empty">No jobs.</p>` : blocks.join("");
 }
 
 function jobList(
@@ -260,6 +336,7 @@ function jobList(
 function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", csrf: string): string {
   const id = encodeURIComponent(job.jobId);
   const classes = ["job"];
+  if (section === "inbox") classes.push("decision");
   if (job.scheduledRetry) classes.push("retrying");
   if (section === "inbox" || (section === "hand" && !job.scheduledRetry)) classes.push("human");
   const flag = classes.includes("human") ? `<span class="flag">your call</span>` : "";
@@ -268,27 +345,142 @@ function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", 
   const pr = section === "repos" && job.state === "in-review" ? `<span class="meta">PR review</span>` : "";
   const retrying =
     job.scheduledRetry && job.nextRetryAt
-      ? `<div class="meta">retrying <time datetime="${escapeHtml(job.nextRetryAt)}" data-time="clock">${escapeHtml(job.nextRetryAt)}</time>${job.attemptLine ? ` · ${escapeHtml(job.attemptLine)}` : ""}</div>`
+      ? `<div class="meta">retrying <time datetime="${escapeHtml(job.nextRetryAt)}" data-time="clock">${escapeHtml(formatRelative(job.nextRetryAt))}</time>${job.attemptLine ? ` · ${escapeHtml(job.attemptLine)}` : ""}</div>`
       : "";
   const attempt = !retrying && job.attemptLine && (section === "hand" || section === "inbox") ? `<div class="meta">${escapeHtml(job.attemptLine)}</div>` : "";
   const history = job.historyLine ? `<div class="meta">${escapeHtml(job.historyLine)}</div>` : "";
   const unsafe = job.prUrl && !safeUrl(job.prUrl) ? `<div class="branch">${escapeHtml(job.prUrl)}</div>` : "";
   const deps = dependsHtml(job);
-  const evidence = section === "inbox" ? evidenceHtml(job) : "";
+  const body = section === "inbox" ? decisionBody(job) : "";
+  const reason = section === "inbox" && !showReason(job) ? "" : `<p class="reason">${escapeHtml(job.reason)}</p>`;
   const feedback = feedbackHtml(job);
-  const tail = section !== "inbox" && job.logTail ? `<div class="note">${escapeHtml(clipTail(job.logTail))}</div>` : "";
-  const notes = job.notes.length ? `<div class="note">${job.notes.map((line) => escapeHtml(line)).join("<br>")}</div>` : "";
+  const tail = section !== "inbox" && job.logTail ? logDisclosure(job.logTail) : "";
+  const notes = visibleNotes(job, section);
   const unseen = `<p class="unseen" data-unseen-for="${escapeHtml(job.jobId)}" hidden></p>`;
   const links = fileLinks(job);
-  return `<article class="${classes.join(" ")}" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-deps="${escapeHtml(job.dependsOn.map((dep) => dep.jobId).join(" "))}"${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
+  const age = job.since ? timeHtml(job.since, "rel") : "";
+  const cost = formatCost(job.costUsd);
+  return `<article class="${classes.join(" ")}" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}" data-deps="${escapeHtml(job.dependsOn.map((dep) => dep.jobId).join(" "))}"${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
 <div class="job-main">
 <div class="job-top">${flag}<a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a></div>
-<div class="job-meta"><span class="num">${escapeHtml(job.jobId)}</span>${repo}<span class="meta">${escapeHtml(job.state)}</span>${sandbox}${pr}</div>
-<p class="reason">${escapeHtml(job.reason)}</p>
-${history}${unsafe}${retrying}${attempt}${deps}${feedback}${evidence}${notes}${tail}${unseen}${links}
+<div class="job-meta"><span class="num">${escapeHtml(job.jobId)}</span>${repo}<span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span><span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}${sandbox}${pr}</div>
+${reason}${section === "inbox" ? ranHtml(job) : ""}${history}${unsafe}${retrying}${attempt}${deps}${feedback}${body}${notes}${tail}${unseen}${links}
 </div>
 ${actionsHtml(job, section, csrf)}
 </article>`;
+}
+
+function showReason(job: JobView): boolean {
+  if (!job.ask) return true;
+  const norm = (value: string) => value.replace(/^Gate:\s*/i, "").replace(/\s+/g, " ").trim().toLowerCase();
+  const ask = norm(job.ask);
+  const reason = norm(job.reason);
+  return reason !== ask && !reason.endsWith(ask);
+}
+
+function visibleNotes(job: JobView, section: "inbox" | "hand" | "repos" | "history"): string {
+  const lines = job.notes.filter((line) => section === "inbox" || !looksLikeLog(line));
+  if (lines.length === 0) return "";
+  return `<div class="note">${lines.map((line) => escapeHtml(line)).join("<br>")}</div>`;
+}
+
+function decisionBody(job: JobView): string {
+  const ask = job.ask ? `<p class="ask">${escapeHtml(job.ask)}</p>` : "";
+  const policy =
+    job.workflow === "review" && job.canApprove
+      ? `<p class="meta">Approving posts this draft as a pull request comment. Kiln does not approve the pull request or merge it.</p>`
+      : "";
+  return `${ask}${policy}${ticksHtml(job.phases)}${deliverableHtml(job)}`;
+}
+
+function ranHtml(job: JobView): string {
+  if (job.phases.length === 0 && job.costUsd === null) return "";
+  const bits = [job.workflow];
+  if (job.phases.length > 0) bits.push(job.phases.map((phase) => `${phase.label} ${phase.status}`).join(", "));
+  const durations = job.phases.flatMap((phase) => (phase.durationMs === undefined ? [] : [phase.durationMs]));
+  if (durations.length > 0) bits.push(formatDuration(durations.reduce((sum, ms) => sum + ms, 0)));
+  const cost = formatCost(job.costUsd);
+  if (cost) bits.push(cost);
+  return `<p class="ran">${escapeHtml(bits.join(" · "))}</p>`;
+}
+
+function ticksHtml(phases: readonly PhaseView[]): string {
+  if (phases.length === 0) return "";
+  const items = phases
+    .map((phase) => {
+      const mark = phase.status === "done" ? "✓" : phase.status === "failed" ? "×" : phase.status === "running" ? "●" : "○";
+      return `<li class="tick ${phase.status}"><span class="mark" aria-hidden="true">${mark}</span>${escapeHtml(phase.label)}</li>`;
+    })
+    .join("");
+  return `<ol class="ticks">${items}</ol>`;
+}
+
+function deliverableHtml(job: JobView, skipPr = false): string {
+  const deliverable = job.deliverable;
+  if (!deliverable) return "";
+  if (deliverable.kind === "review") return reviewHtml(job, deliverable, skipPr);
+  const prose = deliverable.markdown ? `<div class="prose">${renderMarkdown(deliverable.markdown)}</div>` : "";
+  const notes = deliverable.notes.length
+    ? `<ul class="notes">${deliverable.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>`
+    : "";
+  return `${prose}${notes}`;
+}
+
+function reviewHtml(job: JobView, review: ReviewDeliverable, skipPr = false): string {
+  const link = skipPr ? "" : prLinkHtml(job.repo, review.prNumber ?? job.prNumber, review.prUrl ?? job.prUrl, review.headSha ?? job.headSha);
+  const verdict = review.verdict ? `<p class="verdict">${escapeHtml(review.verdict)}</p>` : "";
+  const prose = review.markdown ? `<div class="prose">${renderMarkdown(review.markdown)}</div>` : "";
+  const raw = review.raw ? `<details class="raw"><summary>Raw output</summary><pre class="text">${escapeHtml(review.raw)}</pre></details>` : "";
+  return `${link}${verdict}${prose}${findingsHtml(review.findings)}${raw}`;
+}
+
+function findingsHtml(findings: readonly FindingView[]): string {
+  if (findings.length === 0) return `<p class="empty">No findings.</p>`;
+  const groups: string[] = [];
+  let severity = "";
+  let items: string[] = [];
+  const flush = () => {
+    if (!severity) return;
+    groups.push(`<section class="finding-group"><h3>${escapeHtml(severity)}</h3><ul>${items.join("")}</ul></section>`);
+  };
+  for (const finding of findings) {
+    if (finding.severity !== severity) {
+      flush();
+      severity = finding.severity;
+      items = [];
+    }
+    const loc =
+      finding.file && finding.line !== undefined
+        ? `<code>${escapeHtml(`${finding.file}:${finding.line}`)}</code>`
+        : finding.file
+          ? `<code>${escapeHtml(finding.file)}</code>`
+          : "";
+    items.push(`<li>${loc}<span>${escapeHtml(finding.comment)}</span></li>`);
+  }
+  flush();
+  return `<div class="findings">${groups.join("")}</div>`;
+}
+
+function prLinkHtml(repo: string, number: number | undefined, url: string | undefined, sha: string | undefined): string {
+  if (!number && !url && !sha) return "";
+  const label = number ? `${repo}#${number}` : "pull request";
+  const safe = url ? safeUrl(url) : undefined;
+  const link = safe ? `<a href="${escapeHtml(safe)}">${escapeHtml(label)}</a>` : escapeHtml(label);
+  const short = sha ? ` <code>${escapeHtml(shortSha(sha))}</code>` : "";
+  return `<p class="pr-line">${link}${short}</p>`;
+}
+
+function logDisclosure(text: string): string {
+  return `<details class="log"><summary>Log</summary><pre class="text">${escapeHtml(clipTail(text))}</pre></details>`;
+}
+
+function looksLikeLog(text: string): boolean {
+  return /yak resume|worktree branch|suspended —/.test(text) || text.split("\n").length > 8;
+}
+
+function timeHtml(iso: string, mode: "rel" | "local" | "clock"): string {
+  const text = mode === "rel" ? formatRelative(iso) : mode === "clock" ? formatLocal(iso) : formatLocal(iso);
+  return `<time datetime="${escapeHtml(iso)}" data-time="${mode}">${escapeHtml(text)}</time>`;
 }
 
 function clipTail(text: string): string {
@@ -305,12 +497,6 @@ function fileLinks(job: BoardJob): string {
   if (job.findings) links.push(`<a href="/jobs/${id}/findings">Findings</a>`);
   if (links.length === 0) return "";
   return `<p class="links">${links.join(" ")}</p>`;
-}
-
-function evidenceHtml(job: BoardJob): string {
-  if (job.evidence.length === 0) return "";
-  const texts = job.evidence.map((text) => (text.length > 500 ? `${text.slice(0, 499)}…` : text));
-  return `<div class="evidence">${texts.map((text) => `<pre class="text">${escapeHtml(text)}</pre>`).join("")}</div>`;
 }
 
 function feedbackHtml(job: BoardJob): string {
@@ -332,7 +518,7 @@ function dependsHtml(job: BoardJob): string {
     .join(", ");
   const detail = job.dependsOn
     .map((dep) => dep.detail)
-    .filter((line): line is string => Boolean(line))
+    .filter((line): line is string => Boolean(line) && line !== job.reason)
     .join("; ");
   return `<p class="deps">depends on ${links}</p>${detail ? `<p class="meta">${escapeHtml(detail)}</p>` : ""}`;
 }
@@ -371,9 +557,18 @@ function detailHtml(detail: JobDetail, tab: "overview" | "changes" | "timeline",
     })
     .join("");
   const panel = tab === "changes" ? changesHtml(detail) : tab === "timeline" ? timelineHtml(detail) : overviewHtml(detail);
+  const back = job.inbox ? "/inbox" : "/";
+  const backLabel = job.inbox ? "Inbox" : "Pipeline";
   return `<div class="detail-main">
-<a class="back" href="/inbox">Inbox</a>
-<header class="list-head"><h2>${escapeHtml(job.title)}</h2><p class="reason">${escapeHtml(job.reason)}</p><p class="unseen" data-unseen-for="${escapeHtml(job.jobId)}" hidden></p></header>
+<a class="back" href="${back}">${backLabel}</a>
+<header class="list-head">
+<div class="job-top"><h2>${escapeHtml(job.title)}</h2><span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span></div>
+<div class="job-meta"><a href="/repos/${encodeURIComponent(job.repo)}">${escapeHtml(job.repo)}</a><span class="chip">${escapeHtml(job.workflow)}</span>${job.branch ? `<span class="mono">${escapeHtml(job.branch)}</span>` : ""}${prLinkHtml(job.repo, job.prNumber, job.prUrl, job.headSha)}</div>
+${job.ask ? `<p class="ask">${escapeHtml(job.ask)}</p>` : ""}
+${job.workflow === "review" && job.canApprove ? `<p class="meta">Approving posts this draft as a pull request comment. Kiln does not approve the pull request or merge it.</p>` : ""}
+${showReason(job) ? `<p class="reason">${escapeHtml(job.reason)}</p>` : ""}
+<p class="unseen" data-unseen-for="${escapeHtml(job.jobId)}" hidden></p>
+</header>
 <nav class="tabs" aria-label="Job">${tabs}</nav>
 ${actionsHtml(job, "job", _csrf)}
 ${panel}
@@ -382,25 +577,36 @@ ${railHtml(detail)}`;
 }
 
 function overviewHtml(detail: JobDetail): string {
-  const cards = detail.overview;
-  if (cards.length === 0) return `<p class="empty">No phases in the event log yet.</p>`;
-  return `<ol class="phases">${cards.map((card) => phaseHtml(card)).join("")}</ol>`;
+  const phases = detail.job.phases;
+  if (phases.length === 0) return `<p class="empty">No phases in the event log yet.</p>`;
+  const cost = formatCost(detail.job.costUsd);
+  const summary = cost ? `<p class="meta">Cost ${escapeHtml(cost)}</p>` : "";
+  return `${summary}${deliverableHtml(detail.job, true)}<ol class="phases">${phases.map((phase) => phaseHtml(phase)).join("")}</ol>`;
 }
 
-function phaseHtml(card: PhaseCard): string {
+function phaseHtml(phase: PhaseView): string {
   const bits: string[] = [];
-  if (card.verdict) bits.push(`<p class="verdict">${escapeHtml(card.verdict)}</p>`);
-  if (card.detail) bits.push(`<pre class="text">${escapeHtml(card.detail)}</pre>`);
-  if (card.testCommand || card.exitCode !== undefined) {
-    const exit = card.exitCode === undefined ? "" : ` · exit ${card.exitCode}`;
-    bits.push(`<p class="meta">${escapeHtml(`${card.testCommand ?? "test"}${exit}`)}</p>`);
+  if (phase.verdict) bits.push(`<p class="verdict">${escapeHtml(phase.verdict)}</p>`);
+  if (phase.detail) bits.push(phaseDetailHtml(phase.detail));
+  if (phase.testCommand || phase.exitCode !== undefined) {
+    const exit = phase.exitCode === undefined ? "" : ` · exit ${phase.exitCode}`;
+    bits.push(`<p class="meta">${escapeHtml(`${phase.testCommand ?? "test"}${exit}`)}</p>`);
   }
-  if (card.failureClass || card.fingerprint) {
-    bits.push(`<p class="meta">${escapeHtml([card.failureClass, card.fingerprint].filter(Boolean).join(" · "))}</p>`);
+  if (phase.failureClass || phase.fingerprint) {
+    bits.push(`<p class="meta">${escapeHtml([phase.failureClass, phase.fingerprint].filter(Boolean).join(" · "))}</p>`);
   }
-  if (card.note) bits.push(`<blockquote class="note">${escapeHtml(card.note)}</blockquote>`);
-  const iteration = card.iteration !== undefined ? ` <span class="meta">#${card.iteration}</span>` : "";
-  return `<li class="phase ${escapeHtml(card.outcome)}"><header><span class="step">${escapeHtml(card.label)}</span>${iteration}<span class="outcome">${escapeHtml(card.outcome)}</span><time datetime="${escapeHtml(card.ts)}">${escapeHtml(card.ts)}</time></header>${bits.join("")}</li>`;
+  if (phase.note) bits.push(`<blockquote class="note">${escapeHtml(phase.note)}</blockquote>`);
+  const iteration = phase.iteration !== undefined ? ` <span class="meta">#${phase.iteration}</span>` : "";
+  const duration = phase.durationMs !== undefined ? `<span class="meta">${escapeHtml(formatDuration(phase.durationMs))}</span>` : "";
+  const when = phase.finishedAt ?? phase.startedAt;
+  const clock = when ? timeHtml(when, "local") + timeHtml(when, "rel") : "";
+  return `<li class="phase ${escapeHtml(phase.status)}"><header><span class="mark" aria-hidden="true">${phase.status === "done" ? "✓" : phase.status === "failed" ? "×" : phase.status === "running" ? "●" : "○"}</span><span class="step">${escapeHtml(phase.label)}</span>${iteration}<span class="outcome">${escapeHtml(phase.status)}</span>${duration}${clock}</header>${bits.join("")}</li>`;
+}
+
+function phaseDetailHtml(detail: string): string {
+  if (looksLikeLog(detail)) return logDisclosure(detail);
+  if (detail.includes("\n") || detail.length > 280) return `<div class="prose">${renderMarkdown(detail)}</div>`;
+  return `<p>${escapeHtml(detail)}</p>`;
 }
 
 function changesHtml(detail: JobDetail): string {
@@ -422,14 +628,20 @@ function changesHtml(detail: JobDetail): string {
 }
 
 function timelineHtml(detail: JobDetail): string {
-  if (detail.timeline.length === 0) return `<p class="empty">No events.</p>`;
-  const rows = detail.timeline
-    .map((event) => {
-      const step = event.step ? `<span class="meta">${escapeHtml(event.step)}</span>` : "";
-      return `<li><time datetime="${escapeHtml(event.ts)}">${escapeHtml(event.ts)}</time> <span class="ev">${escapeHtml(event.event)}</span> ${step}<pre class="text">${escapeHtml(JSON.stringify(event.properties))}</pre></li>`;
+  const runs = detail.job.timeline;
+  if (runs.length === 0) return `<p class="empty">No events.</p>`;
+  return runs
+    .map((run) => {
+      const label = run.runId ? `Run ${run.runId}` : "Job";
+      const rows = run.entries
+        .map(
+          (entry) =>
+            `<li>${timeHtml(entry.ts, "local")}${timeHtml(entry.ts, "rel")}<span>${escapeHtml(entry.summary)}</span></li>`,
+        )
+        .join("");
+      return `<section class="run-group"><h3>${escapeHtml(label)}</h3><ol class="timeline">${rows}</ol></section>`;
     })
     .join("");
-  return `<ol class="timeline">${rows}</ol>`;
 }
 
 function railHtml(detail: JobDetail): string {
@@ -491,12 +703,14 @@ function statsHtml(stats: StatsDocument): string {
             return `<li><span class="mono">${escapeHtml(row.repo)} / ${escapeHtml(row.jobId)}</span> ${row.total}<ul>${reasons}</ul></li>`;
           })
           .join("")}</ul><p class="meta">${stats.interventions.total} ${stats.interventions.total === 1 ? "intervention" : "interventions"}</p>`;
-  return `<header class="list-head"><h2>Stats</h2><nav class="tabs" aria-label="Window">${windows}</nav></header>
-<section class="stat"><h3>Spend</h3><p>Today ${escapeHtml(stats.spend.day)} ${escapeHtml(formatDollars(stats.spend.usd))} / ${escapeHtml(cap)}</p><p class="meta">This window ${escapeHtml(formatDollars(stats.windowUsd))}</p></section>
+  return `<header class="list-head"><h2>Stats</h2><nav class="tabs" aria-label="Window">${windows}</nav><p class="meta">Since ${timeHtml(stats.since, "local")}</p></header>
+<div class="stat-grid">
+<section class="stat"><h3>Spend</h3><p class="stat-num">${escapeHtml(formatDollars(stats.spend.usd))}</p><p class="meta">Today ${escapeHtml(stats.spend.day)} / ${escapeHtml(cap)}</p><p class="meta">This window ${escapeHtml(formatDollars(stats.windowUsd))}</p></section>
+<section class="stat"><h3>Runs</h3><p class="stat-num">${stats.runs.finished}</p><p class="meta">${stats.runs.started} started · ${stats.runs.finished} finished · ${stats.runs.failed} failed</p>${classRows}</section>
+<section class="stat"><h3>Interventions</h3>${interventions}</section>
+</div>
 <section class="stat"><h3>Cost by repo</h3>${repoRows}</section>
-<section class="stat"><h3>Cost by phase</h3>${phaseRows}</section>
-<section class="stat"><h3>Runs</h3><p>${stats.runs.started} started · ${stats.runs.finished} finished · ${stats.runs.failed} failed</p>${classRows}</section>
-<section class="stat"><h3>Interventions</h3>${interventions}</section>`;
+<section class="stat"><h3>Cost by phase</h3>${phaseRows}</section>`;
 }
 
 function reportHtml(report: DayReport): string {
@@ -508,7 +722,7 @@ function reportHtml(report: DayReport): string {
           .map((run) => {
             const cost = run.usd === null ? "" : ` · ${escapeHtml(formatDollars(run.usd))}`;
             const klass = run.failureClass ? ` · ${escapeHtml(run.failureClass)}` : "";
-            return `<li><a href="/jobs/${encodeURIComponent(run.jobId)}">${escapeHtml(run.title)}</a> <span class="meta">${escapeHtml(run.repo)} · ${escapeHtml(run.outcome)}${klass}${cost}</span></li>`;
+            return `<li><a href="/jobs/${encodeURIComponent(run.jobId)}">${escapeHtml(run.title)}</a> <span class="chip ${escapeHtml(run.outcome)}">${escapeHtml(run.outcome)}</span> <span class="meta">${escapeHtml(run.repo)}${klass}${cost}</span> ${timeHtml(run.at, "rel")}</li>`;
           })
           .join("")}</ul>`;
   const interventions =
@@ -518,9 +732,12 @@ function reportHtml(report: DayReport): string {
           .map((row) => `<li><span class="mono">${escapeHtml(row.repo)} / ${escapeHtml(row.jobId)}</span> ${row.total}</li>`)
           .join("")}</ul>`;
   return `<header class="list-head"><h2>Today</h2><p class="meta">${escapeHtml(report.day)}</p></header>
-<section class="stat"><h3>Spend</h3><p>${escapeHtml(formatDollars(report.spend.usd))} / ${escapeHtml(cap)}</p></section>
-<section class="stat"><h3>Runs</h3>${runs}</section>
-<section class="stat"><h3>Interventions</h3>${interventions}</section>`;
+<div class="stat-grid">
+<section class="stat"><h3>Spend</h3><p class="stat-num">${escapeHtml(formatDollars(report.spend.usd))}</p><p class="meta">of ${escapeHtml(cap)}</p></section>
+<section class="stat"><h3>Runs</h3><p class="stat-num">${report.runs.length}</p></section>
+<section class="stat"><h3>Interventions</h3>${interventions}</section>
+</div>
+<section class="stat"><h3>What ran</h3>${runs}</section>`;
 }
 
 function tableRows(rows: string[][], empty: string): string {
