@@ -21,6 +21,8 @@ Spacing is a 4px grid:
 
 Radii stay tight. `--radius-sm` is 2px (buttons and small controls). `--radius-md` is 4px (inputs). `--radius-lg` is 6px (cards and columns). `--radius-pill` is chips only. `--radius-full` is circles.
 
+Icon size is `--icon` (16px, on the 4px grid). Stroke is `--icon-stroke` (2, Lucide's unitless stroke in a 24 viewBox). Both live in the shared token block.
+
 Type, on `--font-sans` (UI) or `--font-mono` (ids, meta, code):
 
 | Token | Size / line |
@@ -73,12 +75,48 @@ State colors (say the word as well as the color):
 - A card that needs a person says `Needs a decision` in `--muted`. Sentence case.
 - The pipeline tray may scroll sideways. Chip rows and form controls may not.
 
+## Sidebar
+
+- Brand (logo, Kiln, version) stays at the top.
+- The nav fills the middle (`.nav-scroll`) and scrolls when it is taller than the viewport. Add job stays with the nav.
+- The footer (`.side-foot`) stays pinned to the bottom of the sidebar. It holds the run status, today's spend, and notify. It is not a second action row.
+- Run status is the live dot, Running or Paused, and Pause or Resume. Pause posts `/api/pause`. Resume posts `/api/resume`. In-flight runs finish. No new runs start while paused. The button keeps the word and swaps the pause and play icons (`aria-pressed` shows play).
+- Spend uses `formatSpend` (`today <day>  $0.00 / $cap` or `no cap`). A cap hit adds the note `cap hit`.
+
+## Icons
+
+Official Lucide, inlined (`src/icons.ts`). Do not add a React icon package. Do not vendor a doubled-stroke set: at 16px those paths read as mud.
+
+- One icon on each nav row: Pipeline `columns-3`, Inbox `inbox`, Needs a hand `hand-helping`, Repos `folder-git-2`, History `history`, Stats `chart-column`, Today `calendar`, Triggers `zap`, Settings `settings`.
+- Repo sublinks (`api`, `web`) stay text.
+- Footer: `pause` / `play`, and `bell` / `bell-off` for notify.
+- Add job stays a labeled button. Do not icon-spam cards, chips, or meta rows.
+- Draw with `.icon`: `var(--icon)`, `var(--icon-stroke)`, `currentColor`, `fill: none`. No fill except a Lucide mark that is meant to be filled. These marks are not.
+- Active nav: `--ink` icon and label, on the existing selected background (`--card-hover`). Inactive: `--muted`. Hover may use `--ink`. Do not paint nav icons, the footer, or other chrome with `--primary`.
+- Icon-only hit targets use `--hit` (44px). A nav row can stay compact when the whole row is the target. Pause and notify include a label, so they stay on `--control-h`.
+
+## Notify
+
+The footer control says what it will do. State is the visible label, not a tooltip.
+
+| State | Label | Click |
+| --- | --- | --- |
+| Not asked (`Notification.permission` is `default`) | Notify me | Asks the browser |
+| On (granted, and Kiln sending is on) | Notifications on | Turns Kiln's sending off. The browser permission stays. |
+| Off (granted, sending off) | Notify me | Turns sending back on. No second prompt. |
+| Blocked (`denied`) | Notifications blocked | Does not ask again. A sentence under the control says to allow notifications for this site in the browser. |
+| API missing | Notifications unavailable | The control is disabled. It is not a working button. |
+
+On uses `bell`. The other states use `bell-off`. The local preference is `kiln-notify` in `localStorage` (`on` or `off`). Missing means on once the browser has granted permission.
+
+Kiln notifies only when the needs-you count grows, and only while sending is on. The notification title is `Kiln`. The body is `1 job needs you` or `N jobs need you`. No other channel. No secrets in the body.
+
 ## Don't
 
 - No left or top accent bar on a card, and no thicker colored border in its place.
 - No glow, and no gradient or tinted wash on a card.
 - No all-caps marketing eyebrows.
-- Do not paint chrome with `--primary`. It is for the action button only.
+- Do not paint chrome, nav icons, or the sidebar footer with `--primary`. It is for the action button only (Approve, Add job).
 - Do not add a second accent color for decoration.
 
 ## Forms
@@ -116,6 +154,7 @@ Kiln adapts published palettes onto the tokens above. It does not vendor theme s
 - **Gruvbox Dark and Gruvbox Light.** Official Gruvbox (`morhetz/gruvbox`): dark uses the bright accents, light uses the faded accents. MIT/X11.
 - **Catppuccin** Mocha, Macchiato, Frappé, and Latte. Official palette 1.8.0. Mauve is the accent. MIT, copyright Catppuccin. https://catppuccin.com/palette
 - **Monospace Dark and Monospace Light.** Published UI colors from Keksi's Monospace theme (`keksiqc/monospace-theme`, MIT, copyright 2024 Keksi), as carried in the Orca port `faisalmuhammad/orca-monospace-themes`. The upstream theme is a modification of the Google IDX theme. This board uses the palette only.
+- **Lucide.** Nav and footer icons are the official Lucide 1.70.0 paths (`columns-3`, `inbox`, `hand-helping`, `folder-git-2`, `history`, `chart-column`, `calendar`, `zap`, `settings`, `pause`, `play`, `bell`, `bell-off`), inlined. ISC, copyright Lucide Icons and Contributors. https://lucide.dev https://github.com/lucide-icons/lucide
 
 ## Tables and lists
 
@@ -137,7 +176,7 @@ Kiln adapts published palettes onto the tokens above. It does not vendor theme s
 - `:focus-visible` uses `--focus-width` and `--focus`. Do not remove the outline.
 - Text contrast is `--ink` on `--bg` / `--card`. State chips include the state word.
 - Every control is a button, link, input, or combobox. Keyboard reaches it. The combobox supports Arrow, Enter, and Escape (Escape closes the list before the drawer).
-- Hit targets for icon buttons use `--hit` (44px).
+- Hit targets for icon buttons use `--hit` (44px). Nav rows can stay compact when the whole row is the target.
 
 ## Checklist for any new screen
 

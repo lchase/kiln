@@ -25,6 +25,7 @@ import {
   type PipelineColumn,
   type ReviewDeliverable,
 } from "./job-view.js";
+import { icon, type IconName } from "./icons.js";
 import { renderMarkdown } from "./markdown.js";
 import { kilnVersion } from "./project.js";
 import type { StatusJobView } from "./report.js";
@@ -87,15 +88,22 @@ export function renderApp(model: AppModel): string {
   const body = `<div class="shell">
 <aside class="nav" aria-label="Kiln">
 <div class="brand"><span class="logo" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12V6l5-3 5 3v6l-5 3-5-3z"/><path d="M3 6l5 3 5-3M8 9v6"/></svg></span><div><h1>Kiln</h1>${version}</div></div>
+<div class="nav-scroll">
+${navHtml(model)}
+<button class="add" type="button" id="add-job">Add job</button>
+</div>
+<footer class="side-foot">
 <div class="runstate" id="runstate">
 <span class="live-dot${paused ? " paused" : ""}" id="run-dot" aria-hidden="true"></span>
 <span id="run-label">${paused ? "Paused" : "Running"}</span>
-<form method="post" action="${paused ? "/api/resume" : "/api/pause"}" class="pause" id="pause-form"><input type="hidden" name="csrf" value="${escapeHtml(page.csrf)}"><button type="submit" id="pause-toggle" aria-pressed="${paused ? "true" : "false"}">${paused ? "Resume" : "Pause"}</button></form>
+<form method="post" action="${paused ? "/api/resume" : "/api/pause"}" class="pause" id="pause-form"><input type="hidden" name="csrf" value="${escapeHtml(page.csrf)}"><button type="submit" id="pause-toggle" aria-pressed="${paused ? "true" : "false"}">${icon("pause", "icon icon-pause")}${icon("play", "icon icon-play")}<span id="pause-label">${paused ? "Resume" : "Pause"}</span></button></form>
 </div>
-${spend}${capNote}
-${navHtml(model)}
-<button class="add" type="button" id="add-job">Add job</button>
-<button class="tool-link" type="button" id="notify">Notify me</button>
+<p class="spend-row">${spend}${capNote}</p>
+<div class="notify">
+<button class="tool-link" type="button" id="notify" data-state="ask" aria-pressed="false">${icon("bell", "icon icon-bell")}${icon("bell-off", "icon icon-bell-off")}<span id="notify-label">Notify me</span></button>
+<p class="notify-note" id="notify-note" hidden></p>
+</div>
+</footer>
 </aside>
 <div class="workspace${model.section === "job" ? " with-rail" : ""}">
 ${mainHtml(model, page)}
@@ -157,11 +165,11 @@ export function renderMessagePage(
 
 function navHtml(model: AppModel): string {
   const board = model.board;
-  const item = (href: string, id: string, label: string, section: AppSection, badge?: number) => {
+  const item = (href: string, id: string, label: string, section: AppSection, glyph: IconName, badge?: number) => {
     const current = model.section === section ? ` aria-current="page"` : "";
     const count = badge !== undefined && badge > 0 ? `<span class="badge">${badge}</span>` : "";
     const extra = id === "open-settings" ? ` id="open-settings"` : "";
-    return `<a class="nav-link" href="${href}"${current}${extra}>${escapeHtml(label)}${count}</a>`;
+    return `<a class="nav-link" href="${href}"${current}${extra}><span class="nav-label">${icon(glyph)}${escapeHtml(label)}</span>${count}</a>`;
   };
   const repos = board.repos
     .map((group) => {
@@ -170,17 +178,17 @@ function navHtml(model: AppModel): string {
     })
     .join("");
   return `<nav class="side" aria-label="Sections">
-${item("/", "pipeline", "Pipeline", "pipeline")}
-${item("/inbox", "inbox", "Inbox", "inbox", board.inboxCount)}
+${item("/", "pipeline", "Pipeline", "pipeline", "pipeline")}
+${item("/inbox", "inbox", "Inbox", "inbox", "inbox", board.inboxCount)}
 <p class="unseen" id="inbox-unseen" hidden></p>
-${item("/hand", "hand", "Needs a hand", "hand", board.handCount)}
-${item("/repos", "repos", "Repos", "repos")}
+${item("/hand", "hand", "Needs a hand", "hand", "hand", board.handCount)}
+${item("/repos", "repos", "Repos", "repos", "repos")}
 ${repos}
-${item("/history", "history", "History", "history", board.history.length)}
-${item("/stats", "stats", "Stats", "stats")}
-${item("/report", "report", "Today", "report")}
-${item("/triggers", "triggers", "Triggers", "triggers")}
-${item("/settings", "open-settings", "Settings", "settings")}
+${item("/history", "history", "History", "history", "history", board.history.length)}
+${item("/stats", "stats", "Stats", "stats", "stats")}
+${item("/report", "report", "Today", "report", "today")}
+${item("/triggers", "triggers", "Triggers", "triggers", "triggers")}
+${item("/settings", "open-settings", "Settings", "settings", "settings")}
 </nav>`;
 }
 
