@@ -1,6 +1,6 @@
 # Kiln board style
 
-Rules for `kiln serve`. Tokens live in `assets/serve.css` between `tokens:start` and `tokens:end`. Screens use those variables. Raw px spacing and color literals outside that block fail `test/style.test.ts` (`npm test -w @lchase/kiln`).
+Rules for `kiln serve`. Shared tokens (type, spacing, radius) live in `assets/serve.css` between `tokens:start` and `tokens:end`. Color values live in `theme:<id>` blocks. Screens use the variables. Raw px spacing and color literals outside those blocks fail `test/style.test.ts` (`npm test -w @lchase/kiln`).
 
 ## Tokens
 
@@ -31,20 +31,25 @@ Type, on `--font-sans` (UI) or `--font-mono` (ids, meta, code):
 | `--text-lg` / `--leading-lg` | 20 / 28 page and drawer titles |
 | `--text-xl` / `--leading-xl` | 28 / 36 stats |
 
-Surfaces are a cool slate stack, flat, with no warm or purple tint in the chrome:
+Color tokens name roles. A theme replaces their values. It does not rename them, and it does not change spacing or radius.
 
-| Token | Slate | Role |
-| --- | --- | --- |
-| `--bg` | 950 | Page |
-| `--panel` | 900 | Nav, drawer, column |
-| `--card` | 800 | Card |
-| `--card-hover` `--line` | 700 | Hover and hairline |
-| `--line-strong` | 600 | Control border |
-| `--faint` | 500 | Tertiary text |
-| `--muted` | 400 | Secondary text |
-| `--ink` | 200 | Primary text |
-| `--primary` `--on-primary` | — | The one action accent (Approve, Add) and its label |
-| `--focus` `--code` | 300 | Focus ring and links |
+| Token | Role |
+| --- | --- |
+| `--bg` | Page |
+| `--panel` | Nav, drawer, column |
+| `--card` | Card |
+| `--card-hover` | Hover |
+| `--line` | Hairline |
+| `--line-strong` | Control border |
+| `--faint` | Tertiary text |
+| `--muted` | Secondary text |
+| `--ink` | Primary text |
+| `--primary` `--on-primary` | The one action accent (Approve, Add) and its label |
+| `--focus` `--code` | Focus ring and links |
+| `--code-bg` | Chip and code surface |
+| `--scrim` | Drawer overlay |
+
+The Kiln theme is a warmed neutral (Tailwind Stone surfaces, Kiln's own accent and state colors). It is the default. Other themes use that palette's own accent for `--primary`.
 
 State colors (say the word as well as the color):
 
@@ -92,6 +97,25 @@ State colors (say the word as well as the color):
 - More than 5: a searchable combobox (type to filter, arrows, Enter, Escape). The list stays in the field so it cannot overflow the drawer.
 - Never a single non-wrapping row of chips.
 - Repo uses this cutoff (`data-pick-limit`). Workflow uses the same cutoff (chips at four built-in names, a select past five). Source has four choices and stays chips.
+- That cutoff is for form fields (repo, workflow, source). A theme is a visual choice, not a field picker. It uses the swatch grid below, even though there are more than five.
+
+## Themes
+
+- The id is stored at `board.theme` in `kiln.config.json`. The settings API reads and writes it. A missing or unknown id resolves to `kiln`. A new config file starts as `kiln`.
+- The page sets `data-theme` on `<html>`. Each theme block is `[data-theme="<id>"]` and sets the same color custom properties. Kiln also applies through `:where(:root)`, so a page with no attribute is Kiln.
+- Choosing a swatch in Settings → Appearance applies that theme immediately and saves it. The swatch is a preview of that theme's page, sidebar, card, and accent. It is not a combobox and not a chip row.
+- Light themes set `color-scheme: light`. Dark themes set `color-scheme: dark`. State stays a labeled chip. `--primary` stays the action button only.
+- To add a theme: add its id to `BOARD_THEME_IDS` and `BOARD_THEME_CHOICES` in `src/theme.ts`, then add a `/* theme:<id> */` block in `serve.css` with the same color properties as Kiln. Spacing and radius stay in the shared token block. The style test fails if a theme omits a color token or if a color literal lands outside the token and theme blocks.
+
+## Palette attribution
+
+Kiln adapts published palettes onto the tokens above. It does not vendor theme source.
+
+- **Kiln.** Tailwind Stone surfaces (the published stone hex ramp). Accent `#6d4aff` and the state colors are Kiln's. Tailwind is MIT, copyright Tailwind Labs.
+- **Nord.** Official Nord polar night, snow storm, frost, and aurora. MIT, copyright Sven Greb. https://www.nordtheme.com/docs/colors-and-palettes
+- **Gruvbox Dark and Gruvbox Light.** Official Gruvbox (`morhetz/gruvbox`): dark uses the bright accents, light uses the faded accents. MIT/X11.
+- **Catppuccin** Mocha, Macchiato, Frappé, and Latte. Official palette 1.8.0. Mauve is the accent. MIT, copyright Catppuccin. https://catppuccin.com/palette
+- **Monospace Dark and Monospace Light.** Published UI colors from Keksi's Monospace theme (`keksiqc/monospace-theme`, MIT, copyright 2024 Keksi), as carried in the Orca port `faisalmuhammad/orca-monospace-themes`. The upstream theme is a modification of the Google IDX theme. This board uses the palette only.
 
 ## Tables and lists
 
@@ -117,7 +141,7 @@ State colors (say the word as well as the color):
 
 ## Checklist for any new screen
 
-- Spacing, type, radius, and color come from tokens. The style guard passes.
+- Spacing, type, radius, and color come from tokens. Colors come from the active theme. The style guard passes.
 - The screen follows the Don't list: no card bars, glow, washes, or all-caps eyebrows.
 - The screen uses the page gutter and stays within `--content-max`.
 - Drawer content is padded on all sides. The footer is sticky. The primary action is on the right, Cancel on its left.
