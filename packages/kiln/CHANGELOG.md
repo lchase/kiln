@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/lchase/kiln/compare/kiln-v0.14.0...kiln-v0.15.0) (2026-11-09)
+
+
+### Features
+
+* readable inbox, pipeline view, and job detail ([#54](https://github.com/lchase/kiln/issues/54)) ([268881a](https://github.com/lchase/kiln/commit/268881ae7a6389691cf58a06a3c77dfdc0d21a54))
+
 ## [0.14.0](https://github.com/lchase/kiln/compare/kiln-v0.13.0...kiln-v0.14.0) (2026-11-09)
 
 
