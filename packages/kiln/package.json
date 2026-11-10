@@ -1,6 +1,6 @@
 {
   "name": "@lchase/kiln",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "Run a workflow on any registered repo. A markdown spec is the input.",
   "license": "MIT",
   "type": "module",
@@ -35,7 +35,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@lchase/yak": "0.9.0",
+    "@lchase/yak": "0.10.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
