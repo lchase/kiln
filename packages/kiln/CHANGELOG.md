@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.18.0](https://github.com/lchase/kiln/compare/kiln-v0.17.0...kiln-v0.18.0) (2026-11-10)
+
+
+### Features
+
+* load local workflows, prompts, and skills from the kiln home ([#61](https://github.com/lchase/kiln/issues/61)) ([bed58e8](https://github.com/lchase/kiln/commit/bed58e8ca9f060c991470f80cedad6b930e2d937))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @lchase/yak bumped from 0.9.0 to 0.10.0
+
 ## [0.17.0](https://github.com/lchase/kiln/compare/kiln-v0.16.0...kiln-v0.17.0) (2026-11-09)
 
 

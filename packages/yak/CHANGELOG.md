@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/lchase/kiln/compare/yak-v0.9.0...yak-v0.10.0) (2026-11-10)
+
+
+### Features
+
+* load local workflows, prompts, and skills from the kiln home ([#61](https://github.com/lchase/kiln/issues/61)) ([bed58e8](https://github.com/lchase/kiln/commit/bed58e8ca9f060c991470f80cedad6b930e2d937))
+
 ## [0.9.0](https://github.com/lchase/kiln/compare/yak-v0.8.0...yak-v0.9.0) (2026-11-03)
 
 
