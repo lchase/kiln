@@ -73,6 +73,7 @@ function buildAdapter(
           ...(step.allowedDomains !== undefined ? { allowedDomains: step.allowedDomains } : {}),
         }
       : undefined,
+    step.skillDirs,
   )
 }
 

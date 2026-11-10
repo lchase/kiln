@@ -65,6 +65,11 @@ bug) for a guided walkthrough — also live at
   `claude-code` (real, wraps `@anthropic-ai/claude-agent-sdk`, also works
   against any Anthropic-compatible local model server via
   `ANTHROPIC_BASE_URL`). Selected with `yak run --adapter mock|claude-code`.
+- **Skill directories:** an agent step may set `skillDirs` to absolute host
+  directories of Claude Code skills (`<name>/SKILL.md`). The claude-code
+  adapter offers them to the Skill tool. With `sandbox: docker` it
+  bind-mounts only those directories, read-only, and does not mount
+  `~/.claude`. Omitting `skillDirs` leaves the spawn arguments unchanged.
 
 Full behavior reference: `spec.md`. Release process and commit
 conventions: `CONTRIBUTING.md`.

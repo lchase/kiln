@@ -1,3 +1,4 @@
+import { mkdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -115,6 +116,29 @@ describe('ClaudeCodeAdapter', () => {
       allowDangerouslySkipPermissions: true,
     })
     expect(call.options?.resume).toBeUndefined()
+  })
+
+  it('offers configured skill directories through additionalDirectories and removes the wrapper after the call', async () => {
+    const { ClaudeCodeAdapter } = await import('../../src/adapters/claude-code.js')
+    const skillRoot = await mkdtemp(path.join(tmpdir(), 'yak-skill-host-'))
+    const skillDir = path.join(skillRoot, 'skills')
+    mkdirSync(path.join(skillDir, 'widget'), { recursive: true })
+    writeFileSync(path.join(skillDir, 'widget', 'SKILL.md'), '---\nname: widget\ndescription: Fictional\n---\n\n')
+    const real = realpathSync(skillDir)
+    let seen: string | undefined
+    queryMock.mockImplementation((params) => {
+      seen = params.options?.additionalDirectories?.[0]
+      expect(params.options?.settingSources).toBeUndefined()
+      expect(seen).toBeTruthy()
+      expect(readlinkSync(path.join(seen!, '.claude', 'skills', 'widget'))).toBe(path.join(real, 'widget'))
+      return fakeQuery([resultSuccess()])
+    })
+
+    const adapter = new ClaudeCodeAdapter(runDir, 'plan', undefined, [skillDir])
+    await adapter.run(baseReq)
+    expect(seen).toBeTruthy()
+    expect(() => readlinkSync(path.join(seen!, '.claude', 'skills', 'widget'))).toThrow()
+    rmSync(skillRoot, { recursive: true, force: true })
   })
 
   it('maps a sessionId on the request to options.resume', async () => {
@@ -392,5 +416,9 @@ describe('dockerAgentRunArgs', () => {
   it('does not mount ~/.claude or any host config directory', () => {
     const result = args(undefined)
     expect(result.some((a) => a.includes('.claude'))).toBe(false)
+  })
+
+  it('adds no skill mounts when the list is empty', () => {
+    expect(args(undefined)).toEqual(dockerAgentRunArgs(undefined, '/work', 'net1', 'http://net1-proxy:3128', ['--print', 'hi'], {}))
   })
 })

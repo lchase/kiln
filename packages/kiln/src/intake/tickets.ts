@@ -81,14 +81,14 @@ export function importTickets(config: LoadedKilnConfig, input: ImportTicketsInpu
   }
 
   const requested = input.workflow ?? "feature";
-  assertWorkflowName(requested);
+  assertWorkflowName(requested, config.overlay.workflowsDir);
   const context = resolveContext(dirAbs, input.contextPath, input.cwd);
   const tickets = readTickets(dirAbs);
   const warnings: string[] = [];
   const workflows = new Map<string, string>();
   for (const ticket of tickets) {
     const workflow = workflowFor(ticket, requested);
-    if (workflow !== requested) assertWorkflowName(workflow);
+    if (workflow !== requested) assertWorkflowName(workflow, config.overlay.workflowsDir);
     workflows.set(ticket.path, workflow);
   }
   if (input.stack) {

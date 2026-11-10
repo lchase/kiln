@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { KilnConfigError } from "./errors.js";
@@ -87,6 +87,15 @@ export interface LoadedKilnConfig {
   routes: RouteConfig[];
   /** Absolute path of the reviewer prompt, when the config sets one. */
   reviewPrompt?: string;
+  /**
+   * Local workflows, prompts, and skills beside the published package.
+   * Missing directories are empty. `skillDirs` lists only directories that exist.
+   */
+  overlay: {
+    workflowsDir: string;
+    promptsDir: string;
+    skillDirs: string[];
+  };
   /** Board palette. Missing or unknown config values are `kiln`. */
   boardTheme: BoardThemeId;
 }
@@ -166,6 +175,7 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
     ...(parsed.data.reviewPrompt
       ? { reviewPrompt: resolveConfiguredPath(configDir, parsed.data.reviewPrompt, home) }
       : {}),
+    overlay: overlayFrom(configDir, home, parsed.data.overlay),
     boardTheme: resolveBoardTheme(parsed.data.board?.theme),
   };
 }
@@ -412,6 +422,55 @@ function pathToStore(userPath: string, cwd: string, home: string): string {
   if (userPath === "~" || userPath.startsWith("~/")) return userPath;
   if (isAbsolute(userPath)) return userPath;
   return resolve(cwd, userPath);
+}
+
+function overlayFrom(
+  configDir: string,
+  home: string,
+  overlay: { workflows?: string; prompts?: string; skills?: string; skillPaths?: string[] } | undefined,
+): LoadedKilnConfig["overlay"] {
+  const workflowsDir = optionalDirectory(
+    overlay?.workflows ? resolveConfiguredPath(configDir, overlay.workflows, home) : join(configDir, "workflows"),
+    "overlay.workflows",
+  );
+  const promptsDir = optionalDirectory(
+    overlay?.prompts ? resolveConfiguredPath(configDir, overlay.prompts, home) : join(configDir, "prompts"),
+    "overlay.prompts",
+  );
+  const skillsRoot = optionalDirectory(
+    overlay?.skills ? resolveConfiguredPath(configDir, overlay.skills, home) : join(configDir, "skills"),
+    "overlay.skills",
+  );
+  const extras = (overlay?.skillPaths ?? []).map((value, index) =>
+    optionalDirectory(resolveConfiguredPath(configDir, value, home), `overlay.skillPaths.${index}`),
+  );
+  return { workflowsDir, promptsDir, skillDirs: existingSkillDirs([skillsRoot, ...extras]) };
+}
+
+/** A missing path is empty. A path that exists and is not a directory is a config error. */
+function optionalDirectory(resolved: string, label: string): string {
+  if (existsSync(resolved) && !statSync(resolved).isDirectory()) {
+    throw new KilnConfigError(`${label} must be a directory: ${resolved}.`);
+  }
+  return resolved;
+}
+
+function existingSkillDirs(paths: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const dir of paths) {
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) continue;
+    let key = dir;
+    try {
+      key = realpathSync(dir);
+    } catch {
+      key = dir;
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(dir);
+  }
+  return out;
 }
 
 function workflowSandboxFrom(

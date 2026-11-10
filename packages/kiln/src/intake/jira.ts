@@ -78,7 +78,7 @@ export async function addFromJira(config: LoadedKilnConfig, input: AddJiraInput)
     }
   }
   assertKnownRepo(config, input.repo);
-  assertWorkflowName(input.workflow);
+  assertWorkflowName(input.workflow, config.overlay.workflowsDir);
 
   const existing = existingJiraJob(config, key);
   if (existing) {
@@ -97,7 +97,7 @@ export async function addFromJira(config: LoadedKilnConfig, input: AddJiraInput)
   const issue = parseIssue(key, parseJson(issueResponse.body, key), acceptanceField);
   const warnings: string[] = [];
   const workflow = workflowForSpike(typeLooksLikeSpike(issue.issueType), input.workflow);
-  if (workflow === INVESTIGATION_WORKFLOW) assertWorkflowName(workflow);
+  if (workflow === INVESTIGATION_WORKFLOW) assertWorkflowName(workflow, config.overlay.workflowsDir);
   const dependsOn = mergeDepends(dependencyIds(config, issue.blockedBy, warnings), input.dependsOn);
   assertDependsExist(config, dependsOn);
   const specText = jiraIssueSpec({

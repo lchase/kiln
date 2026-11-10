@@ -116,12 +116,14 @@ import {
 } from "./triggers.js";
 import {
   assertWorkflowName,
+  installedYakLoadsSkillDirs,
   leafStepIds,
   materializeWorkflow,
   REVIEW_WORKFLOW,
   workflowInputs,
   workflowNeedsTestCommand,
   workflowStepPlan,
+  type MaterializeOptions,
 } from "./workflow.js";
 
 interface JournalEvent {
@@ -322,7 +324,7 @@ export function cancelQueuedJobs(
     if (options.repo && !config.repos[options.repo]) {
       throw new Error(`Unknown repo ${options.repo}.`);
     }
-    if (options.workflow) assertWorkflowName(options.workflow);
+    if (options.workflow) assertWorkflowName(options.workflow, config.overlay.workflowsDir);
     const now = options.now ?? new Date();
     const world = observe(config, host, now);
     const cancelled: string[] = [];
@@ -545,7 +547,7 @@ function observe(config: LoadedKilnConfig, host: KilnHost, now = new Date()): Wo
       ? reviewPostForJob(events, { jobId: entry.job.id, repo: entry.job.repo, source: entry.job.source })
       : {};
     const logTail = readLogTail(logPath);
-    const stepPlan = entry.job ? workflowStepPlan(entry.job.workflow) : undefined;
+    const stepPlan = entry.job ? workflowStepPlan(entry.job.workflow, config.overlay.workflowsDir) : undefined;
     const diffSummary =
       run &&
       run.status === "suspended" &&
@@ -1205,13 +1207,15 @@ function launchFixRun(
 ): LaunchReport {
   const refused = claudeCredentialPreflight(process.env, config.adapter);
   if (refused) return { jobId: job.id, repo: job.repo, kind: "fix", output: refused };
-  const sourceWorkflow = readFileSync(join(packageRoot(), "workflows", "fix.yaml"), "utf8");
-  const workflow = materializeWorkflow(config.kilnDir, job.id, "fix");
+  const sourceWorkflow = readFileSync(assertWorkflowName("fix", config.overlay.workflowsDir), "utf8");
+  const workflow = materializeWorkflow(config.kilnDir, job.id, "fix", overlayMaterialize(config));
   const repo = config.repos[job.repo];
   const logPath = join(config.kilnDir, "logs", `${jobBasename(job.id)}.log`);
   mkdirSync(dirname(logPath), { recursive: true });
   const blocked = commitAgentSandbox(config, job.id, "fix", workflow, logPath, sandboxFacts);
   if (blocked) return { jobId: job.id, repo: job.repo, kind: "fix", output: blocked };
+  const skills = skillDirBlock(config, job.id, logPath);
+  if (skills) return { jobId: job.id, repo: job.repo, kind: "fix", output: skills };
   const hash = promptsHash("fix", config.kilnDir, job.id);
   ensureCheckoutExcludes(checkout);
   const input = workflowInputs(sourceWorkflow, {
@@ -1262,6 +1266,31 @@ function sandboxBlock(
  * Inject `sandbox: docker` into a materialized workflow and refuse the launch
  * when preflight fails. The refusal is a launch error with no yak process.
  */
+function overlayMaterialize(config: LoadedKilnConfig): MaterializeOptions {
+  return {
+    workflowsDir: config.overlay.workflowsDir,
+    promptsDir: config.overlay.promptsDir,
+    ...(config.reviewPrompt ? { reviewPrompt: config.reviewPrompt } : {}),
+    ...(config.overlay.skillDirs.length > 0 ? { skillDirs: config.overlay.skillDirs } : {}),
+  };
+}
+
+/**
+ * Refuse a claude-code launch whose skill directories the installed yak would
+ * drop while loading workflow YAML. Mock runs and launches with no skill
+ * directories are unchanged.
+ */
+function skillDirBlock(config: LoadedKilnConfig, jobId: string, logPath: string): string | undefined {
+  if (config.adapter !== "claude-code" || config.overlay.skillDirs.length === 0) return undefined;
+  if (installedYakLoadsSkillDirs()) return undefined;
+  const message =
+    "Installed @lchase/yak does not load agent.skillDirs, so local skills would be ignored. Upgrade @lchase/yak before launching with skill directories configured.";
+  writeLaunchError(config.kilnDir, jobId, message);
+  mkdirSync(dirname(logPath), { recursive: true });
+  writeFileSync(logPath, `${message}\n`);
+  return message;
+}
+
 function commitAgentSandbox(
   config: LoadedKilnConfig,
   jobId: string,
@@ -1373,16 +1402,14 @@ function launchJob(
   const feedback = readFeedbackLedger(config.kilnDir, job.id);
   const open = feedback && feedback !== "corrupt" ? openFeedbackRound(feedback) : undefined;
   if (open) return launchOpenFix(config, world, job, host, repo.path, open, sandboxFacts);
-  const sourceWorkflow = readFileSync(join(packageRoot(), "workflows", `${job.workflow}.yaml`), "utf8");
+  const sourceWorkflow = readFileSync(assertWorkflowName(job.workflow, config.overlay.workflowsDir), "utf8");
   const testCommand = repo.test;
   if (workflowNeedsTestCommand(sourceWorkflow) && !testCommand?.trim()) {
     throw new Error(
       `Repo ${job.repo} has no test command. Set repos.${job.repo}.test. The feature workflow refuses to run an empty KILN_TEST.`,
     );
   }
-  const workflow = materializeWorkflow(config.kilnDir, job.id, job.workflow, {
-    ...(config.reviewPrompt ? { reviewPrompt: config.reviewPrompt } : {}),
-  });
+  const workflow = materializeWorkflow(config.kilnDir, job.id, job.workflow, overlayMaterialize(config));
   const logPath = join(config.kilnDir, "logs", `${jobBasename(job.id)}.log`);
   mkdirSync(dirname(logPath), { recursive: true });
   ensureCheckoutExcludes(repo.path);
@@ -1393,6 +1420,8 @@ function launchJob(
     clearLaunchError(config.kilnDir, job.id);
     const blocked = commitAgentSandbox(config, job.id, job.workflow, workflow, logPath, sandboxFacts);
     if (blocked) return { jobId: job.id, repo: job.repo, output: blocked };
+    const skills = skillDirBlock(config, job.id, logPath);
+    if (skills) return { jobId: job.id, repo: job.repo, output: skills };
     assertStackTarget(world, job);
     const pinned = reviewHeadOf(job);
     if (pinned) {

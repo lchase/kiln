@@ -5,7 +5,9 @@
 # draft as a pull request comment. Kiln does not approve the pull request
 # or merge it. Rejecting or revising does not post.
 #
-# `reviewPrompt` in the kiln config replaces prompts/kiln/review.md.
+# `reviewPrompt` in the kiln config is the overlay file for prompts/kiln/review.md.
+# When it is set, that file wins over a local prompts/kiln/review.md and over
+# the packaged prompt. Without it, a file in the kiln home prompts/ tree wins.
 # The packaged file is the generic default.
 #
 # `adapter: "mock"` reads `test/fixtures/kiln-review/draft.json` from the checkout.
