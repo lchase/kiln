@@ -881,6 +881,61 @@ describe("serve config reload", () => {
     }
   });
 
+  it("previews a Jira browse URL and stores the summary without an issue or title field", async () => {
+    const { cwd, home } = workDir("kiln-serve-jira-url-");
+    const web = join(home, "web");
+    mkdirSync(web);
+    register(cwd, home, "web", web);
+    useMock(home);
+    const stub = await jiraStub(TOKEN);
+    const server = await startServe(["--port", "0", "--no-tick"], {
+      cwd,
+      home,
+      env: { JIRA_BASE_URL: stub.url, JIRA_EMAIL: EMAIL, JIRA_API_TOKEN: TOKEN },
+    });
+    try {
+      const csrf = csrfFrom((await text(`${server.url}/`)).body);
+      const browse = `${stub.url}/browse/proj-1/extra?focusedCommentId=9`;
+      const wrong = await postJob(server.url, csrf, {
+        repo: "web",
+        workflow: "feature",
+        source: { kind: "jira", key: "https://other.example.net/browse/PROJ-1" },
+      });
+      assert.equal(wrong.status, 400, wrong.body);
+      assert.match(JSON.parse(wrong.body).error, /does not match the configured Jira host/);
+      assert.equal(existsSync(join(home, ".kiln", "jobs")), false);
+
+      const dry = await postJob(server.url, csrf, {
+        repo: "web",
+        workflow: "feature",
+        dryRun: true,
+        source: { kind: "jira", key: browse },
+      });
+      assert.equal(dry.status, 200, dry.body);
+      const preview = JSON.parse(dry.body) as { dryRun: boolean; report: string; ids: string[] };
+      assert.equal(preview.dryRun, true);
+      assert.deepEqual(preview.ids, []);
+      assert.match(preview.report, /title Show a quiet empty state/);
+      assert.equal(existsSync(join(home, ".kiln", "jobs")), false);
+
+      const created = await postJob(server.url, csrf, {
+        repo: "web",
+        workflow: "feature",
+        source: { kind: "jira", key: browse },
+      });
+      assert.equal(created.status, 200, created.body);
+      const job = readJobs(home)[0];
+      assert.ok(job);
+      assert.equal(job.title, "Show a quiet empty state");
+      assert.equal(job.issue, "PROJ-1");
+      assert.deepEqual(job.source, { kind: "jira", ref: "PROJ-1" });
+      assert.equal(specOf(home, job).includes(TOKEN), false);
+    } finally {
+      await stop(server.child);
+      await stub.close();
+    }
+  });
+
   it("ticks a repo that was registered after serve started", { timeout: 120_000 }, async () => {
     const { cwd, home } = workDir("kiln-serve-tick-repo-");
     const web = join(home, "web");
