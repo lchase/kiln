@@ -1107,11 +1107,37 @@
     return body;
   }
 
+  function safePaint(value) {
+    var color = String(value || "").trim();
+    if (!color || /["'<>\\]/.test(color)) return "";
+    return color;
+  }
+
+  function paintFavicon() {
+    if (typeof getComputedStyle !== "function") return;
+    var link = document.querySelector('link[rel="icon"]');
+    if (!link || !link.getAttribute || !link.setAttribute) return;
+    var styles = getComputedStyle(document.documentElement);
+    if (!styles || !styles.getPropertyValue) return;
+    var fill = safePaint(styles.getPropertyValue("--primary"));
+    var stroke = safePaint(styles.getPropertyValue("--on-primary"));
+    if (!fill || !stroke) return;
+    var href = link.getAttribute("href") || "";
+    var prefix = "data:image/svg+xml,";
+    if (href.indexOf(prefix) !== 0) return;
+    var svg = decodeURIComponent(href.slice(prefix.length));
+    var next = svg
+      .replace(/(<rect\b[^>]*\bfill=")[^"]+(")/, "$1" + fill + "$2")
+      .replace(/(stroke=")[^"]+(")/, "$1" + stroke + "$2");
+    if (next !== svg) link.setAttribute("href", prefix + encodeURIComponent(next));
+  }
+
   function chooseTheme(id) {
     if (!id) return;
     settingsEpoch += 1;
     document.documentElement.setAttribute("data-theme", id);
     markTheme(id);
+    paintFavicon();
     themeQueued = id;
     if (!themeSaving) pumpTheme();
   }
@@ -1167,6 +1193,7 @@
   function restoreTheme() {
     document.documentElement.setAttribute("data-theme", themeApplied);
     markTheme(themeApplied);
+    paintFavicon();
   }
 
   function bodyCsrf() {
@@ -1222,6 +1249,7 @@
       themeApplied = themeId;
       document.documentElement.setAttribute("data-theme", themeId);
       markTheme(themeId);
+      paintFavicon();
     }
     if (editing && editing.original && Object.prototype.hasOwnProperty.call(repoDraft, editing.original)) {
       fillEditor(editing.original, repoDraft[editing.original]);

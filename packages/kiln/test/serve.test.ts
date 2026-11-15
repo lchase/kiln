@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
+import vm from "node:vm";
 import { buildAttention } from "../src/attention.js";
 import { packageRoot } from "../src/paths.js";
 import type { StatusJobView } from "../src/report.js";
@@ -257,7 +258,12 @@ describe("serve pages", () => {
 
     const css = readFileSync(join(packageRoot(), "assets", "serve.css"), "utf8");
     const tokens = css.slice(css.indexOf("/* tokens:start */"), css.indexOf("/* tokens:end */"));
-    const kiln = css.slice(css.indexOf("/* theme:kiln */"), css.indexOf("/* theme:end */", css.indexOf("/* theme:kiln */")));
+    const themeBlock = (id: string) => {
+      const start = css.indexOf(`/* theme:${id} */`);
+      assert.ok(start !== -1, id);
+      const end = css.indexOf("/* theme:end */", start);
+      return css.slice(start, end);
+    };
     const decl = (block: string, name: string) => {
       const found = block.match(new RegExp(`${name}:\\s*([^;]+);`));
       assert.ok(found?.[1], name);
@@ -266,6 +272,8 @@ describe("serve pages", () => {
     const badge = Number.parseInt(decl(tokens, "--logo"), 10);
     const radius = Number.parseInt(decl(tokens, "--radius-md"), 10);
     const glyph = Number.parseInt(decl(tokens, "--icon"), 10);
+    const kiln = themeBlock("kiln");
+    const gruvbox = themeBlock("gruvbox-dark");
     const fill = decl(kiln, "--primary");
     const stroke = decl(kiln, "--on-primary");
     const logo = css.match(/\.logo\s*\{[^}]+\}/)?.[0] ?? "";
@@ -282,9 +290,123 @@ describe("serve pages", () => {
     assert.ok(svg.indexOf("<rect ") < svg.indexOf("<path "));
     assert.equal(radius / badge, 4 / 28);
 
+    const paint = (theme: "kiln" | "gruvbox-dark") =>
+      renderConsole(css, buildAttention([]), { csrf: "", repos: [], workflows: [], section: "pipeline", theme });
+    const iconFill = (html: string) => {
+      const icon = html.match(/<link rel="icon" type="image\/svg\+xml" href="(data:image\/svg\+xml,[^"]+)">/);
+      assert.ok(icon?.[1]);
+      const decoded = decodeURIComponent(icon[1].slice("data:image/svg+xml,".length));
+      const rect = decoded.match(/<rect[^>]*fill="([^"]+)"/);
+      assert.ok(rect?.[1]);
+      return rect[1];
+    };
+    const kilnFill = iconFill(paint("kiln"));
+    const gruvboxFill = iconFill(paint("gruvbox-dark"));
+    assert.equal(kilnFill, decl(kiln, "--primary"));
+    assert.equal(gruvboxFill, decl(gruvbox, "--primary"));
+    assert.notEqual(kilnFill, gruvboxFill);
+
     for (const other of [renderMessagePage("", "Not found", "Not found."), renderTextPage("", "Spec", "body")]) {
       assert.match(other, /<link rel="icon" type="image\/svg\+xml" href="data:image\/svg\+xml,/);
     }
+  });
+
+  it("repaints the tab icon when the board theme changes", () => {
+    const css = readFileSync(join(packageRoot(), "assets", "serve.css"), "utf8");
+    const block = (id: string) => {
+      const start = css.indexOf(`/* theme:${id} */`);
+      const end = css.indexOf("/* theme:end */", start);
+      return css.slice(start, end);
+    };
+    const color = (id: string, name: string) => {
+      const found = block(id).match(new RegExp(`${name}:\\s*(#[0-9a-fA-F]{3,8})`));
+      assert.ok(found?.[1], `${id} ${name}`);
+      return found[1];
+    };
+    const html = renderConsole(css, buildAttention([]), { csrf: "", repos: [], workflows: [], section: "settings", theme: "kiln" });
+    const initial = html.match(/href="(data:image\/svg\+xml,[^"]+)"/)?.[1];
+    assert.ok(initial);
+    const attrs: Record<string, string> = { rel: "icon", href: initial };
+    const link = {
+      attrs,
+      getAttribute: (key: string) => attrs[key] ?? null,
+      setAttribute: (key: string, value: string) => {
+        attrs[key] = value;
+      },
+    };
+    const documentElement = {
+      attrs: { "data-theme": "kiln" } as Record<string, string>,
+      getAttribute(key: string) {
+        return this.attrs[key] ?? null;
+      },
+      setAttribute(key: string, value: string) {
+        this.attrs[key] = value;
+      },
+    };
+    const themeButton = {
+      getAttribute: (key: string) => (key === "data-theme-choice" ? "gruvbox-dark" : null),
+      closest: (sel: string) => (sel === "#theme-pick [data-theme-choice]" ? themeButton : null),
+    };
+    const listeners: Record<string, (event: { target: typeof themeButton }) => void> = {};
+    const document = {
+      body: { getAttribute: () => "", classList: { add() {}, remove() {} } },
+      documentElement,
+      title: "",
+      getElementById: () => null,
+      querySelector: (sel: string) => (sel === 'link[rel="icon"]' ? link : null),
+      querySelectorAll: () => [],
+      addEventListener: (type: string, fn: (event: { target: typeof themeButton }) => void) => {
+        listeners[type] = fn;
+      },
+    };
+    const context = vm.createContext({
+      document,
+      localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+      sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+      fetch: () => new Promise(() => {}),
+      getComputedStyle: () => ({
+        getPropertyValue: (name: string) => {
+          const id = documentElement.getAttribute("data-theme") ?? "kiln";
+          if (name === "--primary") return color(id, "--primary");
+          if (name === "--on-primary") return color(id, "--on-primary");
+          return "";
+        },
+      }),
+      setInterval: () => 0,
+      setTimeout,
+      clearTimeout,
+      clearInterval,
+      console,
+      Promise,
+      Date,
+      Number,
+      String,
+      Boolean,
+      JSON,
+      Object,
+      Array,
+      Math,
+      Error,
+      RegExp,
+      isFinite,
+      isNaN,
+      parseInt,
+      parseFloat,
+      encodeURIComponent,
+      decodeURIComponent,
+      undefined,
+      NaN,
+      Infinity,
+    });
+    vm.runInContext(readFileSync(join(packageRoot(), "assets", "serve.js"), "utf8"), context);
+    const click = listeners.click;
+    assert.ok(click);
+    click({ target: themeButton });
+    const next = decodeURIComponent(link.getAttribute("href")?.slice("data:image/svg+xml,".length) ?? "");
+    assert.match(next, new RegExp(`fill="${color("gruvbox-dark", "--primary")}"`));
+    assert.match(next, new RegExp(`stroke="${color("gruvbox-dark", "--on-primary")}"`));
+    assert.doesNotMatch(next, new RegExp(`fill="${color("kiln", "--primary")}"`));
+    assert.equal(documentElement.getAttribute("data-theme"), "gruvbox-dark");
   });
 
   it("escapes job text and does not link a javascript pull request url", () => {

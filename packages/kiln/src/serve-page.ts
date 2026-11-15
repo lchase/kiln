@@ -71,29 +71,54 @@ export interface AppModel {
 
 const LIVE_SCRIPT = readFileSync(join(packageRoot(), "assets", "serve.js"), "utf8");
 
-/**
- * Sidebar `.logo` tile: `--logo` 28px, `--radius-md` 4px, glyph `--icon` 16px.
- * Fill and stroke are the kiln theme's `--primary` and `--on-primary`.
- */
+/** Sidebar `.logo` tile: `--logo` 28px, `--radius-md` 4px, glyph `--icon` 16px. */
 const FAVICON_BADGE = 28;
 const FAVICON_RADIUS = 4;
 const FAVICON_GLYPH = 16;
-const FAVICON_FILL = "#6d4aff";
-const FAVICON_STROKE = "#ffffff";
 
 /** Kiln mark in the sidebar brand. `place` positions that same SVG inside the favicon badge. */
 function kilnMark(stroke: string, place = ""): string {
   return `<svg ${place}xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="${stroke}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12V6l5-3 5 3v6l-5 3-5-3z"/><path d="M3 6l5 3 5-3M8 9v6"/></svg>`;
 }
 
-function faviconSvg(): string {
-  const offset = (FAVICON_BADGE - FAVICON_GLYPH) / 2;
-  const glyph = kilnMark(FAVICON_STROKE, `x="${offset}" y="${offset}" width="${FAVICON_GLYPH}" height="${FAVICON_GLYPH}" `);
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${FAVICON_BADGE} ${FAVICON_BADGE}"><rect width="${FAVICON_BADGE}" height="${FAVICON_BADGE}" rx="${FAVICON_RADIUS}" fill="${FAVICON_FILL}"/>${glyph}</svg>`;
+function boardStylesheet(): string {
+  return readFileSync(join(packageRoot(), "assets", "serve.css"), "utf8");
 }
 
-function faviconLink(): string {
-  return `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,${encodeURIComponent(faviconSvg())}">`;
+function themeBlock(css: string, theme: string): string {
+  const start = css.indexOf(`/* theme:${theme} */`);
+  if (start === -1) return "";
+  const end = css.indexOf("/* theme:end */", start);
+  return end === -1 ? "" : css.slice(start, end);
+}
+
+function declaredColor(block: string, name: string): string | undefined {
+  const match = block.match(new RegExp(`${name}:\\s*(#[0-9a-fA-F]{3,8})\\s*;`));
+  return match?.[1];
+}
+
+/** Accent and glyph colors from the theme block in `serve.css`. No palette of our own. */
+function themeAccent(css: string, theme: BoardThemeId): { fill: string; stroke: string } {
+  const source = css.includes("/* theme:") ? css : boardStylesheet();
+  const block =
+    themeBlock(source, theme) ||
+    themeBlock(source, DEFAULT_BOARD_THEME) ||
+    themeBlock(boardStylesheet(), DEFAULT_BOARD_THEME);
+  const fill = declaredColor(block, "--primary");
+  const stroke = declaredColor(block, "--on-primary");
+  if (!fill || !stroke) throw new Error(`Board theme ${theme} has no accent color.`);
+  return { fill, stroke };
+}
+
+function faviconSvg(fill: string, stroke: string): string {
+  const offset = (FAVICON_BADGE - FAVICON_GLYPH) / 2;
+  const glyph = kilnMark(stroke, `x="${offset}" y="${offset}" width="${FAVICON_GLYPH}" height="${FAVICON_GLYPH}" `);
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${FAVICON_BADGE} ${FAVICON_BADGE}"><rect width="${FAVICON_BADGE}" height="${FAVICON_BADGE}" rx="${FAVICON_RADIUS}" fill="${fill}"/>${glyph}</svg>`;
+}
+
+function faviconLink(css: string, theme: BoardThemeId): string {
+  const accent = themeAccent(css, theme);
+  return `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,${encodeURIComponent(faviconSvg(accent.fill, accent.stroke))}">`;
 }
 
 export function renderConsole(css: string, attention: AttentionView, page?: ServePageOptions): string {
@@ -1029,7 +1054,7 @@ function document(options: {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(options.title)}</title>
-${faviconLink()}
+${faviconLink(options.css, theme)}
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&family=Roboto+Mono:wght@400;500&display=swap">
 <style>
 ${options.css}
