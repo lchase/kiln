@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { packageRoot } from "../src/paths.js";
+import { formatVersionReport } from "../src/version.js";
 
 const root = packageRoot();
 const keep: string[] = [];
@@ -239,6 +240,21 @@ describe("kiln cli", () => {
     assert.equal(listed.status, 0, listed.stderr);
     assert.ok(listed.stdout.includes(`web  ${web}  test npm test`), listed.stdout);
     assert.doesNotMatch(listed.stdout, /decoy/);
+  });
+
+  it("prints kiln and yak versions from the shared helper", () => {
+    const { cwd, home } = tempWork();
+    const expected = formatVersionReport();
+    const version = runCli(["--version"], { cwd, home });
+    assert.equal(version.status, 0, version.stderr);
+    assert.equal(version.stderr, "");
+    assert.equal(version.stdout, expected);
+    const short = runCli(["-v"], { cwd, home });
+    assert.equal(short.status, 0, short.stderr);
+    assert.equal(short.stdout, expected);
+    const extra = runCli(["--version", "--config", "nope.json"], { cwd, home });
+    assert.equal(extra.status, 2);
+    assert.match(extra.stderr, /kiln --version/);
   });
 });
 

@@ -11,6 +11,7 @@ import { addFromJira } from "./intake/jira.js";
 import { addFromPrompt } from "./intake/prompt.js";
 import { importTickets } from "./intake/tickets.js";
 import { renderAddedJob } from "./jobs.js";
+import { formatVersionReport } from "./version.js";
 
 function usage(): never {
   console.error(
@@ -31,6 +32,7 @@ function usage(): never {
       "       kiln ledger [--since 7d] [--repo <name>] [--config <file>]",
       "       kiln sandbox [build] [--config <file>]",
       "       kiln serve [--port 4100] [--tick <seconds>|--no-tick] [--config <file>]",
+      "       kiln --version",
       "",
       "repo add registers a checkout and prints the deliver mode (default local)",
       "and how to change it. Adding an existing name updates that repo in place.",
@@ -118,7 +120,10 @@ function usage(): never {
       "request and each tick, serve re-reads the kiln config when the file's",
       "mtime or size changed. A file that fails to load keeps the last good",
       "config. A tick runs every 30 seconds unless --no-tick is set, using the",
-      "tick lock.",
+      "tick lock. Startup prints the kiln and yak versions, Node, the kiln home,",
+      "the board URL, the tick interval, pause, and sandbox mode, then a count of",
+      "local workflows, prompt overrides, and skill directories.",
+      "kiln --version (and kiln -v) prints the kiln version and the yak version.",
       "",
       "sandbox prints the resolved mode, allowlist, and anything missing before a",
       "sandboxed run can start. sandbox build builds the yak agent and proxy images",
@@ -611,6 +616,11 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const command = argv[0];
   if (!command || command === "--help" || command === "-h" || command === "help") usage();
+  if (command === "--version" || command === "-v") {
+    if (argv.length !== 1) usage();
+    process.stdout.write(formatVersionReport());
+    return;
+  }
   if (command === "repo") {
     repoCommand(argv.slice(1));
     return;
