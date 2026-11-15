@@ -6,6 +6,8 @@ import { jobBasename, packageRoot } from "./paths.js";
 
 const FACTORY_DIRECTIVE = /^<!--\s*factory:\s*(prompts\/factory\/[a-z0-9-]+\.md)\s*-->/;
 const WORKFLOW_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/** Relative path `readPromptFile` accepts. The startup count uses this same test. */
+const PROMPT_PATH = /^prompts\/[a-z0-9-]+\/[a-z0-9-]+\.md$/;
 const FEATURE_PROMPTS = 7;
 const INVESTIGATION_PROMPTS = 1;
 const FIX_PROMPTS = 1;
@@ -296,13 +298,11 @@ function writeCombinedPrompt(preambleRel: string, destDir: string, options: Mate
  * file for `prompts/kiln/review.md` and wins over both when it is set.
  */
 function readPromptFile(rel: string, options: MaterializeOptions): string {
-  if (!/^prompts\/[a-z0-9-]+\/[a-z0-9-]+\.md$/.test(rel)) {
+  if (!PROMPT_PATH.test(rel)) {
     throw new Error(`Prompt path ${rel} is not under prompts/.`);
   }
   if (rel === "prompts/kiln/review.md" && options.reviewPrompt) {
-    if (!existsSync(options.reviewPrompt) || !statSync(options.reviewPrompt).isFile()) {
-      throw new Error("Review prompt file was not found.");
-    }
+    if (!isFile(options.reviewPrompt)) throw new Error("Review prompt file was not found.");
     return readFileSync(options.reviewPrompt, "utf8");
   }
   if (options.promptsDir) {
@@ -311,16 +311,14 @@ function readPromptFile(rel: string, options: MaterializeOptions): string {
     if (local !== options.promptsDir && !local.startsWith(root)) {
       throw new Error(`${rel} escapes the local prompts directory.`);
     }
-    if (existsSync(local) && statSync(local).isFile()) return readFileSync(local, "utf8");
+    if (isFile(local)) return readFileSync(local, "utf8");
   }
   const packaged = join(packageRoot(), rel);
   const packagedRoot = join(packageRoot(), "prompts") + sep;
   if (!packaged.startsWith(packagedRoot)) {
     throw new Error(`${rel} escapes prompts/.`);
   }
-  if (!existsSync(packaged) || !statSync(packaged).isFile()) {
-    throw new Error(`Prompt file was not found: ${rel}.`);
-  }
+  if (!isFile(packaged)) throw new Error(`Prompt file was not found: ${rel}.`);
   return readFileSync(packaged, "utf8");
 }
 
@@ -330,24 +328,19 @@ export interface OverlayLoadCounts {
   skillDirs: number;
 }
 
-const PROMPT_GROUP = /^[a-z0-9-]+$/;
-const PROMPT_FILE = /^[a-z0-9-]+\.md$/;
-
-/**
- * What the local overlay will use at launch.
- *
- * Workflows are the `workflows/*.yaml` names in the overlay directory.
- * A file that reuses a shipped name is included here; listing workflows
- * still refuses it. Prompt overrides are `prompts/<group>/<name>.md` files
- * the prompt loader accepts. `reviewPrompt` counts as `kiln/review.md` when
- * that file exists and the tree does not already have it. Skill directories
- * are the ones config resolved and found on disk. A missing directory is zero.
- */
+/** A shipped-name collision is included. `listWorkflowNames` still refuses it. */
 export function overlayLoadCounts(
   overlay: { workflowsDir: string; promptsDir: string; skillDirs: readonly string[] },
   reviewPrompt?: string,
 ): OverlayLoadCounts {
-  const prompts = promptOverrideRels(overlay.promptsDir);
+  const prompts = new Set<string>();
+  for (const group of directoryEntries(overlay.promptsDir)) {
+    for (const file of directoryEntries(join(overlay.promptsDir, group))) {
+      const rel = `prompts/${group}/${file}`;
+      if (!PROMPT_PATH.test(rel) || !isFile(join(overlay.promptsDir, group, file))) continue;
+      prompts.add(rel.slice("prompts/".length));
+    }
+  }
   if (reviewPrompt && isFile(reviewPrompt)) prompts.add("kiln/review.md");
   return {
     workflows: workflowNamesIn(overlay.workflowsDir).length,
@@ -356,43 +349,18 @@ export function overlayLoadCounts(
   };
 }
 
-function promptOverrideRels(promptsDir: string): Set<string> {
-  const rels = new Set<string>();
-  let groups: string[];
+function directoryEntries(dir: string): string[] {
   try {
-    groups = readdirSync(promptsDir);
+    return readdirSync(dir);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return rels;
+    if (code === "ENOENT" || code === "ENOTDIR") return [];
     throw error;
   }
-  for (const group of groups) {
-    if (!PROMPT_GROUP.test(group)) continue;
-    const groupDir = join(promptsDir, group);
-    let files: string[];
-    try {
-      if (!statSync(groupDir).isDirectory()) continue;
-      files = readdirSync(groupDir);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT" || code === "ENOTDIR") continue;
-      throw error;
-    }
-    for (const file of files) {
-      if (!PROMPT_FILE.test(file)) continue;
-      if (!isFile(join(groupDir, file))) continue;
-      rels.add(`${group}/${file}`);
-    }
-  }
-  return rels;
 }
 
 function isFile(path: string): boolean {
-  try {
-    return existsSync(path) && statSync(path).isFile();
-  } catch {
-    return false;
-  }
+  return existsSync(path) && statSync(path).isFile();
 }
 
 function workflowNamesIn(dir: string): string[] {
