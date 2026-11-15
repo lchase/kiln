@@ -1025,6 +1025,12 @@ body.open .drawer { transform: none; }
 .repo-row .d-actions { margin-top: 0; flex: none; }
 .saved { color: var(--state-done); font-family: var(--font-mono); }
 .hint { color: var(--faint); }
+#settings-json {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-sm);
+  min-height: calc(var(--space-8) * 4);
+}
 .trigger { padding: var(--space-4); margin: 0 0 var(--space-3); }
 .trigger h3 {
   margin: 0 0 var(--space-1);

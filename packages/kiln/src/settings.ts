@@ -10,28 +10,23 @@ import {
   DEFAULT_MAX_SAME_FINGERPRINT,
   DEFAULT_STALL_TIMEOUT_MS,
   KilnConfigFileSchema,
+  SECRET_PLACEHOLDER,
   SettingsWriteSchema,
-  TriggerConfigSchema,
   type EditableKilnSettings,
+  type JiraConfig,
   type KilnConfigFile,
   type RepoEntry,
+  type RouteConfig,
   type TriggerConfig,
 } from "./schemas.js";
 import { resolveBoardTheme, type BoardThemeId } from "./theme.js";
-import {
-  applyTriggerToggles,
-  effectiveTriggers,
-  knownTrigger,
-  REVIEW_REQUESTS_TRIGGER,
-  reviewMaxNew,
-  reviewMaxQueued,
-  reviewRequestLabel,
-} from "./triggers.js";
+import { effectiveRoutes, effectiveTriggers } from "./triggers.js";
 import type { ZodError } from "zod";
 
 /**
  * What `GET /api/settings` returns and `PUT /api/settings` accepts, plus the
- * file path and a content hash. Jira and other secrets are not part of this.
+ * file path and a content hash. Secret values are not included. `file` is the
+ * config with those values replaced by {@link SECRET_PLACEHOLDER}.
  */
 export interface SettingsDocument {
   /** Absolute path of `kiln.config.json`. */
@@ -44,29 +39,29 @@ export interface SettingsDocument {
   maxFixRounds?: number;
   maxSameFingerprint?: number;
   dailyDollarCap?: number;
+  maxConcurrent?: number;
+  adapter?: "mock" | "claude-code";
   sandbox?: {
     mode?: "off" | "docker";
     allowDomains?: string[];
   };
-  /**
-   * Effective triggers, including built-ins. A PUT sends `{ id, enabled }`
-   * toggles; cron, JQL, and repo stay on the file.
-   */
-  triggers: {
-    id: string;
-    kind: "schedule" | "jira" | "pr";
-    enabled: boolean;
-    cron?: string;
-    every?: string;
-    repo?: string;
-    jql?: string;
-    label?: string;
-    status?: string;
-    /** New review jobs one `review-requests` fire may create. Default 3. */
-    maxNew?: number;
-    /** Queued or running review jobs at once. Default 5. */
-    maxQueued?: number;
-  }[];
+  /** Effective triggers, including built-ins. A PUT sends the config shape. */
+  triggers: SettingsTrigger[];
+  /** Effective routes, including built-ins. */
+  routes: SettingsRoute[];
+  /** `token` says where the credential lives. The value is never sent. */
+  jira: {
+    baseUrl?: string;
+    email?: string;
+    acceptanceField?: string;
+    token: SecretState;
+  };
+  overlay?: {
+    workflows?: string;
+    prompts?: string;
+    skills?: string;
+    skillPaths?: string[];
+  };
   /** Resolved board theme. Unknown or missing file values are `kiln`. */
   board: { theme: BoardThemeId };
   /** Shown when a field is omitted. Not written back. */
@@ -81,8 +76,39 @@ export interface SettingsDocument {
     /** Null means new runs are not blocked by spend. */
     dailyDollarCap: null;
     sandboxMode: "off";
+    maxConcurrent: number;
+    adapter: "claude-code";
   };
+  /**
+   * Redacted `kiln.config.json`. Secret strings are `SECRET_PLACEHOLDER`.
+   * A PUT of `{ revision, file }` writes this object back.
+   */
+  file: Record<string, unknown>;
 }
+
+export interface SettingsTrigger {
+  id: string;
+  kind: "schedule" | "jira" | "pr";
+  enabled: boolean;
+  builtin?: boolean;
+  cron?: string;
+  every?: string;
+  repo?: string;
+  jql?: string;
+  label?: string;
+  status?: string;
+  /** New review jobs one `review-requests` fire may create. Default 3. */
+  maxNew?: number;
+  /** Queued or running review jobs at once. Default 5. */
+  maxQueued?: number;
+}
+
+export interface SettingsRoute extends RouteConfig {
+  builtin?: boolean;
+}
+
+/** Where the Jira API token lives. The board never returns the value. */
+export type SecretState = "set in file" | "set in env" | "not set";
 
 export interface SettingsFailure {
   ok: false;
@@ -105,22 +131,36 @@ const DEFAULTS: SettingsDocument["defaults"] = {
   maxSameFingerprint: DEFAULT_MAX_SAME_FINGERPRINT,
   dailyDollarCap: null,
   sandboxMode: "off",
+  maxConcurrent: 2,
+  adapter: "claude-code",
 };
 
-export function readSettings(configPath: string): SettingsSuccess | SettingsFailure {
+const TRIGGER_FIELDS = ["cron", "every", "repo", "jql", "label", "status", "maxNew", "maxQueued"] as const;
+const ROUTE_FIELDS = ["trigger", "action", "workflow", "repo"] as const;
+const SECRET_KEY = /token|secret|password|credential|api[-_]?key/i;
+
+export function readSettings(configPath: string, env: NodeJS.ProcessEnv = process.env): SettingsSuccess | SettingsFailure {
   const read = readConfigFile(configPath);
   if ("error" in read) return fail(409, read.error);
   const parsed = KilnConfigFileSchema.safeParse(read.raw);
   if (!parsed.success) return fail(409, `Kiln config ${configPath} is invalid.`);
-  return { ok: true, document: project(configPath, read.revision, parsed.data) };
+  return { ok: true, document: project(configPath, read.revision, parsed.data, read.raw, env) };
 }
 
 /**
  * Validate `body`, merge it into the file, and write atomically.
  * Unknown keys already in the file stay. A revision that does not match the
- * bytes on disk is a 409 and writes nothing.
+ * bytes on disk is a 409 and writes nothing. `{ revision, file }` replaces
+ * the file after the same schema check. Invalid JSON never reaches this
+ * function. A secret value other than {@link SECRET_PLACEHOLDER} is rejected
+ * and the placeholder keeps the bytes already on disk.
  */
-export function saveSettings(configPath: string, body: unknown, home = homedir()): SettingsSuccess | SettingsFailure {
+export function saveSettings(
+  configPath: string,
+  body: unknown,
+  home = homedir(),
+  env: NodeJS.ProcessEnv = process.env,
+): SettingsSuccess | SettingsFailure {
   if (!isRecord(body)) return fail(400, "Request body must be a JSON object.");
   const read = readConfigFile(configPath);
   if ("error" in read) return fail(409, "The settings file changed on disk. Reload and try again.");
@@ -133,31 +173,31 @@ export function saveSettings(configPath: string, body: unknown, home = homedir()
     return fail(409, "The settings file changed on disk. Reload and try again.");
   }
 
-  const parsed = SettingsWriteSchema.safeParse(body);
-  if (!parsed.success) return fail(400, "Settings are invalid.", fieldErrors(parsed.error));
+  const secrets = secretWriteErrors(body);
+  if (Object.keys(secrets).length > 0) return fail(400, "Settings are invalid.", secrets);
 
-  const { revision: _revision, ...editable } = parsed.data;
-  const fields = checkoutFields(dirname(configPath), editable, home);
-  const triggerFields = triggerToggleFields(read.raw, editable);
-  Object.assign(fields, triggerFields);
-  if (Object.keys(fields).length > 0) return fail(400, "Settings are invalid.", fields);
-
-  const next = mergeSettings(read.raw, editable);
-  const file = KilnConfigFileSchema.safeParse(next);
-  if (!file.success) return fail(400, "Settings are invalid.", fieldErrors(file.error));
+  const prepared = isFileWrite(body) ? fileUpdate(body, read.raw, home, configPath) : formUpdate(body, read.raw, home, configPath);
+  if (!prepared.ok) return prepared.failure;
 
   const again = readConfigFile(configPath);
   if ("error" in again || again.revision !== read.revision) {
     return fail(409, "The settings file changed on disk. Reload and try again.");
   }
 
-  const contents = `${JSON.stringify(next, null, 2)}\n`;
+  const contents = `${JSON.stringify(prepared.next, null, 2)}\n`;
   writeAtomic(configPath, contents);
-  return { ok: true, document: project(configPath, hashContents(contents), file.data) };
+  return { ok: true, document: project(configPath, hashContents(contents), prepared.parsed, prepared.next, env) };
 }
 
-function project(path: string, revision: string, file: KilnConfigFile): SettingsDocument {
+function project(
+  path: string,
+  revision: string,
+  file: KilnConfigFile,
+  raw: Record<string, unknown>,
+  env: NodeJS.ProcessEnv,
+): SettingsDocument {
   const sandbox = editableSandbox(file.sandbox);
+  const overlay = file.overlay;
   return {
     path,
     revision,
@@ -167,11 +207,36 @@ function project(path: string, revision: string, file: KilnConfigFile): Settings
     ...(file.maxFixRounds !== undefined ? { maxFixRounds: file.maxFixRounds } : {}),
     ...(file.maxSameFingerprint !== undefined ? { maxSameFingerprint: file.maxSameFingerprint } : {}),
     ...(file.dailyDollarCap !== undefined ? { dailyDollarCap: file.dailyDollarCap } : {}),
+    ...(file.maxConcurrent !== undefined ? { maxConcurrent: file.maxConcurrent } : {}),
+    ...(file.adapter !== undefined ? { adapter: file.adapter } : {}),
     ...(sandbox ? { sandbox } : {}),
-    triggers: effectiveTriggers(file.triggers).map(triggerView),
+    triggers: effectiveTriggers(file.triggers).map((trigger) => triggerView(trigger)),
+    routes: effectiveRoutes(file.routes).map((route) => routeView(route)),
+    jira: jiraView(raw.jira, file.jira, env),
+    ...(overlay ? { overlay } : {}),
     board: { theme: resolveBoardTheme(file.board?.theme) },
     defaults: DEFAULTS,
+    file: redactFile(raw),
   };
+}
+
+function jiraView(raw: unknown, parsed: JiraConfig | undefined, env: NodeJS.ProcessEnv): SettingsDocument["jira"] {
+  const source = isRecord(raw) ? raw : {};
+  const baseUrl = text(parsed?.baseUrl ?? source.baseUrl);
+  const email = text(parsed?.email ?? source.email);
+  const acceptanceField = text(parsed?.acceptanceField ?? source.acceptanceField);
+  return {
+    ...(baseUrl ? { baseUrl } : {}),
+    ...(email ? { email } : {}),
+    ...(acceptanceField ? { acceptanceField } : {}),
+    token: tokenState(source.apiToken, env.JIRA_API_TOKEN),
+  };
+}
+
+function tokenState(fileValue: unknown, envValue: string | undefined): SecretState {
+  if (text(envValue)) return "set in env";
+  if (text(fileValue)) return "set in file";
+  return "not set";
 }
 
 function editableSandbox(sandbox: KilnConfigFile["sandbox"]): SettingsDocument["sandbox"] | undefined {
@@ -185,7 +250,56 @@ function editableSandbox(sandbox: KilnConfigFile["sandbox"]): SettingsDocument["
   };
 }
 
-function mergeSettings(raw: Record<string, unknown>, settings: EditableKilnSettings): Record<string, unknown> {
+function formUpdate(
+  body: Record<string, unknown>,
+  raw: Record<string, unknown>,
+  home: string,
+  configPath: string,
+): { ok: true; next: Record<string, unknown>; parsed: KilnConfigFile } | { ok: false; failure: SettingsFailure } {
+  const stripped = stripSecretPlaceholders(body);
+  if (!isRecord(stripped)) return { ok: false, failure: fail(400, "Request body must be a JSON object.") };
+  const relaxed = relaxBlanks(stripped);
+  const parsed = SettingsWriteSchema.safeParse(relaxed);
+  if (!parsed.success) return { ok: false, failure: fail(400, "Settings are invalid.", fieldErrors(parsed.error)) };
+
+  const { revision: _revision, ...editable } = parsed.data;
+  const fields = {
+    ...checkoutFields(dirname(configPath), editable.repos, home),
+    ...duplicateIdFields(editable.triggers ?? [], "triggers"),
+    ...duplicateIdFields(editable.routes ?? [], "routes"),
+  };
+  if (Object.keys(fields).length > 0) return { ok: false, failure: fail(400, "Settings are invalid.", fields) };
+
+  const next = mergeSettings(raw, editable, stripped);
+  const file = KilnConfigFileSchema.safeParse(next);
+  if (!file.success) return { ok: false, failure: fail(400, "Settings are invalid.", fieldErrors(file.error)) };
+  return { ok: true, next, parsed: file.data };
+}
+
+function fileUpdate(
+  body: Record<string, unknown>,
+  raw: Record<string, unknown>,
+  home: string,
+  configPath: string,
+): { ok: true; next: Record<string, unknown>; parsed: KilnConfigFile } | { ok: false; failure: SettingsFailure } {
+  const restored = restoreSecrets(body.file, raw);
+  if (!isRecord(restored)) return { ok: false, failure: fail(400, "Settings are invalid.", { file: "Config must be a JSON object." }) };
+  const file = KilnConfigFileSchema.safeParse(restored);
+  if (!file.success) return { ok: false, failure: fail(400, "Settings are invalid.", fieldErrors(file.error)) };
+  const fields = {
+    ...checkoutFields(dirname(configPath), file.data.repos, home),
+    ...duplicateIdFields(file.data.triggers ?? [], "triggers"),
+    ...duplicateIdFields(file.data.routes ?? [], "routes"),
+  };
+  if (Object.keys(fields).length > 0) return { ok: false, failure: fail(400, "Settings are invalid.", fields) };
+  return { ok: true, next: restored, parsed: file.data };
+}
+
+function mergeSettings(
+  raw: Record<string, unknown>,
+  settings: EditableKilnSettings,
+  body: Record<string, unknown>,
+): Record<string, unknown> {
   const next: Record<string, unknown> = { ...raw };
   const previousRepos = isRecord(raw.repos) ? raw.repos : {};
   const repos: Record<string, unknown> = {};
@@ -207,7 +321,28 @@ function mergeSettings(raw: Record<string, unknown>, settings: EditableKilnSetti
   setOptional(next, "maxFixRounds", settings.maxFixRounds);
   setOptional(next, "maxSameFingerprint", settings.maxSameFingerprint);
   setOptional(next, "dailyDollarCap", settings.dailyDollarCap);
-  if (settings.triggers) next.triggers = applyTriggerToggles(storedTriggers(raw.triggers), settings.triggers);
+  if (Object.hasOwn(body, "maxConcurrent")) {
+    if (body.maxConcurrent === null) delete next.maxConcurrent;
+    else setOptional(next, "maxConcurrent", settings.maxConcurrent);
+  }
+  if (Object.hasOwn(body, "adapter")) {
+    if (body.adapter === null) delete next.adapter;
+    else setOptional(next, "adapter", settings.adapter);
+  }
+  if (Object.hasOwn(body, "triggers")) {
+    const triggers = triggersForFile(settings.triggers ?? []);
+    if (triggers.length === 0) delete next.triggers;
+    else next.triggers = triggers;
+  }
+  if (Object.hasOwn(body, "routes")) {
+    const routes = routesForFile(settings.routes ?? []);
+    if (routes.length === 0) delete next.routes;
+    else next.routes = routes;
+  }
+  if (Object.hasOwn(body, "jira")) next.jira = mergeJira(raw.jira, body.jira);
+  if (next.jira === undefined) delete next.jira;
+  if (Object.hasOwn(body, "overlay")) next.overlay = mergeOverlay(raw.overlay, body.overlay);
+  if (next.overlay === undefined) delete next.overlay;
   if (settings.sandbox) {
     const prior = isRecord(raw.sandbox) ? { ...raw.sandbox } : {};
     setOptional(prior, "mode", settings.sandbox.mode);
@@ -223,44 +358,110 @@ function mergeSettings(raw: Record<string, unknown>, settings: EditableKilnSetti
   return next;
 }
 
-function triggerView(trigger: TriggerConfig): SettingsDocument["triggers"][number] {
-  const review = trigger.id === REVIEW_REQUESTS_TRIGGER;
+function mergeJira(current: unknown, patch: unknown): Record<string, unknown> | undefined {
+  const prior = isRecord(current) ? { ...current } : {};
+  if (isRecord(patch)) {
+    applyText(prior, patch, "baseUrl");
+    applyText(prior, patch, "email");
+    applyText(prior, patch, "acceptanceField");
+  }
+  return Object.keys(prior).length > 0 ? prior : undefined;
+}
+
+function mergeOverlay(current: unknown, patch: unknown): Record<string, unknown> | undefined {
+  const prior = isRecord(current) ? { ...current } : {};
+  if (!isRecord(patch)) return Object.keys(prior).length > 0 ? prior : undefined;
+  applyText(prior, patch, "workflows");
+  applyText(prior, patch, "prompts");
+  applyText(prior, patch, "skills");
+  if (Object.hasOwn(patch, "skillPaths")) {
+    const paths = Array.isArray(patch.skillPaths)
+      ? patch.skillPaths.map((item) => (typeof item === "string" ? item.trim() : "")).filter(Boolean)
+      : [];
+    if (paths.length === 0) delete prior.skillPaths;
+    else prior.skillPaths = paths;
+  }
+  return Object.keys(prior).length > 0 ? prior : undefined;
+}
+
+function applyText(target: Record<string, unknown>, source: Record<string, unknown>, key: string): void {
+  if (!Object.hasOwn(source, key)) return;
+  const value = text(source[key]);
+  if (!value) delete target[key];
+  else target[key] = value;
+}
+
+function triggersForFile(submitted: readonly TriggerConfig[]): TriggerConfig[] {
+  const builtins = new Map(effectiveTriggers(undefined).map((trigger) => [trigger.id, trigger]));
+  return submitted.filter((trigger) => {
+    const builtin = builtins.get(trigger.id);
+    return !builtin || canonicalTrigger(trigger) !== canonicalTrigger(builtin);
+  });
+}
+
+function routesForFile(submitted: readonly RouteConfig[]): RouteConfig[] {
+  const builtins = new Map(effectiveRoutes(undefined).map((route) => [route.id, route]));
+  return submitted.filter((route) => {
+    const builtin = builtins.get(route.id);
+    return !builtin || canonicalRoute(route) !== canonicalRoute(builtin);
+  });
+}
+
+function canonicalTrigger(trigger: TriggerConfig): string {
+  const parts = [`id=${trigger.id}`, `kind=${trigger.kind}`];
+  if (trigger.enabled === false) parts.push("enabled=false");
+  for (const key of TRIGGER_FIELDS) {
+    const value = trigger[key];
+    if (value !== undefined) parts.push(`${key}=${String(value)}`);
+  }
+  return parts.join("\n");
+}
+
+function canonicalRoute(route: RouteConfig): string {
+  const parts = [`id=${route.id}`];
+  for (const key of ROUTE_FIELDS) {
+    const value = route[key];
+    if (value !== undefined) parts.push(`${key}=${String(value)}`);
+  }
+  return parts.join("\n");
+}
+
+function triggerView(trigger: TriggerConfig): SettingsTrigger {
+  const builtin = effectiveTriggers(undefined).some((item) => item.id === trigger.id);
   return {
     id: trigger.id,
     kind: trigger.kind,
     enabled: trigger.enabled !== false,
+    ...(builtin ? { builtin: true } : {}),
     ...(trigger.cron ? { cron: trigger.cron } : {}),
     ...(trigger.every ? { every: trigger.every } : {}),
     ...(trigger.repo ? { repo: trigger.repo } : {}),
     ...(trigger.jql ? { jql: trigger.jql } : {}),
-    ...(trigger.label || review ? { label: review ? reviewRequestLabel(trigger) : trigger.label } : {}),
+    ...(trigger.label ? { label: trigger.label } : {}),
     ...(trigger.status ? { status: trigger.status } : {}),
-    ...(review ? { maxNew: reviewMaxNew(trigger), maxQueued: reviewMaxQueued(trigger) } : {}),
+    ...(trigger.maxNew !== undefined ? { maxNew: trigger.maxNew } : {}),
+    ...(trigger.maxQueued !== undefined ? { maxQueued: trigger.maxQueued } : {}),
   };
 }
 
-function storedTriggers(value: unknown): TriggerConfig[] {
-  if (!Array.isArray(value)) return [];
-  const out: TriggerConfig[] = [];
-  for (const item of value) {
-    const parsed = TriggerConfigSchema.safeParse(item);
-    if (parsed.success) out.push(parsed.data);
-  }
-  return out;
+function routeView(route: RouteConfig): SettingsRoute {
+  const builtin = effectiveRoutes(undefined).some((item) => item.id === route.id);
+  return { ...route, ...(builtin ? { builtin: true } : {}) };
 }
 
-function triggerToggleFields(raw: Record<string, unknown>, settings: EditableKilnSettings): Record<string, string> {
+function duplicateIdFields(items: readonly { id: string }[], prefix: string): Record<string, string> {
+  const seen = new Set<string>();
   const fields: Record<string, string> = {};
-  const file = storedTriggers(raw.triggers);
-  for (const toggle of settings.triggers ?? []) {
-    if (!knownTrigger(toggle.id, file)) fields[`triggers.${toggle.id}`] = `Unknown trigger ${toggle.id}.`;
-  }
+  items.forEach((item, index) => {
+    if (seen.has(item.id)) fields[`${prefix}.${index}.id`] = `Id ${item.id} is already used.`;
+    else seen.add(item.id);
+  });
   return fields;
 }
 
-function checkoutFields(configDir: string, settings: EditableKilnSettings, home: string): Record<string, string> {
+function checkoutFields(configDir: string, repos: Record<string, RepoEntry>, home: string): Record<string, string> {
   const fields: Record<string, string> = {};
-  for (const [name, entry] of Object.entries(settings.repos)) {
+  for (const [name, entry] of Object.entries(repos)) {
     try {
       assertCheckoutDirectory(name, configDir, entry.path, home);
     } catch (error) {
@@ -294,6 +495,119 @@ function fieldErrors(error: ZodError): Record<string, string> {
   return fields;
 }
 
+function secretWriteErrors(value: unknown, path = ""): Record<string, string> {
+  const fields: Record<string, string> = {};
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => Object.assign(fields, secretWriteErrors(item, path ? `${path}.${index}` : String(index))));
+    return fields;
+  }
+  if (!isRecord(value)) return fields;
+  for (const [key, item] of Object.entries(value)) {
+    if (path === "" && key === "revision") continue;
+    const next = path ? `${path}.${key}` : key;
+    if (isSecretKey(key)) {
+      if (item === SECRET_PLACEHOLDER || item === undefined) continue;
+      if (typeof item === "string" && item.trim() === "") continue;
+      fields[next] = secretMessage(key);
+      continue;
+    }
+    Object.assign(fields, secretWriteErrors(item, next));
+  }
+  return fields;
+}
+
+function secretMessage(key: string): string {
+  if (/token/i.test(key)) return "Set JIRA_API_TOKEN in the environment. The board does not store a token.";
+  return "The board does not accept this value. Keep it in the file or the environment.";
+}
+
+function restoreSecrets(next: unknown, previous: unknown): unknown {
+  if (Array.isArray(next)) {
+    const prior = Array.isArray(previous) ? previous : [];
+    return next.map((item, index) => restoreSecrets(item, prior[index]));
+  }
+  if (!isRecord(next)) return next;
+  const prior = isRecord(previous) ? previous : {};
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(next)) {
+    if (isSecretKey(key)) {
+      if (value === SECRET_PLACEHOLDER) {
+        if (typeof prior[key] === "string" && prior[key].trim()) out[key] = prior[key];
+        continue;
+      }
+      if (typeof value === "string" && value.trim() === "") continue;
+      continue;
+    }
+    out[key] = restoreSecrets(value, prior[key]);
+  }
+  return out;
+}
+
+function redactFile(value: unknown): Record<string, unknown> {
+  const redacted = redactValue(value);
+  return isRecord(redacted) ? redacted : {};
+}
+
+function redactValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => redactValue(item));
+  if (!isRecord(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (isSecretKey(key) && typeof item === "string" && item.trim()) out[key] = SECRET_PLACEHOLDER;
+    else out[key] = redactValue(item);
+  }
+  return out;
+}
+
+function stripSecretPlaceholders(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => stripSecretPlaceholders(item));
+  if (!isRecord(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (isSecretKey(key) && (item === SECRET_PLACEHOLDER || (typeof item === "string" && item.trim() === ""))) continue;
+    out[key] = stripSecretPlaceholders(item);
+  }
+  return out;
+}
+
+function relaxBlanks(body: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...body };
+  if (next.maxConcurrent === null) delete next.maxConcurrent;
+  if (next.adapter === null) delete next.adapter;
+  if (isRecord(next.jira)) next.jira = withoutBlankStrings(next.jira);
+  if (isRecord(next.overlay)) next.overlay = withoutBlankStrings(next.overlay);
+  return next;
+}
+
+function withoutBlankStrings(record: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value === "string") {
+      if (value.trim()) out[key] = value.trim();
+      continue;
+    }
+    if (key === "skillPaths" && Array.isArray(value)) {
+      const paths = value.map((item) => (typeof item === "string" ? item.trim() : "")).filter(Boolean);
+      if (paths.length > 0) out[key] = paths;
+      continue;
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+function isFileWrite(body: Record<string, unknown>): boolean {
+  return Object.hasOwn(body, "file") && Object.keys(body).every((key) => key === "file" || key === "revision");
+}
+
+function isSecretKey(key: string): boolean {
+  return SECRET_KEY.test(key);
+}
+
+function text(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function setOptional(target: Record<string, unknown>, key: string, value: unknown): void {
   if (value === undefined) delete target[key];
   else target[key] = value;
@@ -302,20 +616,20 @@ function setOptional(target: Record<string, unknown>, key: string, value: unknow
 function readConfigFile(
   configPath: string,
 ): { revision: string; raw: Record<string, unknown> } | { error: string } {
-  let text: string;
+  let textBody: string;
   try {
-    text = readFileSync(configPath, "utf8");
+    textBody = readFileSync(configPath, "utf8");
   } catch {
     return { error: "The settings file changed on disk. Reload and try again." };
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(textBody);
   } catch {
     return { error: `Kiln config ${configPath} is invalid.` };
   }
   if (!isRecord(parsed)) return { error: `Kiln config ${configPath} must be a JSON object.` };
-  return { revision: hashContents(text), raw: parsed };
+  return { revision: hashContents(textBody), raw: parsed };
 }
 
 function hashContents(contents: string): string {

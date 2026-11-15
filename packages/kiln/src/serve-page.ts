@@ -30,6 +30,7 @@ import { renderMarkdown } from "./markdown.js";
 import { kilnVersion } from "./project.js";
 import type { StatusJobView } from "./report.js";
 import { formatSpend, type SpendSnapshot } from "./rails.js";
+import { SECRET_PLACEHOLDER } from "./schemas.js";
 import { BOARD_THEME_CHOICES, DEFAULT_BOARD_THEME, type BoardThemeId } from "./theme.js";
 import type { TriggerRow } from "./triggers.js";
 import { listWorkflowNames } from "./workflow.js";
@@ -220,7 +221,7 @@ function triggersHtml(rows: readonly TriggerRow[]): string {
     rows.length === 0
       ? `<p class="empty">No triggers.</p>`
       : rows.map((row) => triggerCard(row)).join("\n");
-  return `<header class="list-head"><h2>Triggers</h2><p class="meta">The clock, Jira, and pull request activity can start work. A review is posted only after you approve it. Kiln does not approve or merge.</p><p class="form-error" id="trigger-error" role="alert" hidden></p></header>${body}`;
+  return `<header class="list-head"><h2>Triggers</h2><p class="meta">The clock, Jira, and pull request activity can start work. A review is posted only after you approve it. Kiln does not approve or merge. <a href="/settings">Edit triggers in Settings.</a></p></header>${body}`;
 }
 
 function triggerCard(row: TriggerRow): string {
@@ -250,7 +251,6 @@ function triggerCard(row: TriggerRow): string {
 <h3>${escapeHtml(row.id)}</h3>
 <p class="meta">${escapeHtml(bits.join(" · "))}</p>
 ${next}${last}${error}
-<button type="button" data-trigger-toggle="${escapeHtml(row.id)}" data-enabled="${on ? "true" : "false"}">${on ? "Disable" : "Enable"}</button>
 ${recent}
 </article>`;
 }
@@ -825,16 +825,32 @@ function themePicker(selected: BoardThemeId): string {
   return `<div class="themes" id="theme-pick" role="group" aria-label="Theme">${buttons}</div>`;
 }
 
+function settingsSectionPicker(): string {
+  const sections = [
+    ["repos", "Repos"],
+    ["global", "Global"],
+    ["triggers", "Triggers"],
+    ["routes", "Routes"],
+    ["jira", "Jira"],
+    ["overlay", "Overlay"],
+    ["appearance", "Appearance"],
+    ["advanced", "Advanced"],
+  ];
+  const options = sections
+    .map(
+      ([id, label], index) =>
+        `<li role="option" id="settings-section-${id}" data-value="${label}" data-settings-tab="${id}" aria-selected="${index === 0 ? "true" : "false"}">${label}</li>`,
+    )
+    .join("");
+  return `<div class="field"><span class="k" id="settings-section-label">Section</span><div class="combo" id="settings-section" data-value="Repos"><input id="settings-section-query" class="combo-input" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="settings-section-list" aria-labelledby="settings-section-label" placeholder="Search sections" value="Repos" autocomplete="off" spellcheck="false"><ul class="combo-list" id="settings-section-list" role="listbox" hidden>${options}</ul></div></div>`;
+}
+
 function settingsForm(theme: BoardThemeId): string {
   return `<form id="settings-form" class="intake-form">
 <p class="meta" id="settings-path"></p>
 <p class="saved" id="settings-saved" role="status" hidden>Saved</p>
 <p class="form-error" id="settings-error" role="alert" hidden></p>
-<div class="seg" role="tablist" aria-label="Settings sections">
-<button type="button" data-settings-tab="repos" aria-pressed="true">Repos</button>
-<button type="button" data-settings-tab="global" aria-pressed="false">Global</button>
-<button type="button" data-settings-tab="appearance" aria-pressed="false">Appearance</button>
-</div>
+${settingsSectionPicker()}
 <div id="settings-repos">
 <div id="repo-editor" hidden>
 <label class="field"><span class="k">Name</span><input id="repo-name" type="text" autocomplete="off" spellcheck="false"></label>
@@ -893,11 +909,109 @@ function settingsForm(theme: BoardThemeId): string {
 <label class="field"><span class="k">Daily dollar cap</span><input id="daily-dollar-cap" type="number" min="0" step="0.01"></label>
 <p class="hint" id="hint-cap"></p>
 <p class="field-error" data-error="dailyDollarCap" hidden></p>
+<label class="field"><span class="k">Max concurrent</span><input id="max-concurrent" type="number" min="1" step="1"></label>
+<p class="hint" id="hint-concurrent"></p>
+<p class="field-error" data-error="maxConcurrent" hidden></p>
+<div class="field"><span class="k">Adapter</span><div class="seg" id="adapter-mode" role="group" aria-label="Adapter">
+<button type="button" data-adapter="claude-code" aria-pressed="true">claude-code</button>
+<button type="button" data-adapter="mock" aria-pressed="false">mock</button>
+</div>
+<p class="hint" id="hint-adapter"></p>
+<p class="field-error" data-error="adapter" hidden></p></div>
+</div>
+<div id="settings-triggers" hidden>
+<div id="trigger-editor" hidden>
+<label class="field"><span class="k">Id</span><input id="trigger-id" type="text" autocomplete="off" spellcheck="false"></label>
+<p class="field-error" data-error="trigger.id" hidden></p>
+<div class="field"><span class="k">Enabled</span><div class="seg" id="trigger-enabled" role="group" aria-label="Enabled">
+<button type="button" data-enabled="true" aria-pressed="true">On</button>
+<button type="button" data-enabled="false" aria-pressed="false">Off</button>
+</div></div>
+<div class="field"><span class="k">Kind</span><div class="seg" id="trigger-kind" role="group" aria-label="Trigger kind">
+<button type="button" data-kind="schedule" aria-pressed="true">schedule</button>
+<button type="button" data-kind="jira" aria-pressed="false">jira</button>
+<button type="button" data-kind="pr" aria-pressed="false">pr</button>
+</div></div>
+<div data-for-kind="schedule">
+<label class="field"><span class="k">Cron</span><input id="trigger-cron" type="text" autocomplete="off" spellcheck="false" placeholder="0 * * * *"></label>
+<p class="hint">Five fields, local time. review-requests defaults to 0 * * * *.</p>
+<label class="field"><span class="k">Label</span><input id="trigger-label" type="text" autocomplete="off" spellcheck="false" placeholder="kiln-review"></label>
+<label class="field"><span class="k">Max new</span><input id="trigger-max-new" type="number" min="1" step="1" placeholder="3"></label>
+<p class="hint">New review jobs one fire may create.</p>
+<label class="field"><span class="k">Max queued</span><input id="trigger-max-queued" type="number" min="1" step="1" placeholder="5"></label>
+<p class="hint">Queued or running review jobs at once.</p>
+</div>
+<div data-for-kind="jira" hidden>
+<label class="field"><span class="k">Every</span><input id="trigger-every" type="text" autocomplete="off" spellcheck="false" placeholder="5m"></label>
+<p class="hint">30s, 5m, or 1h. Default 5m.</p>
+<label class="field"><span class="k">JQL</span><input id="trigger-jql" type="text" autocomplete="off" spellcheck="false"></label>
+<p class="hint">When set, this replaces label and status.</p>
+<label class="field"><span class="k">Label</span><input id="trigger-jira-label" type="text" autocomplete="off" spellcheck="false"></label>
+<label class="field"><span class="k">Status</span><input id="trigger-status" type="text" autocomplete="off" spellcheck="false"></label>
+<div class="field"><span class="k">Repo</span><div id="trigger-repo"></div></div>
+</div>
+<div data-for-kind="pr" hidden>
+<p class="hint">Pull request activity on Kiln-owned pull requests. No extra fields.</p>
+</div>
+<p class="field-error" data-error="trigger.form" hidden></p>
+<div class="d-actions"><button type="button" id="trigger-done">Done</button></div>
+</div>
+<div id="trigger-list"></div>
+<div class="d-actions"><button type="button" id="trigger-add">Add trigger</button></div>
+</div>
+<div id="settings-routes" hidden>
+<div id="route-editor" hidden>
+<label class="field"><span class="k">Id</span><input id="route-id" type="text" autocomplete="off" spellcheck="false"></label>
+<p class="field-error" data-error="route.id" hidden></p>
+<div class="field"><span class="k">Trigger</span><div id="route-trigger"></div></div>
+<div class="field"><span class="k">Action</span><div class="seg" id="route-action" role="group" aria-label="Route action">
+<button type="button" data-action="create" aria-pressed="true">create</button>
+<button type="button" data-action="attach" aria-pressed="false">attach</button>
+</div></div>
+<div class="field"><span class="k">Workflow</span><div id="route-workflow"></div></div>
+<p class="hint">Used when the action is create.</p>
+<div class="field"><span class="k">Repo</span><div id="route-repo"></div></div>
+<p class="field-error" data-error="route.form" hidden></p>
+<div class="d-actions"><button type="button" id="route-done">Done</button></div>
+</div>
+<div id="route-list"></div>
+<div class="d-actions"><button type="button" id="route-add">Add route</button></div>
+</div>
+<div id="settings-jira" hidden>
+<label class="field"><span class="k">Base URL</span><input id="jira-base" type="text" autocomplete="off" spellcheck="false" placeholder="https://example.atlassian.net"></label>
+<p class="field-error" data-error="jira.baseUrl" hidden></p>
+<label class="field"><span class="k">Email</span><input id="jira-email" type="text" autocomplete="off" spellcheck="false" placeholder="dev@example.com"></label>
+<p class="field-error" data-error="jira.email" hidden></p>
+<label class="field"><span class="k">Acceptance field</span><input id="jira-acceptance" type="text" autocomplete="off" spellcheck="false" placeholder="customfield_10001"></label>
+<p class="hint">Optional. When set, Kiln reads acceptance criteria from this field. Empty uses the Jira field named Acceptance criteria.</p>
+<p class="field-error" data-error="jira.acceptanceField" hidden></p>
+<div class="field"><span class="k">API token</span><p class="meta" id="jira-token">not set</p>
+<p class="hint">Set JIRA_API_TOKEN in the environment. This page does not store a token.</p>
+<p class="field-error" data-error="jira.apiToken" hidden></p></div>
+</div>
+<div id="settings-overlay" hidden>
+<label class="field"><span class="k">Workflows</span><input id="overlay-workflows" type="text" autocomplete="off" spellcheck="false" placeholder="workflows"></label>
+<p class="hint">Directory of local workflow files. Empty uses the kiln home workflows directory.</p>
+<p class="field-error" data-error="overlay.workflows" hidden></p>
+<label class="field"><span class="k">Prompts</span><input id="overlay-prompts" type="text" autocomplete="off" spellcheck="false" placeholder="prompts"></label>
+<p class="hint">Directory of prompt overrides. Empty uses the kiln home prompts directory.</p>
+<p class="field-error" data-error="overlay.prompts" hidden></p>
+<label class="field"><span class="k">Skills</span><input id="overlay-skills" type="text" autocomplete="off" spellcheck="false" placeholder="skills"></label>
+<p class="hint">Directory of skills. Empty uses the kiln home skills directory.</p>
+<p class="field-error" data-error="overlay.skills" hidden></p>
+<label class="field"><span class="k">Skill paths</span><textarea id="overlay-skill-paths" rows="3" spellcheck="false" placeholder="/home/dev/skills"></textarea></label>
+<p class="hint">One extra skill directory per line.</p>
+<p class="field-error" data-error="overlay.skillPaths" hidden></p>
 </div>
 <div id="settings-appearance" hidden>
 <p class="hint">Color palette for this board. The choice applies immediately and is saved here.</p>
 ${themePicker(theme)}
 <p class="field-error" data-error="board.theme" hidden></p>
+</div>
+<div id="settings-advanced" hidden>
+<label class="field"><span class="k">kiln.config.json</span><textarea id="settings-json" rows="18" spellcheck="false" aria-describedby="advanced-hint advanced-errors"></textarea></label>
+<p class="hint" id="advanced-hint">Saving this section writes the JSON below. A secret is shown as ${escapeHtml(SECRET_PLACEHOLDER)}. Saving that placeholder keeps the current value. Set JIRA_API_TOKEN in the environment. Invalid JSON is not written.</p>
+<p class="field-error" id="advanced-errors" data-error="file" hidden></p>
 </div>
 <div class="form-footer"><button type="submit" class="btn primary">Save</button></div>
 </form>`;

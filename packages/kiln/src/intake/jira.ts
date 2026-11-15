@@ -88,7 +88,7 @@ export async function addFromJira(config: LoadedKilnConfig, input: AddJiraInput)
   const credentials = resolveJiraCredentials(config, input.env ?? process.env);
   const fetchImpl = input.fetch ?? globalThis.fetch;
   const client = { fetchImpl, credentials };
-  const acceptanceField = await findAcceptanceCriteriaField(client);
+  const acceptanceField = config.jira?.acceptanceField?.trim() || (await findAcceptanceCriteriaField(client));
   const issueUrl = jiraIssueUrl(credentials.baseUrl, key, acceptanceField);
   const issueResponse = await jiraGet(issueUrl, client);
   if (issueResponse.status !== 200) {

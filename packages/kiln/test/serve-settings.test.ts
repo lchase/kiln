@@ -215,6 +215,14 @@ describe("serve settings", () => {
       assert.equal(page.status, 200);
       assert.match(page.body, /id="settings"/);
       assert.match(page.body, /id="repo-add"/);
+      assert.match(page.body, /data-settings-tab="triggers"/);
+      assert.match(page.body, /data-settings-tab="routes"/);
+      assert.match(page.body, /data-settings-tab="jira"/);
+      assert.match(page.body, /data-settings-tab="overlay"/);
+      assert.match(page.body, /data-settings-tab="advanced"/);
+      assert.match(page.body, /id="settings-json"/);
+      assert.match(page.body, /JIRA_API_TOKEN/);
+      assert.match(page.body, /role="combobox"/);
       assert.match(page.body, /renders as \[ABC-123\] Title/);
       assert.match(page.body, /renders as ABC-123-slug/);
       assert.equal(page.body.includes(TOKEN), false);
@@ -223,9 +231,7 @@ describe("serve settings", () => {
       const loaded = await text(`${server.url}/api/settings`);
       assert.equal(loaded.status, 200, loaded.body);
       assert.equal(loaded.body.includes(TOKEN), false);
-      assert.equal(loaded.body.includes(IMAGE), false);
-      assert.equal(loaded.body.includes("apiToken"), false);
-      assert.equal(loaded.body.includes("keep-me"), false);
+      assert.equal(loaded.body.includes("keep-me"), true);
       const before = JSON.parse(loaded.body) as SettingsDoc;
       assert.equal(before.path, configPath);
       assert.match(before.revision, /^[a-f0-9]{64}$/);
@@ -241,6 +247,19 @@ describe("serve settings", () => {
       assert.equal(before.defaults.stallTimeoutMs, 15 * 60 * 1000);
       assert.equal(before.defaults.maxFixRounds, 2);
       assert.equal(before.defaults.sandboxMode, "off");
+      const loadedDoc = JSON.parse(loaded.body) as SettingsDoc & {
+        jira: { token: string };
+        file: {
+          sandbox?: { image?: string };
+          jira?: { apiToken?: string };
+          repos: { web: { custom?: string } };
+        };
+      };
+      assert.equal(loadedDoc.jira.token, "set in file");
+      assert.equal(loadedDoc.file.jira?.apiToken, "<redacted>");
+      assert.equal(loadedDoc.file.sandbox?.image, IMAGE);
+      assert.equal(loadedDoc.file.repos.web.custom, "keep-me");
+      assert.equal((before.repos.web as { custom?: string }).custom, undefined);
 
       const saved = await putSettings(server.url, csrf, {
         revision: before.revision,
@@ -262,8 +281,6 @@ describe("serve settings", () => {
       });
       assert.equal(saved.status, 200, saved.body);
       assert.equal(saved.body.includes(TOKEN), false);
-      assert.equal(saved.body.includes(IMAGE), false);
-      assert.equal(saved.body.includes("apiToken"), false);
       const afterSave = JSON.parse(saved.body) as SettingsDoc;
       assert.notEqual(afterSave.revision, before.revision);
       assert.equal(afterSave.repos.web?.deliver, "pr");
@@ -360,7 +377,7 @@ describe("serve settings", () => {
         jira: { apiToken: SNEAKY },
       });
       assert.equal(token.status, 400, token.body);
-      assert.equal(JSON.parse(token.body).fields.jira, "Unknown field.");
+      assert.match(JSON.parse(token.body).fields["jira.apiToken"] ?? "", /JIRA_API_TOKEN/);
       assert.equal(token.body.includes(SNEAKY), false);
       assert.equal(token.body.includes(TOKEN), false);
       assert.equal(readFileSync(configPath, "utf8"), original);
@@ -448,6 +465,130 @@ describe("serve settings", () => {
       assert.equal(file.note, "edited on disk");
       assert.equal(file.repos.web.test, "npm test");
       assert.equal(file.maxAttempts, undefined);
+    } finally {
+      await stop(server.child);
+    }
+  });
+
+  it("edits triggers, routes, jira, and the raw file without leaking the token", async () => {
+    const { cwd, home, configPath } = workDir("kiln-settings-file-");
+    const server = await startServe({ cwd, home });
+    try {
+      const page = await text(`${server.url}/settings`);
+      const csrf = csrfFrom(page.body);
+      const triggersPage = await text(`${server.url}/triggers`);
+      assert.equal(triggersPage.body.includes("data-trigger-toggle"), false);
+      assert.match(triggersPage.body, /Edit triggers in Settings/);
+      const before = JSON.parse((await text(`${server.url}/api/settings`)).body) as SettingsDoc & {
+        file: Record<string, unknown>;
+      };
+      assert.equal(JSON.stringify(before).includes(TOKEN), false);
+
+      const saved = await putSettings(server.url, csrf, {
+        revision: before.revision,
+        repos: before.repos,
+        maxConcurrent: 3,
+        adapter: "mock",
+        triggers: [{ id: "sample-ready", kind: "jira", repo: "web", every: "5m", label: "sample", status: "Ready" }],
+        routes: [{ id: "sample-ready", trigger: "sample-ready", action: "create", workflow: "feature", repo: "web" }],
+        jira: {
+          baseUrl: "https://example.atlassian.net",
+          email: "dev@example.com",
+          acceptanceField: "customfield_10001",
+        },
+        overlay: { workflows: "workflows", skillPaths: ["/tmp/example-skills"] },
+      });
+      assert.equal(saved.status, 200, saved.body);
+      assert.equal(saved.body.includes(TOKEN), false);
+      const written = JSON.parse(readFileSync(configPath, "utf8")) as {
+        owner: string;
+        maxConcurrent: number;
+        adapter: string;
+        triggers: { id: string; every?: string }[];
+        routes: { id: string }[];
+        jira: { apiToken: string; acceptanceField: string; baseUrl: string };
+        overlay: { workflows: string; skillPaths: string[] };
+      };
+      assert.equal(written.owner, "synthetic");
+      assert.equal(written.maxConcurrent, 3);
+      assert.equal(written.adapter, "mock");
+      assert.equal(written.jira.apiToken, TOKEN);
+      assert.equal(written.jira.baseUrl, "https://example.atlassian.net");
+      assert.equal(written.jira.acceptanceField, "customfield_10001");
+      assert.equal(written.triggers.some((item) => item.id === "sample-ready" && item.every === "5m"), true);
+      assert.equal(written.routes.some((item) => item.id === "sample-ready"), true);
+      assert.deepEqual(written.overlay.skillPaths, ["/tmp/example-skills"]);
+      const savedDoc = JSON.parse(saved.body) as { revision: string; file: { jira?: { apiToken?: string } } };
+      assert.equal(savedDoc.file.jira?.apiToken, "<redacted>");
+
+      const broken = await text(`${server.url}/api/settings`, {
+        method: "PUT",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-Kiln-CSRF": csrf,
+        },
+        body: "{",
+      });
+      assert.equal(broken.status, 400, broken.body);
+      assert.match(broken.body, /not JSON/);
+      assert.equal(JSON.parse(readFileSync(configPath, "utf8")).jira.apiToken, TOKEN);
+
+      const current = JSON.parse((await text(`${server.url}/api/settings`)).body) as {
+        revision: string;
+        file: Record<string, unknown>;
+      };
+      const disk = JSON.parse(readFileSync(configPath, "utf8")) as { note?: string };
+      disk.note = "on disk";
+      writeFileSync(configPath, `${JSON.stringify(disk, null, 2)}\n`);
+      const stale = await putSettings(server.url, csrf, { revision: current.revision, file: { ...current.file, note: "stale" } });
+      assert.equal(stale.status, 409, stale.body);
+      assert.equal(stale.body.includes(TOKEN), false);
+      assert.equal(JSON.parse(readFileSync(configPath, "utf8")).note, "on disk");
+
+      const fresh = JSON.parse((await text(`${server.url}/api/settings`)).body) as {
+        revision: string;
+        file: { jira?: { apiToken?: string }; maxConcurrent?: number };
+      };
+      assert.equal(JSON.stringify(fresh).includes(TOKEN), false);
+      assert.equal(fresh.file.jira?.apiToken, "<redacted>");
+      const round = await putSettings(server.url, csrf, {
+        revision: fresh.revision,
+        file: { ...fresh.file, maxConcurrent: 4 },
+      });
+      assert.equal(round.status, 200, round.body);
+      assert.equal(round.body.includes(TOKEN), false);
+      const afterRound = JSON.parse(readFileSync(configPath, "utf8")) as {
+        maxConcurrent: number;
+        note: string;
+        jira: { apiToken: string };
+        adapter: string;
+      };
+      assert.equal(afterRound.maxConcurrent, 4);
+      assert.equal(afterRound.note, "on disk");
+      assert.equal(afterRound.jira.apiToken, TOKEN);
+
+      const planted = structuredClone(fresh.file) as { jira?: { apiToken?: string } };
+      if (!planted.jira) planted.jira = {};
+      planted.jira.apiToken = SNEAKY;
+      const rejected = await putSettings(server.url, csrf, {
+        revision: JSON.parse(round.body).revision as string,
+        file: planted,
+      });
+      assert.equal(rejected.status, 400, rejected.body);
+      assert.match(JSON.parse(rejected.body).fields["file.jira.apiToken"] ?? "", /JIRA_API_TOKEN/);
+      assert.equal(rejected.body.includes(SNEAKY), false);
+      assert.equal(rejected.body.includes(TOKEN), false);
+      assert.equal(JSON.parse(readFileSync(configPath, "utf8")).jira.apiToken, TOKEN);
+
+      const invalid = await putSettings(server.url, csrf, {
+        revision: JSON.parse(round.body).revision as string,
+        file: { ...fresh.file, adapter: "nope" },
+      });
+      assert.equal(invalid.status, 400, invalid.body);
+      assert.ok(JSON.parse(invalid.body).fields.adapter);
+      assert.equal(JSON.parse(readFileSync(configPath, "utf8")).adapter, afterRound.adapter);
+      assert.equal(JSON.parse(readFileSync(configPath, "utf8")).jira.apiToken, TOKEN);
     } finally {
       await stop(server.child);
     }
