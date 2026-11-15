@@ -71,6 +71,18 @@ export interface AppModel {
 
 const LIVE_SCRIPT = readFileSync(join(packageRoot(), "assets", "serve.js"), "utf8");
 
+/** Kiln theme `--faint` (stone-500). A fixed stroke so the glyph reads on light and dark tabs. */
+const KILN_FAVICON_STROKE = "#78716c";
+
+/** Kiln mark in the sidebar brand. The favicon is this same SVG with a fixed stroke. */
+function kilnMark(stroke: string): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="${stroke}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12V6l5-3 5 3v6l-5 3-5-3z"/><path d="M3 6l5 3 5-3M8 9v6"/></svg>`;
+}
+
+function faviconLink(): string {
+  return `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,${encodeURIComponent(kilnMark(KILN_FAVICON_STROKE))}">`;
+}
+
 export function renderConsole(css: string, attention: AttentionView, page?: ServePageOptions): string {
   const jobs = [...attention.needsYou, ...attention.inFlight, ...attention.doneRecently].map((item) => item.job);
   const board = buildBoard(jobs, []);
@@ -87,7 +99,7 @@ export function renderApp(model: AppModel): string {
   const capNote = page.spend?.blocked ? `<span class="cap" id="cap-note">cap hit</span>` : `<span class="cap" id="cap-note" hidden>cap hit</span>`;
   const body = `<div class="shell">
 <aside class="nav" aria-label="Kiln">
-<div class="brand"><span class="logo" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12V6l5-3 5 3v6l-5 3-5-3z"/><path d="M3 6l5 3 5-3M8 9v6"/></svg></span><div><h1>Kiln</h1>${version}</div></div>
+<div class="brand"><span class="logo" aria-hidden="true">${kilnMark("currentColor")}</span><div><h1>Kiln</h1>${version}</div></div>
 <div class="nav-scroll">
 ${navHtml(model)}
 <button class="add" type="button" id="add-job">Add job</button>
@@ -1004,6 +1016,7 @@ function document(options: {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(options.title)}</title>
+${faviconLink()}
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&family=Roboto+Mono:wght@400;500&display=swap">
 <style>
 ${options.css}

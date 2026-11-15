@@ -7,7 +7,7 @@ import { after, describe, it } from "node:test";
 import { buildAttention } from "../src/attention.js";
 import { packageRoot } from "../src/paths.js";
 import type { StatusJobView } from "../src/report.js";
-import { renderConsole } from "../src/serve-page.js";
+import { renderConsole, renderMessagePage, renderTextPage } from "../src/serve-page.js";
 import { reapLaunches } from "./reap.js";
 
 const root = packageRoot();
@@ -241,6 +241,27 @@ after(async () => {
 });
 
 describe("serve pages", () => {
+  it("uses the sidebar kiln mark as the tab icon", () => {
+    const html = page([]);
+    const link = html.match(/<link rel="icon" type="image\/svg\+xml" href="(data:image\/svg\+xml,[^"]+)">/);
+    assert.ok(link?.[1]);
+    const svg = decodeURIComponent(link[1].slice("data:image/svg+xml,".length));
+    const brandStart = html.indexOf('<span class="logo"');
+    const brand = html.slice(brandStart, html.indexOf("</span>", brandStart));
+    const paths = (source: string) => [...source.matchAll(/<path d="([^"]+)"/g)].map((match) => match[1]);
+    assert.deepEqual(paths(svg), paths(brand));
+    assert.deepEqual(paths(svg), ["M3 12V6l5-3 5 3v6l-5 3-5-3z", "M3 6l5 3 5-3M8 9v6"]);
+    assert.match(brand, /stroke="currentColor"/);
+    assert.match(svg, /stroke="#78716c"/);
+    assert.doesNotMatch(svg, /currentColor|var\(--/);
+    const css = readFileSync(join(packageRoot(), "assets", "serve.css"), "utf8");
+    const kiln = css.slice(css.indexOf("/* theme:kiln */"), css.indexOf("/* theme:end */", css.indexOf("/* theme:kiln */")));
+    assert.match(kiln, /--faint:\s*#78716c/);
+    for (const other of [renderMessagePage("", "Not found", "Not found."), renderTextPage("", "Spec", "body")]) {
+      assert.match(other, /<link rel="icon" type="image\/svg\+xml" href="data:image\/svg\+xml,/);
+    }
+  });
+
   it("escapes job text and does not link a javascript pull request url", () => {
     const html = page([
       viewJob({
@@ -450,7 +471,11 @@ describe("kiln serve", () => {
       assert.match(server.url, /^http:\/\/127\.0\.0\.1:\d+$/);
       const homePage = await text(server.url);
       assert.equal(homePage.status, 200);
+      assert.match(homePage.body, /<link rel="icon" type="image\/svg\+xml" href="data:image\/svg\+xml,/);
       assert.match(homePage.body, /kiln-serve/);
+      const favicon = await text(`${server.url}/favicon.ico`);
+      assert.equal(favicon.status, 204);
+      assert.equal(favicon.body, "");
       assert.match(homePage.body, /Needs a hand/);
       assert.match(homePage.body, /\(0\) Kiln/);
       assert.doesNotMatch(homePage.body, new RegExp(TOKEN));
