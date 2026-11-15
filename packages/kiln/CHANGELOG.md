@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/lchase/kiln/compare/kiln-v0.18.0...kiln-v0.19.0) (2026-11-15)
+
+
+### Features
+
+* print kiln and yak versions at serve startup ([#63](https://github.com/lchase/kiln/issues/63)) ([9aaecab](https://github.com/lchase/kiln/commit/9aaecab7dee2f64a2253cf1875688a194af8b2c5))
+
 ## [0.18.0](https://github.com/lchase/kiln/compare/kiln-v0.17.0...kiln-v0.18.0) (2026-11-10)
 
 
