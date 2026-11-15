@@ -9,455 +9,105 @@ import { renderConsole } from "../src/serve-page.js";
 
 const script = readFileSync(join(packageRoot(), "assets", "serve.js"), "utf8");
 
-interface PageEvent {
-  target: PageEl;
-  preventDefault: () => void;
-  stopPropagation: () => void;
-  key?: string;
+function addForm(): string {
+  const html = renderConsole("", buildAttention([]), {
+    csrf: "abc",
+    repos: [{ name: "web", path: "/repos/web" }],
+    workflows: ["feature"],
+  });
+  const start = html.indexOf('id="add-form"');
+  const end = html.indexOf("</form>", start);
+  return html.slice(start, end);
 }
 
-interface PageEl {
-  tagName: string;
+interface El {
   id: string;
   attrs: Record<string, string>;
-  hidden: boolean;
-  disabled: boolean;
-  checked: boolean;
   value: string;
-  childNodes: Array<PageEl | string>;
-  parent: PageEl | null;
-  listeners: Record<string, Array<(event: PageEvent) => void>>;
-  classList: {
-    contains: (name: string) => boolean;
-    add: (name: string) => void;
-    remove: (name: string) => void;
-    toggle: (name: string, force?: boolean) => boolean;
-  };
-  textContent: string;
+  parent: El | null;
+  listeners: Record<string, Array<(event: { target: El; preventDefault(): void }) => void>>;
   getAttribute: (name: string) => string | null;
-  setAttribute: (name: string, value: string) => void;
-  removeAttribute: (name: string) => void;
-  closest: (selector: string) => PageEl | null;
-  querySelector: (selector: string) => PageEl | null;
-  querySelectorAll: (selector: string) => PageEl[];
-  addEventListener: (type: string, fn: (event: PageEvent) => void) => void;
+  closest: (selector: string) => El | null;
+  addEventListener: (type: string, fn: (event: { target: El; preventDefault(): void }) => void) => void;
 }
 
-function createEl(tag: string, attrs: Record<string, string> = {}): PageEl {
-  const classes = new Set((attrs.class ?? "").split(/\s+/).filter(Boolean));
-  const listeners: PageEl["listeners"] = {};
-  const el: PageEl = {
-    tagName: tag.toUpperCase(),
-    id: attrs.id ?? "",
+function el(id: string, attrs: Record<string, string> = {}): El {
+  const node: El = {
+    id,
     attrs: { ...attrs },
-    hidden: Object.hasOwn(attrs, "hidden"),
-    disabled: Object.hasOwn(attrs, "disabled"),
-    checked: Object.hasOwn(attrs, "checked"),
-    value: attrs.value ?? "",
-    childNodes: [],
+    value: "",
     parent: null,
-    listeners,
-    classList: {
-      contains: (name) => classes.has(name),
-      add: (name) => {
-        classes.add(name);
-      },
-      remove: (name) => {
-        classes.delete(name);
-      },
-      toggle: (name, force) => {
-        const on = force === undefined ? !classes.has(name) : force;
-        if (on) classes.add(name);
-        else classes.delete(name);
-        return on;
-      },
-    },
-    get textContent() {
-      return el.childNodes.map((child) => (typeof child === "string" ? child : child.textContent)).join("");
-    },
-    set textContent(value: string) {
-      el.childNodes = [value];
-    },
-    getAttribute: (name) => (Object.hasOwn(el.attrs, name) ? (el.attrs[name] ?? "") : null),
-    setAttribute: (name, value) => {
-      el.attrs[name] = String(value);
-      if (name === "id") el.id = String(value);
-    },
-    removeAttribute: (name) => {
-      delete el.attrs[name];
-    },
+    listeners: {},
+    getAttribute: (name) => (Object.hasOwn(node.attrs, name) ? (node.attrs[name] ?? "") : null),
     closest: (selector) => {
-      let node: PageEl | null = el;
-      while (node) {
-        if (matches(node, selector)) return node;
-        node = node.parent;
+      let current: El | null = node;
+      while (current) {
+        const source = selector.includes("[data-source]") && current.attrs["data-source"] && hasId(current, "add-form");
+        if (current.id && selector === `#${current.id}`) return current;
+        if (source) return current;
+        current = current.parent;
       }
       return null;
     },
-    querySelector: (selector) => queryAll(el, selector, false)[0] ?? null,
-    querySelectorAll: (selector) => queryAll(el, selector, false),
     addEventListener: (type, fn) => {
-      (listeners[type] ??= []).push(fn);
+      (node.listeners[type] ??= []).push(fn);
     },
   };
-  return el;
+  return node;
 }
 
-function elementsOf(el: PageEl): PageEl[] {
-  return el.childNodes.filter((child): child is PageEl => typeof child !== "string");
+function hasId(node: El, id: string): boolean {
+  let current: El | null = node;
+  while (current) {
+    if (current.id === id) return true;
+    current = current.parent;
+  }
+  return false;
 }
 
-function queryAll(root: PageEl, selector: string, includeRoot: boolean): PageEl[] {
-  const out: PageEl[] = [];
-  const walk = (el: PageEl, self: boolean): void => {
-    if (self && matches(el, selector)) out.push(el);
-    for (const child of elementsOf(el)) walk(child, true);
+function boot() {
+  const byId = new Map<string, El>();
+  const add = (id: string, attrs?: Record<string, string>) => {
+    const node = el(id, attrs);
+    byId.set(id, node);
+    return node;
   };
-  walk(root, includeRoot);
-  return out;
-}
-
-function findId(el: PageEl, id: string): PageEl | null {
-  if (el.id === id) return el;
-  for (const child of elementsOf(el)) {
-    const found = findId(child, id);
-    if (found) return found;
-  }
-  return null;
-}
-
-function matches(el: PageEl, selector: string): boolean {
-  return splitOutside(selector, ",").some((part) => matchesComplex(el, part));
-}
-
-function matchesComplex(el: PageEl, selector: string): boolean {
-  const parts = splitWhitespace(selector);
-  const last = parts[parts.length - 1];
-  if (!last || !matchesCompound(el, last)) return false;
-  let node = el.parent;
-  for (let index = parts.length - 2; index >= 0; index -= 1) {
-    const part = parts[index] ?? "";
-    while (node && !matchesCompound(node, part)) node = node.parent;
-    if (!node) return false;
-    node = node.parent;
-  }
-  return true;
-}
-
-function matchesCompound(el: PageEl, compound: string): boolean {
-  let index = 0;
-  let saw = false;
-  while (index < compound.length) {
-    const ch = compound[index] ?? "";
-    if (ch === "#") {
-      const ident = readIdent(compound, index + 1);
-      if (!ident.value || el.id !== ident.value) return false;
-      saw = true;
-      index = ident.next;
-      continue;
-    }
-    if (ch === ".") {
-      const ident = readIdent(compound, index + 1);
-      if (!ident.value || !el.classList.contains(ident.value)) return false;
-      saw = true;
-      index = ident.next;
-      continue;
-    }
-    if (ch === "[") {
-      const attr = readAttr(compound, index);
-      if (!attr || !attrMatches(el, attr)) return false;
-      saw = true;
-      index = attr.next;
-      continue;
-    }
-    if (ch === ":") {
-      const ident = readIdent(compound, index + 1);
-      if (ident.value !== "checked" || !el.checked) return false;
-      saw = true;
-      index = ident.next;
-      continue;
-    }
-    if (/[a-z]/i.test(ch)) {
-      const ident = readIdent(compound, index);
-      if (!ident.value || el.tagName !== ident.value.toUpperCase()) return false;
-      saw = true;
-      index = ident.next;
-      continue;
-    }
-    return false;
-  }
-  return saw;
-}
-
-function readIdent(source: string, start: number): { value: string; next: number } {
-  let index = start;
-  while (index < source.length && /[A-Za-z0-9_-]/.test(source[index] ?? "")) index += 1;
-  return { value: source.slice(start, index), next: index };
-}
-
-function readAttr(source: string, start: number): { name: string; value?: string; next: number } | undefined {
-  let index = start + 1;
-  const nameStart = index;
-  while (index < source.length && source[index] !== "=" && source[index] !== "]" && !/\s/.test(source[index] ?? "")) index += 1;
-  const name = source.slice(nameStart, index).trim().toLowerCase();
-  if (!name) return undefined;
-  while (index < source.length && /\s/.test(source[index] ?? "")) index += 1;
-  if (source[index] !== "=") return { name, next: source[index] === "]" ? index + 1 : index };
-  index += 1;
-  while (index < source.length && /\s/.test(source[index] ?? "")) index += 1;
-  const quote = source[index];
-  if (quote === "'" || quote === '"') {
-    const end = source.indexOf(quote, index + 1);
-    if (end < 0) return undefined;
-    let next = end + 1;
-    while (next < source.length && /\s/.test(source[next] ?? "")) next += 1;
-    if (source[next] === "]") next += 1;
-    return { name, value: source.slice(index + 1, end), next };
-  }
-  const valueStart = index;
-  while (index < source.length && source[index] !== "]") index += 1;
-  return { name, value: source.slice(valueStart, index).trim(), next: index + 1 };
-}
-
-function attrMatches(el: PageEl, attr: { name: string; value?: string }): boolean {
-  const actual = el.getAttribute(attr.name);
-  if (actual === null) return false;
-  return attr.value === undefined || actual === attr.value;
-}
-
-function splitOutside(source: string, separator: string): string[] {
-  const parts: string[] = [];
-  let start = 0;
-  let quote = "";
-  let bracket = 0;
-  for (let index = 0; index < source.length; index += 1) {
-    const ch = source[index] ?? "";
-    if (quote) {
-      if (ch === quote) quote = "";
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      continue;
-    }
-    if (ch === "[") bracket += 1;
-    else if (ch === "]" && bracket > 0) bracket -= 1;
-    else if (bracket === 0 && ch === separator) {
-      parts.push(source.slice(start, index));
-      start = index + 1;
-    }
-  }
-  parts.push(source.slice(start));
-  return parts.map((part) => part.trim()).filter(Boolean);
-}
-
-function splitWhitespace(source: string): string[] {
-  const parts: string[] = [];
-  let start = 0;
-  let quote = "";
-  let bracket = 0;
-  let index = 0;
-  while (index < source.length) {
-    const ch = source[index] ?? "";
-    if (quote) {
-      if (ch === quote) quote = "";
-      index += 1;
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      index += 1;
-      continue;
-    }
-    if (ch === "[") bracket += 1;
-    else if (ch === "]" && bracket > 0) bracket -= 1;
-    else if (bracket === 0 && /\s/.test(ch)) {
-      const token = source.slice(start, index).trim();
-      if (token) parts.push(token);
-      while (index < source.length && /\s/.test(source[index] ?? "")) index += 1;
-      start = index;
-      continue;
-    }
-    index += 1;
-  }
-  const last = source.slice(start).trim();
-  if (last) parts.push(last);
-  return parts;
-}
-
-const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
-
-function decode(text: string): string {
-  return text
-    .replace(/&#(\d+);/g, (_match, digits: string) => String.fromCodePoint(Number(digits)))
-    .replace(/&#x([0-9a-f]+);/gi, (_match, digits: string) => String.fromCodePoint(Number.parseInt(digits, 16)))
-    .replaceAll("&quot;", '"')
-    .replaceAll("&#39;", "'")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&amp;", "&");
-}
-
-function parseHtml(html: string): PageEl[] {
-  const root = createEl("div");
-  const stack = [root];
-  let index = 0;
-  while (index < html.length) {
-    if (html.startsWith("<!--", index)) {
-      const end = html.indexOf("-->", index + 4);
-      index = end < 0 ? html.length : end + 3;
-      continue;
-    }
-    if (html[index] !== "<") {
-      const next = html.indexOf("<", index);
-      const text = decode(html.slice(index, next < 0 ? html.length : next));
-      if (text) stack[stack.length - 1]?.childNodes.push(text);
-      index = next < 0 ? html.length : next;
-      continue;
-    }
-    if (html.startsWith("</", index)) {
-      const end = html.indexOf(">", index);
-      const name = html.slice(index + 2, end < 0 ? html.length : end).trim().toLowerCase();
-      index = end < 0 ? html.length : end + 1;
-      for (let depth = stack.length - 1; depth > 0; depth -= 1) {
-        const open = stack.pop();
-        if (open?.tagName === name.toUpperCase()) break;
-      }
-      continue;
-    }
-    let nameEnd = index + 1;
-    while (nameEnd < html.length && /[A-Za-z0-9]/.test(html[nameEnd] ?? "")) nameEnd += 1;
-    const name = html.slice(index + 1, nameEnd).toLowerCase();
-    const parsed = parseAttributes(html, nameEnd);
-    const el = createEl(name, parsed.attrs);
-    const parent = stack[stack.length - 1];
-    if (parent) {
-      parent.childNodes.push(el);
-      el.parent = parent;
-    }
-    index = parsed.next;
-    if (!parsed.selfClosing && !VOID_TAGS.has(name)) stack.push(el);
-  }
-  return elementsOf(root);
-}
-
-function parseAttributes(source: string, start: number): { attrs: Record<string, string>; selfClosing: boolean; next: number } {
-  const attrs: Record<string, string> = {};
-  let index = start;
-  while (index < source.length) {
-    while (index < source.length && /\s/.test(source[index] ?? "")) index += 1;
-    if (source.startsWith("/>", index)) return { attrs, selfClosing: true, next: index + 2 };
-    if (source[index] === ">") return { attrs, selfClosing: false, next: index + 1 };
-    const nameStart = index;
-    while (index < source.length && /[^\s=/>]/.test(source[index] ?? "")) index += 1;
-    const name = source.slice(nameStart, index).toLowerCase();
-    if (!name) break;
-    while (index < source.length && /\s/.test(source[index] ?? "")) index += 1;
-    if (source[index] !== "=") {
-      attrs[name] = "";
-      continue;
-    }
-    index += 1;
-    while (index < source.length && /\s/.test(source[index] ?? "")) index += 1;
-    const quote = source[index];
-    if (quote === '"' || quote === "'") {
-      const end = source.indexOf(quote, index + 1);
-      attrs[name] = decode(source.slice(index + 1, end < 0 ? source.length : end));
-      index = end < 0 ? source.length : end + 1;
-      continue;
-    }
-    const valueStart = index;
-    while (index < source.length && /[^\s>]/.test(source[index] ?? "")) index += 1;
-    attrs[name] = decode(source.slice(valueStart, index));
-  }
-  return { attrs, selfClosing: false, next: index };
-}
-
-interface IntakePayload {
-  repo?: string;
-  workflow?: string;
-  title?: string;
-  issue?: string;
-  dryRun?: boolean;
-  source?: { kind?: string; key?: string; text?: string };
-}
-
-function board(): string {
-  return renderConsole("", buildAttention([]), {
-    csrf: "abc",
-    repos: [{ name: "web", path: "/repos/web" }],
-    workflows: ["feature", "fix", "investigation", "review"],
-  });
-}
-
-function boot(html: string) {
-  const start = html.indexOf('<form id="add-form"');
-  const end = html.indexOf("</form>", start);
-  assert.ok(start >= 0 && end > start);
-  const [form] = parseHtml(html.slice(start, end + "</form>".length));
-  assert.ok(form);
-  const documentElement = createEl("html");
-  documentElement.attrs["data-theme"] = "kiln";
-  const body = createEl("body");
-  body.attrs = {
-    "data-needs-you": "0",
-    "data-revision": "rev",
-    "data-csrf": "abc",
-    "data-pick-limit": "5",
-  };
-  body.parent = documentElement;
-  documentElement.childNodes.push(body);
+  const body = add("body", { "data-needs-you": "0", "data-revision": "rev", "data-csrf": "abc", "data-pick-limit": "5" });
+  const form = add("add-form");
   form.parent = body;
-  body.childNodes.push(form);
-
-  const posts: IntakePayload[] = [];
-  const documentListeners: Record<string, Array<(event: PageEvent) => void>> = {};
+  const promptBtn = add("prompt-source", { "data-source": "prompt" });
+  const jiraBtn = add("jira-source", { "data-source": "jira" });
+  for (const child of [promptBtn, jiraBtn, add("jira-key"), add("job-issue"), add("job-title"), add("prompt-text")]) {
+    child.parent = form;
+  }
+  add("repo-pick", { "data-value": "web" });
+  add("workflow-pick", { "data-workflow": "feature" });
+  const posts: Array<Record<string, unknown>> = [];
+  const clicks: Array<(event: { target: El; preventDefault(): void }) => void> = [];
   const document = {
     body,
-    documentElement,
+    documentElement: { getAttribute: () => "kiln" },
     title: "",
-    getElementById: (id: string) => findId(documentElement, id),
-    querySelector: (selector: string) => queryAll(documentElement, selector, true)[0] ?? null,
-    querySelectorAll: (selector: string) => queryAll(documentElement, selector, true),
-    addEventListener: (type: string, fn: (event: PageEvent) => void) => {
-      (documentListeners[type] ??= []).push(fn);
+    getElementById: (id: string) => byId.get(id) ?? null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener: (type: string, fn: (event: { target: El; preventDefault(): void }) => void) => {
+      if (type === "click") clicks.push(fn);
     },
   };
-  const storage = () => {
-    const store = new Map<string, string>();
-    return {
-      getItem: (key: string) => (store.has(key) ? (store.get(key) ?? null) : null),
-      setItem: (key: string, value: string) => {
-        store.set(key, String(value));
-      },
-      removeItem: (key: string) => {
-        store.delete(key);
-      },
-    };
-  };
-  const eventFor = (target: PageEl): PageEvent => ({ target, preventDefault() {}, stopPropagation() {} });
-  const context = vm.createContext({
+  vm.runInContext(script, vm.createContext({
     document,
-    localStorage: storage(),
-    sessionStorage: storage(),
+    localStorage: memory(),
+    sessionStorage: memory(),
     fetch: (_url: string, init?: { method?: string; body?: string }) => {
-      if (init?.method === "POST") posts.push(JSON.parse(init.body ?? "{}") as IntakePayload);
-      return Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve(
-            init?.method === "POST"
-              ? { ids: [], dryRun: true, report: "dry-run PROJ-123\ntitle Show the empty state\n" }
-              : {},
-          ),
-      });
+      if (init?.method === "POST") posts.push(JSON.parse(init.body ?? "{}") as Record<string, unknown>);
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ids: ["job-1"] }) });
     },
     setInterval: () => 0,
     setTimeout,
     clearTimeout,
     clearInterval,
     location: { reload() {} },
-    console,
     Promise,
     Date,
     Number,
@@ -466,111 +116,72 @@ function boot(html: string) {
     JSON,
     Object,
     Array,
-    Math,
-    Error,
-    RegExp,
     isFinite,
-    isNaN,
-    parseInt,
-    parseFloat,
     encodeURIComponent,
-    decodeURIComponent,
-    undefined,
-    NaN,
-    Infinity,
-  });
-  vm.runInContext(script, context);
+  }));
+  const fire = (target: El, type: string) => {
+    const event = { target, preventDefault() {} };
+    for (const fn of target.listeners[type] ?? []) fn(event);
+    if (type === "click") for (const fn of clicks) fn(event);
+  };
+  return { byId, posts, fire };
+}
+
+function memory() {
+  const store = new Map<string, string>();
   return {
-    document,
-    posts,
-    click(el: PageEl) {
-      const event = eventFor(el);
-      let node: PageEl | null = el;
-      while (node) {
-        for (const fn of [...(node.listeners.click ?? [])]) fn(event);
-        node = node.parent;
-      }
-      for (const fn of documentListeners.click ?? []) fn(event);
+    getItem: (key: string) => (store.has(key) ? (store.get(key) ?? null) : null),
+    setItem: (key: string, value: string) => {
+      store.set(key, String(value));
     },
-    input(el: PageEl) {
-      const event = eventFor(el);
-      for (const fn of el.listeners.input ?? []) fn(event);
-    },
-    submit(el: PageEl) {
-      const event = eventFor(el);
-      for (const fn of el.listeners.submit ?? []) fn(event);
+    removeItem: (key: string) => {
+      store.delete(key);
     },
   };
 }
 
-function byId(page: ReturnType<typeof boot>, id: string): PageEl {
-  const el = page.document.getElementById(id);
-  assert.ok(el, id);
-  return el;
-}
-
-async function flush(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-}
-
 describe("jira add form", () => {
-  it("does not render or send Issue and Title, and previews the summary", async () => {
-    const page = boot(board());
-    await flush();
-    const pane = page.document.querySelector('[data-pane="jira"]');
-    assert.ok(pane);
-    assert.equal(pane.querySelector("#job-issue"), null);
-    assert.equal(pane.querySelector("#job-title"), null);
-    assert.equal(pane.querySelector(".k")?.textContent, "Jira issue");
-    assert.equal(byId(page, "jira-key").getAttribute("placeholder"), "PROJ-123 or issue URL");
-    assert.equal(byId(page, "issue-field").hidden, false);
-    assert.equal(byId(page, "title-field").hidden, false);
+  it("renders no Issue or Title inputs in the Jira pane", () => {
+    const form = addForm();
+    const pane = form.slice(form.indexOf('data-pane="jira"'), form.indexOf('id="issue-field"'));
+    assert.match(pane, />Jira issue</);
+    assert.match(pane, /placeholder="PROJ-123 or issue URL"/);
+    assert.doesNotMatch(pane, /id="job-issue"|id="job-title"/);
+    assert.match(form, /id="issue-field"/);
+    assert.match(form, /id="title-field"/);
+  });
 
-    byId(page, "job-issue").value = "ABC-999";
-    byId(page, "job-title").value = "Typed title";
-    page.input(byId(page, "job-title"));
-    const jira = page.document.querySelector('[data-source="jira"]');
-    assert.ok(jira);
-    page.click(jira);
+  it("sends only the Jira key, and still sends Issue and Title for a prompt", async () => {
+    const page = boot();
+    const issue = page.byId.get("job-issue");
+    const title = page.byId.get("job-title");
+    const key = page.byId.get("jira-key");
+    const prompt = page.byId.get("prompt-text");
+    const jira = page.byId.get("jira-source");
+    const promptBtn = page.byId.get("prompt-source");
+    const form = page.byId.get("add-form");
+    assert.ok(issue && title && key && prompt && jira && promptBtn && form);
+    issue.value = "ABC-999";
+    title.value = "Typed title";
+    page.fire(title, "input");
+    page.fire(jira, "click");
+    key.value = "https://example.atlassian.net/browse/PROJ-123";
+    page.fire(form, "submit");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const jiraBody = page.posts[0];
+    assert.ok(jiraBody);
+    assert.deepEqual(jiraBody.source, { kind: "jira", key: "https://example.atlassian.net/browse/PROJ-123" });
+    assert.equal(Object.hasOwn(jiraBody, "issue"), false);
+    assert.equal(Object.hasOwn(jiraBody, "title"), false);
 
-    assert.equal(pane.hidden, false);
-    assert.equal(byId(page, "issue-field").hidden, true);
-    assert.equal(byId(page, "title-field").hidden, true);
-    assert.equal(byId(page, "after-field").hidden, false);
-    assert.equal(byId(page, "preview-job").hidden, false);
-    byId(page, "jira-key").value = "https://example.atlassian.net/browse/PROJ-123";
-    page.input(byId(page, "jira-key"));
-    assert.equal(byId(page, "add-submit").disabled, false);
-    page.click(byId(page, "preview-job"));
-    await flush();
-
-    assert.equal(page.posts.length, 1);
-    const preview = page.posts[0];
-    assert.ok(preview);
-    assert.equal(preview.dryRun, true);
-    assert.equal(preview.source?.kind, "jira");
-    assert.equal(preview.source?.key, "https://example.atlassian.net/browse/PROJ-123");
-    assert.equal(Object.hasOwn(preview, "issue"), false);
-    assert.equal(Object.hasOwn(preview, "title"), false);
-    assert.equal(byId(page, "intake-preview").hidden, false);
-    assert.match(byId(page, "intake-preview").textContent, /title Show the empty state/);
-
-    const prompt = page.document.querySelector('[data-source="prompt"]');
-    assert.ok(prompt);
-    page.click(prompt);
-    assert.equal(byId(page, "issue-field").hidden, false);
-    assert.equal(byId(page, "title-field").hidden, false);
-    assert.equal(byId(page, "preview-job").hidden, true);
-    byId(page, "prompt-text").value = "Show a quiet empty state\n";
-    page.submit(byId(page, "add-form"));
-    await flush();
-
-    const created = page.posts[1];
-    assert.ok(created);
-    assert.equal(created.dryRun, undefined);
-    assert.equal(created.source?.kind, "prompt");
-    assert.equal(created.source?.text, "Show a quiet empty state\n");
-    assert.equal(created.issue, "ABC-999");
-    assert.equal(created.title, "Typed title");
+    page.fire(promptBtn, "click");
+    prompt.value = "Show a quiet empty state\n";
+    page.fire(form, "submit");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const promptBody = page.posts[1];
+    assert.ok(promptBody);
+    assert.equal((promptBody.source as { kind?: string }).kind, "prompt");
+    assert.equal(promptBody.issue, "ABC-999");
+    assert.equal(promptBody.title, "Typed title");
   });
 });

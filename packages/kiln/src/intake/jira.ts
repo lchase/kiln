@@ -67,7 +67,8 @@ export interface AddJiraResult {
  * One issue becomes one job. Re-running the same key prints the existing id.
  */
 export async function addFromJira(config: LoadedKilnConfig, input: AddJiraInput): Promise<AddJiraResult> {
-  const key = normalizeIssueKey(input.key, configuredJiraBaseUrl(config, input.env ?? process.env));
+  const env = input.env ?? process.env;
+  const key = normalizeIssueKey(input.key, firstSet(env[ENV_BASE_URL], config.jira?.baseUrl));
   if (input.issue !== undefined) {
     const explicit = input.issue.trim().toUpperCase();
     if (!ISSUE_KEY.test(explicit)) {
@@ -241,90 +242,39 @@ function parseSearchIssues(payload: unknown, credentials: JiraCredentials): Jira
   return out;
 }
 
-const HTTP_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
-
-/**
- * `KEY-123`, or an http(s) URL that names it in `/browse/KEY-123` or `selectedIssue`.
- * When `baseUrl` is set, a URL from a different host is rejected.
- */
+/** `KEY-123`, or an http(s) URL with `/browse/KEY-123` or `selectedIssue`. A URL from another host is rejected when `baseUrl` is set. */
 export function normalizeIssueKey(raw: string, baseUrl?: string): string {
   const trimmed = raw.trim();
-  if (HTTP_URL.test(trimmed)) {
-    const parsed = issueKeyFromUrl(raw, trimmed);
-    assertConfiguredJiraHost(parsed.host, baseUrl);
-    return parsed.key;
+  const bad = () => new Error(`Jira issue key ${JSON.stringify(raw)} is not a KEY-123 identifier.`);
+  if (!trimmed.includes("://")) {
+    const plain = trimmed.toUpperCase();
+    if (!ISSUE_KEY.test(plain)) throw bad();
+    return plain;
   }
-  const key = trimmed.toUpperCase();
-  if (!ISSUE_KEY.test(key)) throw badIssueKey(raw);
-  return key;
-}
-
-function badIssueKey(raw: string): Error {
-  return new Error(`Jira issue key ${JSON.stringify(raw)} is not a KEY-123 identifier.`);
-}
-
-function issueKeyFromUrl(raw: string, trimmed: string): { key: string; host: string } {
   let url: URL;
   try {
     url = new URL(trimmed);
   } catch {
-    throw badIssueKey(raw);
+    throw bad();
   }
-  if ((url.protocol !== "http:" && url.protocol !== "https:") || !url.hostname) throw badIssueKey(raw);
-  const key = browseKey(url) ?? selectedIssueKey(url);
-  if (!key) throw badIssueKey(raw);
-  return { key, host: url.hostname };
-}
-
-function browseKey(url: URL): string | undefined {
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || !url.hostname) throw bad();
   const parts = url.pathname.split("/");
-  for (let index = 0; index < parts.length - 1; index += 1) {
-    if (parts[index]?.toLowerCase() !== "browse") continue;
-    const key = decodeKeySegment(parts[index + 1] ?? "");
-    if (ISSUE_KEY.test(key)) return key;
-  }
-  return undefined;
-}
-
-function selectedIssueKey(url: URL): string | undefined {
-  const selected = url.searchParams.get("selectedIssue");
-  if (!selected) return undefined;
-  const key = selected.trim().toUpperCase();
-  return ISSUE_KEY.test(key) ? key : undefined;
-}
-
-function decodeKeySegment(segment: string): string {
-  let text = segment;
+  const browseAt = parts.findIndex((part) => part.toLowerCase() === "browse");
+  let key = browseAt >= 0 ? (parts[browseAt + 1] ?? "").trim().toUpperCase() : "";
+  if (!ISSUE_KEY.test(key)) key = (url.searchParams.get("selectedIssue") ?? "").trim().toUpperCase();
+  if (!ISSUE_KEY.test(key)) throw bad();
+  let expected = "";
   try {
-    text = decodeURIComponent(segment);
+    if (baseUrl?.trim()) expected = new URL(baseUrl.trim()).hostname;
   } catch {
-    text = segment;
+    expected = "";
   }
-  return text.trim().toUpperCase();
-}
-
-function assertConfiguredJiraHost(urlHost: string, baseUrl: string | undefined): void {
-  const expected = hostnameOf(baseUrl);
-  if (!expected || urlHost === expected) return;
-  throw new Error(
-    `Jira URL host ${JSON.stringify(urlHost)} does not match the configured Jira host ${JSON.stringify(expected)}.`,
-  );
-}
-
-function hostnameOf(raw: string | undefined): string | undefined {
-  const trimmed = raw?.trim();
-  if (!trimmed) return undefined;
-  try {
-    const url = new URL(trimmed);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
-    return url.hostname || undefined;
-  } catch {
-    return undefined;
+  if (expected && url.hostname !== expected) {
+    throw new Error(
+      `Jira URL host ${JSON.stringify(url.hostname)} does not match the configured Jira host ${JSON.stringify(expected)}.`,
+    );
   }
-}
-
-function configuredJiraBaseUrl(config: LoadedKilnConfig, env: NodeJS.ProcessEnv): string | undefined {
-  return firstSet(env[ENV_BASE_URL], config.jira?.baseUrl);
+  return key;
 }
 
 /**
