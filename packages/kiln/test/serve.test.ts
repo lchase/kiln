@@ -241,7 +241,7 @@ after(async () => {
 });
 
 describe("serve pages", () => {
-  it("uses the sidebar kiln mark as the tab icon", () => {
+  it("uses the sidebar kiln badge as the tab icon", () => {
     const html = page([]);
     const link = html.match(/<link rel="icon" type="image\/svg\+xml" href="(data:image\/svg\+xml,[^"]+)">/);
     assert.ok(link?.[1]);
@@ -252,11 +252,36 @@ describe("serve pages", () => {
     assert.deepEqual(paths(svg), paths(brand));
     assert.deepEqual(paths(svg), ["M3 12V6l5-3 5 3v6l-5 3-5-3z", "M3 6l5 3 5-3M8 9v6"]);
     assert.match(brand, /stroke="currentColor"/);
-    assert.match(svg, /stroke="#78716c"/);
+    assert.doesNotMatch(brand, /<rect /);
     assert.doesNotMatch(svg, /currentColor|var\(--/);
+
     const css = readFileSync(join(packageRoot(), "assets", "serve.css"), "utf8");
+    const tokens = css.slice(css.indexOf("/* tokens:start */"), css.indexOf("/* tokens:end */"));
     const kiln = css.slice(css.indexOf("/* theme:kiln */"), css.indexOf("/* theme:end */", css.indexOf("/* theme:kiln */")));
-    assert.match(kiln, /--faint:\s*#78716c/);
+    const decl = (block: string, name: string) => {
+      const found = block.match(new RegExp(`${name}:\\s*([^;]+);`));
+      assert.ok(found?.[1], name);
+      return found[1].trim();
+    };
+    const badge = Number.parseInt(decl(tokens, "--logo"), 10);
+    const radius = Number.parseInt(decl(tokens, "--radius-md"), 10);
+    const glyph = Number.parseInt(decl(tokens, "--icon"), 10);
+    const fill = decl(kiln, "--primary");
+    const stroke = decl(kiln, "--on-primary");
+    const logo = css.match(/\.logo\s*\{[^}]+\}/)?.[0] ?? "";
+    assert.match(logo, /width:\s*var\(--logo\)/);
+    assert.match(logo, /height:\s*var\(--logo\)/);
+    assert.match(logo, /border-radius:\s*var\(--radius-md\)/);
+    assert.match(logo, /background:\s*var\(--primary\)/);
+    assert.match(logo, /color:\s*var\(--on-primary\)/);
+    const offset = (badge - glyph) / 2;
+    assert.match(svg, new RegExp(`viewBox="0 0 ${badge} ${badge}"`));
+    assert.match(svg, new RegExp(`<rect width="${badge}" height="${badge}" rx="${radius}" fill="${fill}"/>`));
+    assert.match(svg, new RegExp(`x="${offset}" y="${offset}" width="${glyph}" height="${glyph}"`));
+    assert.match(svg, new RegExp(`stroke="${stroke}"`));
+    assert.ok(svg.indexOf("<rect ") < svg.indexOf("<path "));
+    assert.equal(radius / badge, 4 / 28);
+
     for (const other of [renderMessagePage("", "Not found", "Not found."), renderTextPage("", "Spec", "body")]) {
       assert.match(other, /<link rel="icon" type="image\/svg\+xml" href="data:image\/svg\+xml,/);
     }
