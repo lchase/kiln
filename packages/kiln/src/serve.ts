@@ -25,13 +25,14 @@ import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import { productionHost } from "./host.js";
 import { intakeJobs } from "./intake-http.js";
 import { jobBasename, packageRoot } from "./paths.js";
-import { SANDBOX_PREFLIGHT_PREFIX } from "./sandbox.js";
+import { SANDBOX_PREFLIGHT_PREFIX, sandboxIsEnabled } from "./sandbox.js";
 import type { StatusJobView } from "./report.js";
 import { renderApp, type AppSection, type ServePageOptions, renderMessagePage, renderTextPage } from "./serve-page.js";
 import { isPaused, pauseFactory, resumeFactory, spendFor } from "./rails.js";
 import { readSettings, saveSettings } from "./settings.js";
 import { triggerRows } from "./triggers.js";
-import { listWorkflowNames } from "./workflow.js";
+import { formatServeStartup } from "./version.js";
+import { listWorkflowNames, overlayLoadCounts } from "./workflow.js";
 
 export interface ServeOptions {
   config: LoadedKilnConfig;
@@ -104,7 +105,20 @@ export function startServe(options: ServeOptions): Promise<void> {
         return;
       }
       port = address.port;
-      process.stdout.write(`listening http://${address.address}:${address.port}\n`);
+      process.stdout.write(
+        redact(
+          formatServeStartup({
+            node: process.version,
+            home: state.config.kilnDir,
+            url: `http://${address.address}:${address.port}`,
+            ...(options.tickSeconds !== undefined ? { tickSeconds: options.tickSeconds } : {}),
+            paused: isPaused(state.config.kilnDir),
+            sandbox: sandboxIsEnabled(state.config) ? "docker" : "off",
+            overlay: overlayLoadCounts(state.config.overlay, state.config.reviewPrompt),
+          }),
+          state.secrets,
+        ),
+      );
       if (options.tickSeconds === undefined) return;
       const tick = (): void => {
         if (stopped) return;

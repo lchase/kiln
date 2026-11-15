@@ -324,6 +324,77 @@ function readPromptFile(rel: string, options: MaterializeOptions): string {
   return readFileSync(packaged, "utf8");
 }
 
+export interface OverlayLoadCounts {
+  workflows: number;
+  promptOverrides: number;
+  skillDirs: number;
+}
+
+const PROMPT_GROUP = /^[a-z0-9-]+$/;
+const PROMPT_FILE = /^[a-z0-9-]+\.md$/;
+
+/**
+ * What the local overlay will use at launch.
+ *
+ * Workflows are the `workflows/*.yaml` names in the overlay directory.
+ * A file that reuses a shipped name is included here; listing workflows
+ * still refuses it. Prompt overrides are `prompts/<group>/<name>.md` files
+ * the prompt loader accepts. `reviewPrompt` counts as `kiln/review.md` when
+ * that file exists and the tree does not already have it. Skill directories
+ * are the ones config resolved and found on disk. A missing directory is zero.
+ */
+export function overlayLoadCounts(
+  overlay: { workflowsDir: string; promptsDir: string; skillDirs: readonly string[] },
+  reviewPrompt?: string,
+): OverlayLoadCounts {
+  const prompts = promptOverrideRels(overlay.promptsDir);
+  if (reviewPrompt && isFile(reviewPrompt)) prompts.add("kiln/review.md");
+  return {
+    workflows: workflowNamesIn(overlay.workflowsDir).length,
+    promptOverrides: prompts.size,
+    skillDirs: overlay.skillDirs.length,
+  };
+}
+
+function promptOverrideRels(promptsDir: string): Set<string> {
+  const rels = new Set<string>();
+  let groups: string[];
+  try {
+    groups = readdirSync(promptsDir);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return rels;
+    throw error;
+  }
+  for (const group of groups) {
+    if (!PROMPT_GROUP.test(group)) continue;
+    const groupDir = join(promptsDir, group);
+    let files: string[];
+    try {
+      if (!statSync(groupDir).isDirectory()) continue;
+      files = readdirSync(groupDir);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") continue;
+      throw error;
+    }
+    for (const file of files) {
+      if (!PROMPT_FILE.test(file)) continue;
+      if (!isFile(join(groupDir, file))) continue;
+      rels.add(`${group}/${file}`);
+    }
+  }
+  return rels;
+}
+
+function isFile(path: string): boolean {
+  try {
+    return existsSync(path) && statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function workflowNamesIn(dir: string): string[] {
   let names: string[];
   try {

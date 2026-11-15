@@ -272,7 +272,10 @@ A Blocks link where this issue is blocked by another key becomes `dependsOn` whe
 kiln serve
 kiln serve --port 4100 --tick 30
 kiln serve --no-tick
+kiln --version
 ```
+
+On startup, `kiln serve` prints the kiln version from this package, the `@lchase/yak` version Node resolves for this process (`unknown` if it cannot be resolved), the Node version, the kiln home, and the board URL. The next line is the tick interval (`every 30s`, or `off` with `--no-tick`), whether the factory is paused or running, and sandbox mode (`off` or `docker`). The last line counts local workflows, prompt overrides, and skill directories. `kiln --version` and `kiln -v` print the kiln version and the yak version.
 
 `kiln serve` listens on `127.0.0.1` only (port 4100 unless `--port` is set). It reads the same derived state as `kiln status` and calls the same approve, reject, retry, add, and import functions. Nothing new is stored.
 

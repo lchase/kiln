@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import type { LoadedKilnConfig } from "./config.js";
 import { jobBasename } from "./paths.js";
 import type { SandboxSettings } from "./schemas.js";
+import { packageVersion } from "./version.js";
 
 /**
  * Opt-in Docker sandbox for Kiln agent steps.
@@ -390,8 +391,7 @@ function installedYakVersion(): string {
 function readInstalledYak(): { version: string; dist: string } {
   const require = createRequire(import.meta.url);
   const pkgPath = require.resolve("@lchase/yak/package.json");
-  const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: unknown };
-  const version = typeof pkg.version === "string" && pkg.version.length > 0 ? pkg.version : "unknown";
+  const version = packageVersion(pkgPath);
   let dist = "";
   try {
     dist = readFileSync(join(dirname(pkgPath), "dist", "index.js"), "utf8");
