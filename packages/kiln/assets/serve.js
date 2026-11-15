@@ -822,10 +822,8 @@
   var themeApplied = document.documentElement.getAttribute("data-theme") || "kiln";
   var themeQueued = null;
   var themeSaving = false;
-  var triggerDraft = [];
-  var routeDraft = [];
-  var editingTrigger = null;
-  var editingRoute = null;
+  var triggerRows;
+  var routeRows;
   var SETTINGS_TABS = ["repos", "global", "triggers", "routes", "jira", "overlay", "appearance", "advanced"];
 
   function setSettingsTab(tab) {
@@ -834,18 +832,10 @@
       var pane = document.getElementById("settings-" + SETTINGS_TABS[i]);
       if (pane) pane.hidden = SETTINGS_TABS[i] !== tab;
     }
-    var box = document.getElementById("settings-section");
-    if (!box) return;
-    var options = box.querySelectorAll("[data-settings-tab]");
-    var label = tab;
-    for (var j = 0; j < options.length; j++) {
-      var on = options[j].getAttribute("data-settings-tab") === tab;
-      options[j].setAttribute("aria-selected", on ? "true" : "false");
-      if (on) label = options[j].getAttribute("data-value") || label;
+    var buttons = document.querySelectorAll("#settings-form [data-settings-tab]");
+    for (var j = 0; j < buttons.length; j++) {
+      buttons[j].setAttribute("aria-pressed", buttons[j].getAttribute("data-settings-tab") === tab ? "true" : "false");
     }
-    box.setAttribute("data-value", label);
-    var input = box.querySelector("[role='combobox']");
-    if (input) input.value = label;
   }
 
   function markTheme(id) {
@@ -1161,8 +1151,9 @@
 
   function triggerIdOptions() {
     var options = [];
-    for (var i = 0; i < triggerDraft.length; i++) {
-      if (triggerDraft[i] && triggerDraft[i].id) options.push({ value: triggerDraft[i].id, label: triggerDraft[i].id });
+    var names = triggerRows ? triggerRows.rows : [];
+    for (var i = 0; i < names.length; i++) {
+      if (names[i] && names[i].id) options.push({ value: names[i].id, label: names[i].id });
     }
     if (!options.length) options.push({ value: "", label: "None" });
     return options;
@@ -1197,28 +1188,134 @@
     return entry;
   }
 
-  function renderTriggerList() {
-    var host = document.getElementById("trigger-list");
-    if (!host) return;
-    if (!triggerDraft.length && !editingTrigger) {
-      host.innerHTML = '<p class="empty">No triggers.</p>';
-      return;
+  function bindRows(spec) {
+    var rows = [];
+    var editing = null;
+    function render() {
+      var host = document.getElementById(spec.list);
+      if (!host) return;
+      if (!rows.length && !editing) {
+        host.innerHTML = '<p class="empty">' + spec.empty + "</p>";
+        return;
+      }
+      var html = "";
+      for (var i = 0; i < rows.length; i++) {
+        if (editing && editing.index === i) continue;
+        var row = rows[i];
+        html += '<div class="repo-row"><div><div class="num">' + esc(row.id || "Untitled") + '</div><div class="meta">' + esc(spec.summary(row)) + '</div></div><div class="d-actions"><button type="button" data-row-edit="' + spec.name + ":" + i + '">Edit</button>';
+        if (!row.builtin) html += '<button type="button" data-row-remove="' + spec.name + ":" + i + '">Delete</button>';
+        html += "</div></div>";
+      }
+      host.innerHTML = html;
     }
-    var html = "";
-    for (var i = 0; i < triggerDraft.length; i++) {
-      if (editingTrigger && editingTrigger.index === i) continue;
-      var trigger = triggerDraft[i];
-      var bits = [trigger.kind, trigger.enabled === false ? "off" : "on"];
-      if (trigger.cron) bits.push(trigger.cron);
-      if (trigger.every) bits.push(trigger.every);
-      if (trigger.repo) bits.push(trigger.repo);
-      if (trigger.builtin) bits.push("built in");
-      html += '<div class="repo-row"><div><div class="num">' + esc(trigger.id || "Untitled") + '</div><div class="meta">' + esc(bits.join(" · ")) + '</div></div><div class="d-actions"><button type="button" data-trigger-edit="' + i + '">Edit</button>';
-      if (!trigger.builtin) html += '<button type="button" data-trigger-remove="' + i + '">Delete</button>';
-      html += "</div></div>";
+    function flush() {
+      if (!editing) return true;
+      var row = spec.read(editing);
+      showSlot(spec.idError, "");
+      if (!row.id) {
+        showSlot(spec.idError, "Id is required.");
+        return false;
+      }
+      if (spec.invalid && spec.invalid(row)) return false;
+      for (var i = 0; i < rows.length; i++) {
+        if (i !== editing.index && rows[i].id === row.id) {
+          showSlot(spec.idError, "A " + spec.noun + " named " + row.id + " is already in the list.");
+          return false;
+        }
+      }
+      if (editing.index == null) rows.push(row);
+      else rows[editing.index] = row;
+      editing.index = editing.index == null ? rows.length - 1 : editing.index;
+      return true;
     }
-    host.innerHTML = html;
+    function open(index, row) {
+      editing = { index: index, builtin: Boolean(row.builtin) };
+      spec.fill(row);
+      var editor = document.getElementById(spec.editor);
+      if (editor) editor.hidden = false;
+      render();
+      var idInput = document.getElementById(spec.idInput);
+      if (idInput && idInput.focus && !row.builtin) idInput.focus();
+    }
+    function close() {
+      editing = null;
+      var editor = document.getElementById(spec.editor);
+      if (editor) editor.hidden = true;
+      render();
+    }
+    return {
+      rows: function () { return rows; },
+      set: function (value) { rows = value; },
+      flush: flush,
+      close: close,
+      editing: function () { return editing; },
+      edit: function (index) {
+        if (!rows[index]) return;
+        if (editing && editing.index !== index && !flush()) return;
+        if (editing && editing.index === index) return;
+        open(index, rows[index]);
+      },
+      add: function (blank) {
+        if (editing && !flush()) return;
+        open(null, blank);
+      },
+      remove: function (index) {
+        var row = rows[index];
+        if (!row || row.builtin) return;
+        if (!window.confirm("Delete " + spec.noun + " " + (row.id || "untitled") + "?")) return;
+        if (editing && editing.index === index) close();
+        else if (editing && !flush()) return;
+        rows.splice(index, 1);
+        if (editing && editing.index != null && editing.index > index) editing.index -= 1;
+        markSettingsDirty();
+        render();
+      },
+    };
   }
+
+  triggerRows = bindRows({
+    name: "triggers",
+    list: "trigger-list",
+    editor: "trigger-editor",
+    idInput: "trigger-id",
+    idError: "trigger.id",
+    noun: "trigger",
+    empty: "No triggers.",
+    read: readTriggerEditor,
+    fill: fillTriggerEditor,
+    summary: function (row) {
+      var bits = [row.kind, row.enabled === false ? "off" : "on"];
+      if (row.cron) bits.push(row.cron);
+      if (row.every) bits.push(row.every);
+      if (row.repo) bits.push(row.repo);
+      if (row.builtin) bits.push("built in");
+      return bits.join(" · ");
+    },
+  });
+
+  routeRows = bindRows({
+    name: "routes",
+    list: "route-list",
+    editor: "route-editor",
+    idInput: "route-id",
+    idError: "route.id",
+    noun: "route",
+    empty: "No routes.",
+    read: readRouteEditor,
+    fill: fillRouteEditor,
+    invalid: function (row) {
+      if (row.trigger) return false;
+      showSlot("route.id", "Trigger is required.");
+      return true;
+    },
+    summary: function (row) {
+      var bits = [row.action || "create", row.trigger || ""];
+      if (row.workflow) bits.push(row.workflow);
+      if (row.repo) bits.push(row.repo);
+      if (row.builtin) bits.push("built in");
+      return bits.join(" · ");
+    },
+  });
 
   function fillTriggerEditor(trigger) {
     var idInput = document.getElementById("trigger-id");
@@ -1232,23 +1329,20 @@
     var kindButtons = document.querySelectorAll("#trigger-kind [data-kind]");
     for (var i = 0; i < kindButtons.length; i++) kindButtons[i].disabled = Boolean(trigger.builtin);
     showTriggerKind(kind);
-    var cron = document.getElementById("trigger-cron");
-    var label = document.getElementById("trigger-label");
-    var maxNew = document.getElementById("trigger-max-new");
-    var maxQueued = document.getElementById("trigger-max-queued");
-    var every = document.getElementById("trigger-every");
-    var jql = document.getElementById("trigger-jql");
-    var jiraLabel = document.getElementById("trigger-jira-label");
-    var status = document.getElementById("trigger-status");
-    if (cron) cron.value = trigger.cron || "";
-    if (label) label.value = kind === "schedule" ? trigger.label || "" : "";
-    if (maxNew) maxNew.value = trigger.maxNew != null ? String(trigger.maxNew) : "";
-    if (maxQueued) maxQueued.value = trigger.maxQueued != null ? String(trigger.maxQueued) : "";
-    if (every) every.value = trigger.every || "";
-    if (jql) jql.value = trigger.jql || "";
-    if (jiraLabel) jiraLabel.value = kind === "jira" ? trigger.label || "" : "";
-    if (status) status.value = trigger.status || "";
+    setInput("trigger-cron", trigger.cron);
+    setInput("trigger-label", kind === "schedule" ? trigger.label : "");
+    setInput("trigger-max-new", trigger.maxNew);
+    setInput("trigger-max-queued", trigger.maxQueued);
+    setInput("trigger-every", trigger.every);
+    setInput("trigger-jql", trigger.jql);
+    setInput("trigger-jira-label", kind === "jira" ? trigger.label : "");
+    setInput("trigger-status", trigger.status);
     choiceControl(document.getElementById("trigger-repo"), repoOptions(), trigger.repo || "");
+  }
+
+  function setInput(id, value) {
+    var el = document.getElementById(id);
+    if (el) el.value = value != null && value !== "" ? String(value) : "";
   }
 
   function readTriggerEditor() {
@@ -1257,7 +1351,7 @@
       id: inputValue("trigger-id").trim(),
       kind: kind,
       enabled: selectedAttr("#trigger-enabled [data-enabled]", "data-enabled", "true") !== "false",
-      builtin: Boolean(editingTrigger && editingTrigger.builtin),
+      builtin: Boolean(triggerRows && triggerRows.editing() && triggerRows.editing().builtin),
     };
     if (kind === "schedule") {
       trigger.cron = inputValue("trigger-cron").trim();
@@ -1272,90 +1366,6 @@
       trigger.repo = choiceValue("trigger-repo");
     }
     return trigger;
-  }
-
-  function flushTrigger() {
-    if (!editingTrigger) return true;
-    var trigger = readTriggerEditor();
-    showSlot("trigger.id", "");
-    if (!trigger.id) {
-      showSlot("trigger.id", "Id is required.");
-      return false;
-    }
-    for (var i = 0; i < triggerDraft.length; i++) {
-      if (i !== editingTrigger.index && triggerDraft[i].id === trigger.id) {
-        showSlot("trigger.id", "A trigger named " + trigger.id + " is already in the list.");
-        return false;
-      }
-    }
-    if (editingTrigger.index == null) triggerDraft.push(trigger);
-    else triggerDraft[editingTrigger.index] = trigger;
-    editingTrigger.index = editingTrigger.index == null ? triggerDraft.length - 1 : editingTrigger.index;
-    editingTrigger.builtin = trigger.builtin;
-    return true;
-  }
-
-  function openTrigger(index, trigger) {
-    editingTrigger = { index: index, builtin: Boolean(trigger.builtin) };
-    fillTriggerEditor(trigger);
-    var editor = document.getElementById("trigger-editor");
-    if (editor) editor.hidden = false;
-    renderTriggerList();
-    var idInput = document.getElementById("trigger-id");
-    if (idInput && idInput.focus && !trigger.builtin) idInput.focus();
-  }
-
-  function closeTrigger() {
-    editingTrigger = null;
-    var editor = document.getElementById("trigger-editor");
-    if (editor) editor.hidden = true;
-    renderTriggerList();
-  }
-
-  function startTriggerEdit(index) {
-    if (!triggerDraft[index]) return;
-    if (editingTrigger && editingTrigger.index !== index && !flushTrigger()) return;
-    if (editingTrigger && editingTrigger.index === index) return;
-    openTrigger(index, triggerDraft[index]);
-  }
-
-  function startTriggerAdd() {
-    if (editingTrigger && !flushTrigger()) return;
-    openTrigger(null, { id: "", kind: "schedule", enabled: true, cron: "" });
-  }
-
-  function removeTrigger(index) {
-    var trigger = triggerDraft[index];
-    if (!trigger || trigger.builtin) return;
-    if (!window.confirm("Delete trigger " + (trigger.id || "untitled") + "?")) return;
-    if (editingTrigger && editingTrigger.index === index) closeTrigger();
-    else if (editingTrigger && !flushTrigger()) return;
-    triggerDraft.splice(index, 1);
-    if (editingTrigger && editingTrigger.index != null && editingTrigger.index > index) editingTrigger.index -= 1;
-    markSettingsDirty();
-    renderTriggerList();
-  }
-
-  function renderRouteList() {
-    var host = document.getElementById("route-list");
-    if (!host) return;
-    if (!routeDraft.length && !editingRoute) {
-      host.innerHTML = '<p class="empty">No routes.</p>';
-      return;
-    }
-    var html = "";
-    for (var i = 0; i < routeDraft.length; i++) {
-      if (editingRoute && editingRoute.index === i) continue;
-      var route = routeDraft[i];
-      var bits = [route.action || "create", route.trigger || ""];
-      if (route.workflow) bits.push(route.workflow);
-      if (route.repo) bits.push(route.repo);
-      if (route.builtin) bits.push("built in");
-      html += '<div class="repo-row"><div><div class="num">' + esc(route.id || "Untitled") + '</div><div class="meta">' + esc(bits.join(" · ")) + '</div></div><div class="d-actions"><button type="button" data-route-edit="' + i + '">Edit</button>';
-      if (!route.builtin) html += '<button type="button" data-route-remove="' + i + '">Delete</button>';
-      html += "</div></div>";
-    }
-    host.innerHTML = html;
   }
 
   function fillRouteEditor(route) {
@@ -1377,73 +1387,8 @@
       action: selectedAttr("#route-action [data-action]", "data-action", "create"),
       workflow: choiceValue("route-workflow"),
       repo: choiceValue("route-repo"),
-      builtin: Boolean(editingRoute && editingRoute.builtin),
+      builtin: Boolean(routeRows && routeRows.editing() && routeRows.editing().builtin),
     };
-  }
-
-  function flushRoute() {
-    if (!editingRoute) return true;
-    var route = readRouteEditor();
-    showSlot("route.id", "");
-    if (!route.id) {
-      showSlot("route.id", "Id is required.");
-      return false;
-    }
-    if (!route.trigger) {
-      showSlot("route.id", "Trigger is required.");
-      return false;
-    }
-    for (var i = 0; i < routeDraft.length; i++) {
-      if (i !== editingRoute.index && routeDraft[i].id === route.id) {
-        showSlot("route.id", "A route named " + route.id + " is already in the list.");
-        return false;
-      }
-    }
-    if (editingRoute.index == null) routeDraft.push(route);
-    else routeDraft[editingRoute.index] = route;
-    editingRoute.index = editingRoute.index == null ? routeDraft.length - 1 : editingRoute.index;
-    return true;
-  }
-
-  function openRoute(index, route) {
-    editingRoute = { index: index, builtin: Boolean(route.builtin) };
-    fillRouteEditor(route);
-    var editor = document.getElementById("route-editor");
-    if (editor) editor.hidden = false;
-    renderRouteList();
-    var idInput = document.getElementById("route-id");
-    if (idInput && idInput.focus && !route.builtin) idInput.focus();
-  }
-
-  function closeRoute() {
-    editingRoute = null;
-    var editor = document.getElementById("route-editor");
-    if (editor) editor.hidden = true;
-    renderRouteList();
-  }
-
-  function startRouteEdit(index) {
-    if (!routeDraft[index]) return;
-    if (editingRoute && editingRoute.index !== index && !flushRoute()) return;
-    if (editingRoute && editingRoute.index === index) return;
-    openRoute(index, routeDraft[index]);
-  }
-
-  function startRouteAdd() {
-    if (editingRoute && !flushRoute()) return;
-    openRoute(null, { id: "", trigger: "", action: "create", workflow: "", repo: "" });
-  }
-
-  function removeRoute(index) {
-    var route = routeDraft[index];
-    if (!route || route.builtin) return;
-    if (!window.confirm("Delete route " + (route.id || "untitled") + "?")) return;
-    if (editingRoute && editingRoute.index === index) closeRoute();
-    else if (editingRoute && !flushRoute()) return;
-    routeDraft.splice(index, 1);
-    if (editingRoute && editingRoute.index != null && editingRoute.index > index) editingRoute.index -= 1;
-    markSettingsDirty();
-    renderRouteList();
   }
 
   function fillJira(data) {
@@ -1476,8 +1421,33 @@
   }
 
   function currentSettingsTab() {
-    var selected = document.querySelector('#settings-section [data-settings-tab][aria-selected="true"]');
-    return selected ? selected.getAttribute("data-settings-tab") || "repos" : "repos";
+    var pressed = document.querySelector('#settings-form [data-settings-tab][aria-pressed="true"]');
+    return pressed ? pressed.getAttribute("data-settings-tab") || "repos" : "repos";
+  }
+
+  function routeSettingsError(key, message) {
+    var rules = [
+      ["maxConcurrent", "global", "maxConcurrent"],
+      ["adapter", "global", "adapter"],
+      ["triggers.", "triggers", "trigger.form"],
+      ["routes.", "routes", "route.form"],
+      ["jira.", "jira", ""],
+      ["overlay.", "overlay", ""],
+      ["file", "advanced", "file"],
+    ];
+    for (var i = 0; i < rules.length; i++) {
+      var rule = rules[i];
+      var prefix = rule[0].charAt(rule[0].length - 1) === ".";
+      var match = prefix ? key.indexOf(rule[0]) === 0 : key === rule[0] || (rule[0] === "file" && key.indexOf("file.") === 0);
+      if (!match) continue;
+      setSettingsTab(rule[1]);
+      var index = new RegExp("^" + rule[1] + "\\.(\\d+)\\.").exec(key);
+      if (index && rule[1] === "triggers") triggerRows.edit(Number(index[1]));
+      if (index && rule[1] === "routes") routeRows.edit(Number(index[1]));
+      showSlot(rule[2] || key, message);
+      return true;
+    }
+    return false;
   }
 
   function settingsPayload() {
@@ -1522,8 +1492,8 @@
     body.maxConcurrent = concurrent === undefined ? null : concurrent;
     var adapter = selectedAttr("#adapter-mode [data-adapter]", "data-adapter", "claude-code");
     if (adapter === "mock" || (settingsDoc && settingsDoc.adapter)) body.adapter = adapter;
-    body.triggers = triggerDraft.map(writableTrigger);
-    body.routes = routeDraft.map(writableRoute);
+    body.triggers = triggerRows.rows().map(writableTrigger);
+    body.routes = routeRows.rows().map(writableRoute);
     body.jira = {
       baseUrl: inputValue("jira-base").trim(),
       email: inputValue("jira-email").trim(),
@@ -1649,35 +1619,8 @@
         showSlot(key, message);
         continue;
       }
-      if (key.indexOf("triggers.") === 0) {
-        setSettingsTab("triggers");
-        var triggerIndex = /^triggers\.(\d+)\./.exec(key);
-        if (triggerIndex && triggerDraft[Number(triggerIndex[1])]) startTriggerEdit(Number(triggerIndex[1]));
-        showSlot("trigger.form", message);
-        continue;
-      }
-      if (key.indexOf("routes.") === 0) {
-        setSettingsTab("routes");
-        var routeIndex = /^routes\.(\d+)\./.exec(key);
-        if (routeIndex && routeDraft[Number(routeIndex[1])]) startRouteEdit(Number(routeIndex[1]));
-        showSlot("route.form", message);
-        continue;
-      }
-      if (key.indexOf("jira.") === 0) {
-        setSettingsTab("jira");
-        showSlot(key, message);
-        continue;
-      }
-      if (key.indexOf("overlay.") === 0) {
-        setSettingsTab("overlay");
-        showSlot(key, message);
-        continue;
-      }
-      if (key === "file" || key.indexOf("file.") === 0) {
-        setSettingsTab("advanced");
-        showSlot("file", message);
-        continue;
-      }
+      var routed = routeSettingsError(key, message);
+      if (routed) continue;
       if (key === "name" || key.indexOf("repos.") === 0) {
         setSettingsTab("repos");
         showSlot("name", message);
@@ -1704,7 +1647,7 @@
       closeEditor();
     }
     renderRepoList();
-    triggerDraft = (data.triggers || []).map(function (trigger) {
+    triggerRows.set((data.triggers || []).map(function (trigger) {
       return {
         id: trigger.id,
         kind: trigger.kind,
@@ -1719,8 +1662,8 @@
         maxNew: trigger.maxNew != null ? String(trigger.maxNew) : "",
         maxQueued: trigger.maxQueued != null ? String(trigger.maxQueued) : "",
       };
-    });
-    routeDraft = (data.routes || []).map(function (route) {
+    }));
+    routeRows.set((data.routes || []).map(function (route) {
       return {
         id: route.id,
         trigger: route.trigger,
@@ -1729,9 +1672,9 @@
         repo: route.repo || "",
         builtin: Boolean(route.builtin),
       };
-    });
-    closeTrigger();
-    closeRoute();
+    }));
+    triggerRows.close();
+    routeRows.close();
     fillJira(data);
     fillOverlay(data);
     fillAdvanced(data.file);
@@ -1829,7 +1772,7 @@
       saveAdvanced();
       return;
     }
-    if (!flushEditor() || !flushTrigger() || !flushRoute()) return;
+    if (!flushEditor() || !triggerRows.flush() || !routeRows.flush()) return;
     putDocument(settingsPayload());
   }
 
@@ -2011,40 +1954,35 @@
       removeRepo(removeBtn.getAttribute("data-repo-remove") || "");
       return;
     }
-    if (target.closest("#trigger-add")) {
-      startTriggerAdd();
+    var rowAdd = target.closest("[data-row-add]");
+    if (rowAdd) {
+      var added = rowAdd.getAttribute("data-row-add") === "routes" ? routeRows : triggerRows;
+      added.add(rowAdd.getAttribute("data-row-add") === "routes"
+        ? { id: "", trigger: "", action: "create", workflow: "", repo: "" }
+        : { id: "", kind: "schedule", enabled: true, cron: "" });
       return;
     }
-    if (target.closest("#trigger-done")) {
-      if (flushTrigger()) closeTrigger();
+    var rowDone = target.closest("[data-row-done]");
+    if (rowDone) {
+      var done = rowDone.getAttribute("data-row-done") === "routes" ? routeRows : triggerRows;
+      if (done.flush()) done.close();
       return;
     }
-    var triggerEdit = target.closest("[data-trigger-edit]");
-    if (triggerEdit) {
-      startTriggerEdit(Number(triggerEdit.getAttribute("data-trigger-edit")));
+    var rowEdit = target.closest("[data-row-edit]");
+    if (rowEdit) {
+      var editParts = (rowEdit.getAttribute("data-row-edit") || "").split(":");
+      (editParts[0] === "routes" ? routeRows : triggerRows).edit(Number(editParts[1]));
       return;
     }
-    var triggerRemove = target.closest("[data-trigger-remove]");
-    if (triggerRemove) {
-      removeTrigger(Number(triggerRemove.getAttribute("data-trigger-remove")));
+    var rowRemove = target.closest("[data-row-remove]");
+    if (rowRemove) {
+      var removeParts = (rowRemove.getAttribute("data-row-remove") || "").split(":");
+      (removeParts[0] === "routes" ? routeRows : triggerRows).remove(Number(removeParts[1]));
       return;
     }
-    if (target.closest("#route-add")) {
-      startRouteAdd();
-      return;
-    }
-    if (target.closest("#route-done")) {
-      if (flushRoute()) closeRoute();
-      return;
-    }
-    var routeEdit = target.closest("[data-route-edit]");
-    if (routeEdit) {
-      startRouteEdit(Number(routeEdit.getAttribute("data-route-edit")));
-      return;
-    }
-    var routeRemove = target.closest("[data-route-remove]");
-    if (routeRemove) {
-      removeRoute(Number(routeRemove.getAttribute("data-route-remove")));
+    var settingsTab = target.closest("#settings-form [data-settings-tab]");
+    if (settingsTab) {
+      setSettingsTab(settingsTab.getAttribute("data-settings-tab") || "repos");
       return;
     }
     var repoFs = target.closest("#repo-browser .fs-item, #repo-browser .fs-up, #repo-browser .fs-use");

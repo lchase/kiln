@@ -135,8 +135,8 @@ const DEFAULTS: SettingsDocument["defaults"] = {
   adapter: "claude-code",
 };
 
-const TRIGGER_FIELDS = ["cron", "every", "repo", "jql", "label", "status", "maxNew", "maxQueued"] as const;
-const ROUTE_FIELDS = ["trigger", "action", "workflow", "repo"] as const;
+const TRIGGER_KEYS = ["kind", "enabled", "cron", "every", "repo", "jql", "label", "status", "maxNew", "maxQueued"] as const;
+const ROUTE_KEYS = ["trigger", "action", "workflow", "repo"] as const;
 const SECRET_KEY = /token|secret|password|credential|api[-_]?key/i;
 
 export function readSettings(configPath: string, env: NodeJS.ProcessEnv = process.env): SettingsSuccess | SettingsFailure {
@@ -250,30 +250,39 @@ function editableSandbox(sandbox: KilnConfigFile["sandbox"]): SettingsDocument["
   };
 }
 
+function checkedConfig(
+  next: Record<string, unknown>,
+  home: string,
+  configPath: string,
+  triggers?: readonly { id: string }[],
+  routes?: readonly { id: string }[],
+): { ok: true; next: Record<string, unknown>; parsed: KilnConfigFile } | { ok: false; failure: SettingsFailure } {
+  const file = KilnConfigFileSchema.safeParse(next);
+  if (!file.success) return { ok: false, failure: fail(400, "Settings are invalid.", fieldErrors(file.error)) };
+  const fields = {
+    ...checkoutFields(dirname(configPath), file.data.repos, home),
+    ...duplicateIdFields(triggers ?? file.data.triggers ?? [], "triggers"),
+    ...duplicateIdFields(routes ?? file.data.routes ?? [], "routes"),
+  };
+  if (Object.keys(fields).length > 0) return { ok: false, failure: fail(400, "Settings are invalid.", fields) };
+  return { ok: true, next, parsed: file.data };
+}
+
 function formUpdate(
   body: Record<string, unknown>,
   raw: Record<string, unknown>,
   home: string,
   configPath: string,
 ): { ok: true; next: Record<string, unknown>; parsed: KilnConfigFile } | { ok: false; failure: SettingsFailure } {
-  const stripped = stripSecretPlaceholders(body);
+  const stripped = walkSecrets(body, undefined, "strip");
   if (!isRecord(stripped)) return { ok: false, failure: fail(400, "Request body must be a JSON object.") };
   const relaxed = relaxBlanks(stripped);
   const parsed = SettingsWriteSchema.safeParse(relaxed);
   if (!parsed.success) return { ok: false, failure: fail(400, "Settings are invalid.", fieldErrors(parsed.error)) };
 
   const { revision: _revision, ...editable } = parsed.data;
-  const fields = {
-    ...checkoutFields(dirname(configPath), editable.repos, home),
-    ...duplicateIdFields(editable.triggers ?? [], "triggers"),
-    ...duplicateIdFields(editable.routes ?? [], "routes"),
-  };
-  if (Object.keys(fields).length > 0) return { ok: false, failure: fail(400, "Settings are invalid.", fields) };
-
   const next = mergeSettings(raw, editable, stripped);
-  const file = KilnConfigFileSchema.safeParse(next);
-  if (!file.success) return { ok: false, failure: fail(400, "Settings are invalid.", fieldErrors(file.error)) };
-  return { ok: true, next, parsed: file.data };
+  return checkedConfig(next, home, configPath, editable.triggers, editable.routes);
 }
 
 function fileUpdate(
@@ -282,17 +291,9 @@ function fileUpdate(
   home: string,
   configPath: string,
 ): { ok: true; next: Record<string, unknown>; parsed: KilnConfigFile } | { ok: false; failure: SettingsFailure } {
-  const restored = restoreSecrets(body.file, raw);
+  const restored = walkSecrets(body.file, raw, "restore");
   if (!isRecord(restored)) return { ok: false, failure: fail(400, "Settings are invalid.", { file: "Config must be a JSON object." }) };
-  const file = KilnConfigFileSchema.safeParse(restored);
-  if (!file.success) return { ok: false, failure: fail(400, "Settings are invalid.", fieldErrors(file.error)) };
-  const fields = {
-    ...checkoutFields(dirname(configPath), file.data.repos, home),
-    ...duplicateIdFields(file.data.triggers ?? [], "triggers"),
-    ...duplicateIdFields(file.data.routes ?? [], "routes"),
-  };
-  if (Object.keys(fields).length > 0) return { ok: false, failure: fail(400, "Settings are invalid.", fields) };
-  return { ok: true, next: restored, parsed: file.data };
+  return checkedConfig(restored, home, configPath);
 }
 
 function mergeSettings(
@@ -392,56 +393,45 @@ function applyText(target: Record<string, unknown>, source: Record<string, unkno
 }
 
 function triggersForFile(submitted: readonly TriggerConfig[]): TriggerConfig[] {
-  const builtins = new Map(effectiveTriggers(undefined).map((trigger) => [trigger.id, trigger]));
-  return submitted.filter((trigger) => {
-    const builtin = builtins.get(trigger.id);
-    return !builtin || canonicalTrigger(trigger) !== canonicalTrigger(builtin);
-  });
+  return omitBuiltins(submitted, effectiveTriggers(undefined), TRIGGER_KEYS);
 }
 
 function routesForFile(submitted: readonly RouteConfig[]): RouteConfig[] {
-  const builtins = new Map(effectiveRoutes(undefined).map((route) => [route.id, route]));
-  return submitted.filter((route) => {
-    const builtin = builtins.get(route.id);
-    return !builtin || canonicalRoute(route) !== canonicalRoute(builtin);
+  return omitBuiltins(submitted, effectiveRoutes(undefined), ROUTE_KEYS);
+}
+
+function omitBuiltins<T extends { id: string }>(
+  submitted: readonly T[],
+  builtins: readonly T[],
+  keys: readonly (keyof T)[],
+): T[] {
+  const byId = new Map(builtins.map((item) => [item.id, item]));
+  return submitted.filter((item) => {
+    const builtin = byId.get(item.id);
+    return !builtin || fingerprint(item, keys) !== fingerprint(builtin, keys);
   });
 }
 
-function canonicalTrigger(trigger: TriggerConfig): string {
-  const parts = [`id=${trigger.id}`, `kind=${trigger.kind}`];
-  if (trigger.enabled === false) parts.push("enabled=false");
-  for (const key of TRIGGER_FIELDS) {
-    const value = trigger[key];
-    if (value !== undefined) parts.push(`${key}=${String(value)}`);
-  }
-  return parts.join("\n");
-}
-
-function canonicalRoute(route: RouteConfig): string {
-  const parts = [`id=${route.id}`];
-  for (const key of ROUTE_FIELDS) {
-    const value = route[key];
-    if (value !== undefined) parts.push(`${key}=${String(value)}`);
+function fingerprint<T extends { id: string }>(item: T, keys: readonly (keyof T)[]): string {
+  const parts = [`id=${item.id}`];
+  for (const key of keys) {
+    const value = item[key];
+    if (value === undefined || value === true) continue;
+    parts.push(`${String(key)}=${String(value)}`);
   }
   return parts.join("\n");
 }
 
 function triggerView(trigger: TriggerConfig): SettingsTrigger {
   const builtin = effectiveTriggers(undefined).some((item) => item.id === trigger.id);
-  return {
-    id: trigger.id,
-    kind: trigger.kind,
-    enabled: trigger.enabled !== false,
-    ...(builtin ? { builtin: true } : {}),
-    ...(trigger.cron ? { cron: trigger.cron } : {}),
-    ...(trigger.every ? { every: trigger.every } : {}),
-    ...(trigger.repo ? { repo: trigger.repo } : {}),
-    ...(trigger.jql ? { jql: trigger.jql } : {}),
-    ...(trigger.label ? { label: trigger.label } : {}),
-    ...(trigger.status ? { status: trigger.status } : {}),
-    ...(trigger.maxNew !== undefined ? { maxNew: trigger.maxNew } : {}),
-    ...(trigger.maxQueued !== undefined ? { maxQueued: trigger.maxQueued } : {}),
-  };
+  const view: SettingsTrigger = { id: trigger.id, kind: trigger.kind, enabled: trigger.enabled !== false };
+  if (builtin) view.builtin = true;
+  for (const key of TRIGGER_KEYS) {
+    if (key === "kind" || key === "enabled") continue;
+    const value = trigger[key];
+    if (value !== undefined) view[key] = value as never;
+  }
+  return view;
 }
 
 function routeView(route: RouteConfig): SettingsRoute {
@@ -521,53 +511,36 @@ function secretMessage(key: string): string {
   return "The board does not accept this value. Keep it in the file or the environment.";
 }
 
-function restoreSecrets(next: unknown, previous: unknown): unknown {
-  if (Array.isArray(next)) {
-    const prior = Array.isArray(previous) ? previous : [];
-    return next.map((item, index) => restoreSecrets(item, prior[index]));
-  }
-  if (!isRecord(next)) return next;
-  const prior = isRecord(previous) ? previous : {};
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(next)) {
-    if (isSecretKey(key)) {
-      if (value === SECRET_PLACEHOLDER) {
-        if (typeof prior[key] === "string" && prior[key].trim()) out[key] = prior[key];
-        continue;
-      }
-      if (typeof value === "string" && value.trim() === "") continue;
-      continue;
-    }
-    out[key] = restoreSecrets(value, prior[key]);
-  }
-  return out;
-}
-
 function redactFile(value: unknown): Record<string, unknown> {
-  const redacted = redactValue(value);
+  const redacted = walkSecrets(value, undefined, "redact");
   return isRecord(redacted) ? redacted : {};
 }
 
-function redactValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item) => redactValue(item));
+function walkSecrets(value: unknown, previous: unknown, mode: "redact" | "restore" | "strip"): unknown {
+  if (Array.isArray(value)) {
+    const prior = Array.isArray(previous) ? previous : [];
+    return value.map((item, index) => walkSecrets(item, prior[index], mode));
+  }
   if (!isRecord(value)) return value;
+  const prior = isRecord(previous) ? previous : {};
   const out: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
-    if (isSecretKey(key) && typeof item === "string" && item.trim()) out[key] = SECRET_PLACEHOLDER;
-    else out[key] = redactValue(item);
+    if (isSecretKey(key)) {
+      const kept = secretValue(item, prior[key], mode);
+      if (kept !== undefined) out[key] = kept;
+      continue;
+    }
+    out[key] = walkSecrets(item, prior[key], mode);
   }
   return out;
 }
 
-function stripSecretPlaceholders(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item) => stripSecretPlaceholders(item));
-  if (!isRecord(value)) return value;
-  const out: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (isSecretKey(key) && (item === SECRET_PLACEHOLDER || (typeof item === "string" && item.trim() === ""))) continue;
-    out[key] = stripSecretPlaceholders(item);
-  }
-  return out;
+function secretValue(value: unknown, previous: unknown, mode: "redact" | "restore" | "strip"): unknown {
+  const filled = typeof value === "string" && value.trim().length > 0;
+  if (mode === "redact") return filled ? SECRET_PLACEHOLDER : value;
+  if (value === SECRET_PLACEHOLDER) return typeof previous === "string" && previous.trim() ? previous : undefined;
+  if (!filled) return undefined;
+  return mode === "strip" ? value : undefined;
 }
 
 function relaxBlanks(body: Record<string, unknown>): Record<string, unknown> {

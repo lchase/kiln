@@ -222,7 +222,8 @@ describe("serve settings", () => {
       assert.match(page.body, /data-settings-tab="advanced"/);
       assert.match(page.body, /id="settings-json"/);
       assert.match(page.body, /JIRA_API_TOKEN/);
-      assert.match(page.body, /role="combobox"/);
+      assert.match(page.body, /aria-label="Settings sections"/);
+      assert.match(page.body, /data-settings-tab="advanced" aria-pressed="false"/);
       assert.match(page.body, /renders as \[ABC-123\] Title/);
       assert.match(page.body, /renders as ABC-123-slug/);
       assert.equal(page.body.includes(TOKEN), false);

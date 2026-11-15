@@ -825,7 +825,7 @@ function themePicker(selected: BoardThemeId): string {
   return `<div class="themes" id="theme-pick" role="group" aria-label="Theme">${buttons}</div>`;
 }
 
-function settingsSectionPicker(): string {
+function settingsTabs(): string {
   const sections = [
     ["repos", "Repos"],
     ["global", "Global"],
@@ -836,13 +836,13 @@ function settingsSectionPicker(): string {
     ["appearance", "Appearance"],
     ["advanced", "Advanced"],
   ];
-  const options = sections
+  const buttons = sections
     .map(
       ([id, label], index) =>
-        `<li role="option" id="settings-section-${id}" data-value="${label}" data-settings-tab="${id}" aria-selected="${index === 0 ? "true" : "false"}">${label}</li>`,
+        `<button type="button" data-settings-tab="${id}" aria-pressed="${index === 0 ? "true" : "false"}">${label}</button>`,
     )
     .join("");
-  return `<div class="field"><span class="k" id="settings-section-label">Section</span><div class="combo" id="settings-section" data-value="Repos"><input id="settings-section-query" class="combo-input" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="settings-section-list" aria-labelledby="settings-section-label" placeholder="Search sections" value="Repos" autocomplete="off" spellcheck="false"><ul class="combo-list" id="settings-section-list" role="listbox" hidden>${options}</ul></div></div>`;
+  return `<div class="seg" role="tablist" aria-label="Settings sections">${buttons}</div>`;
 }
 
 function settingsForm(theme: BoardThemeId): string {
@@ -850,7 +850,7 @@ function settingsForm(theme: BoardThemeId): string {
 <p class="meta" id="settings-path"></p>
 <p class="saved" id="settings-saved" role="status" hidden>Saved</p>
 <p class="form-error" id="settings-error" role="alert" hidden></p>
-${settingsSectionPicker()}
+${settingsTabs()}
 <div id="settings-repos">
 <div id="repo-editor" hidden>
 <label class="field"><span class="k">Name</span><input id="repo-name" type="text" autocomplete="off" spellcheck="false"></label>
@@ -954,10 +954,10 @@ ${settingsSectionPicker()}
 <p class="hint">Pull request activity on Kiln-owned pull requests. No extra fields.</p>
 </div>
 <p class="field-error" data-error="trigger.form" hidden></p>
-<div class="d-actions"><button type="button" id="trigger-done">Done</button></div>
+<div class="d-actions"><button type="button" data-row-done="triggers">Done</button></div>
 </div>
 <div id="trigger-list"></div>
-<div class="d-actions"><button type="button" id="trigger-add">Add trigger</button></div>
+<div class="d-actions"><button type="button" data-row-add="triggers">Add trigger</button></div>
 </div>
 <div id="settings-routes" hidden>
 <div id="route-editor" hidden>
@@ -972,19 +972,19 @@ ${settingsSectionPicker()}
 <p class="hint">Used when the action is create.</p>
 <div class="field"><span class="k">Repo</span><div id="route-repo"></div></div>
 <p class="field-error" data-error="route.form" hidden></p>
-<div class="d-actions"><button type="button" id="route-done">Done</button></div>
+<div class="d-actions"><button type="button" data-row-done="routes">Done</button></div>
 </div>
 <div id="route-list"></div>
-<div class="d-actions"><button type="button" id="route-add">Add route</button></div>
+<div class="d-actions"><button type="button" data-row-add="routes">Add route</button></div>
 </div>
-<div id="settings-jira" hidden>
-<label class="field"><span class="k">Base URL</span><input id="jira-base" type="text" autocomplete="off" spellcheck="false" placeholder="https://example.atlassian.net"></label>
-<p class="field-error" data-error="jira.baseUrl" hidden></p>
-<label class="field"><span class="k">Email</span><input id="jira-email" type="text" autocomplete="off" spellcheck="false" placeholder="dev@example.com"></label>
-<p class="field-error" data-error="jira.email" hidden></p>
-<label class="field"><span class="k">Acceptance field</span><input id="jira-acceptance" type="text" autocomplete="off" spellcheck="false" placeholder="customfield_10001"></label>
+<div id="settings-jira" class="stack" hidden>
+<div class="field"><label class="k" for="jira-base">Base URL</label><input id="jira-base" type="text" autocomplete="off" spellcheck="false" placeholder="https://example.atlassian.net">
+<p class="field-error" data-error="jira.baseUrl" hidden></p></div>
+<div class="field"><label class="k" for="jira-email">Email</label><input id="jira-email" type="text" autocomplete="off" spellcheck="false" placeholder="dev@example.com">
+<p class="field-error" data-error="jira.email" hidden></p></div>
+<div class="field"><label class="k" for="jira-acceptance">Acceptance field</label><input id="jira-acceptance" type="text" autocomplete="off" spellcheck="false" placeholder="customfield_10001">
 <p class="hint">Optional. When set, Kiln reads acceptance criteria from this field. Empty uses the Jira field named Acceptance criteria.</p>
-<p class="field-error" data-error="jira.acceptanceField" hidden></p>
+<p class="field-error" data-error="jira.acceptanceField" hidden></p></div>
 <div class="field"><span class="k">API token</span><p class="meta" id="jira-token">not set</p>
 <p class="hint">Set JIRA_API_TOKEN in the environment. This page does not store a token.</p>
 <p class="field-error" data-error="jira.apiToken" hidden></p></div>
