@@ -12,7 +12,12 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
+import { buildBoard, jobDetail } from "../src/board-view.js";
+import { loadKilnConfig } from "../src/config.js";
+import { readStatus } from "../src/driver.js";
+import { activeLaunchBlock, readEvents } from "../src/events.js";
 import { packageRoot } from "../src/paths.js";
+import { renderApp } from "../src/serve-page.js";
 import { reapLaunches } from "./reap.js";
 
 const root = packageRoot();
@@ -430,17 +435,116 @@ describe("kiln tick", { concurrency: 1 }, () => {
     assert.deepEqual(runIds(web), []);
   });
 
-  it("refuses an empty test command instead of running it", () => {
-    const { cwd, home, web } = checkoutPair();
+  it("records a missing test command once, shows the block, and launches after the setting is saved", () => {
+    const { cwd, home, web, api } = checkoutPair();
     const path = join(home, ".kiln", "kiln.config.json");
-    const raw = JSON.parse(readFileSync(path, "utf8")) as { repos: { web: { test: string } } };
+    const raw = JSON.parse(readFileSync(path, "utf8")) as { repos: { web: { test?: string }; api: { test?: string } } };
     raw.repos.web.test = "   ";
     writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
-    addJob(cwd, home, "feature", "web", "Calm empty copy");
-    const tick = runCli(["tick"], { cwd, home });
-    assert.equal(tick.status, 1);
-    assert.match(tick.stderr, /no test command|empty/);
+    const blockedId = addJob(cwd, home, "feature", "web", "Calm empty copy");
+    const otherId = addJob(cwd, home, "feature", "api", "Publish the summary");
+    const logLine =
+      "tick: Repo web has no test command. Set repos.web.test. The feature workflow refuses to run an empty KILN_TEST.";
+
+    const first = runCli(["tick"], { cwd, home });
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(first.stderr.split(logLine).length - 1, 1, first.stderr);
+    assert.match(first.stdout, new RegExp(`blocked ${blockedId}\\s+web`));
+    assert.match(first.stdout, new RegExp(`launch ${otherId}\\s+api`));
     assert.deepEqual(runIds(web), []);
+
+    const second = runCli(["tick"], { cwd, home });
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(second.stderr.includes(logLine), false, second.stderr);
+    assert.match(second.stdout, new RegExp(`blocked ${blockedId}\\s+web`));
+
+    const config = loadKilnConfig(path);
+    const events = readEvents(config.kilnDir, { warn: () => {} });
+    const blocks = events.filter((event) => event.event === "launch.blocked" && event.job_id === blockedId);
+    assert.equal(blocks.length, 1);
+    const block = blocks[0];
+    assert.equal(block?.event, "launch.blocked");
+    if (block?.event !== "launch.blocked") return;
+    assert.equal(block.properties.reason, "web has no test command");
+    assert.deepEqual(block.properties.fix, { kind: "repo-setting", repo: "web", field: "test" });
+    assert.equal(events.filter((event) => event.event === "launch.cleared" && event.job_id === blockedId).length, 0);
+    assert.deepEqual(activeLaunchBlock(events, blockedId), {
+      reason: "web has no test command",
+      fix: { kind: "repo-setting", repo: "web", field: "test" },
+    });
+
+    const status = readStatus(config);
+    const blocked = status.jobs.find((job) => job.jobId === blockedId);
+    assert.ok(blocked);
+    assert.equal(blocked.state, "queued");
+    assert.equal(blocked.attemptCount, 0);
+    assert.equal(blocked.launchFailed, false);
+    assert.deepEqual(blocked.launchBlock, {
+      reason: "web has no test command",
+      fix: { kind: "repo-setting", repo: "web", field: "test" },
+    });
+    const printed = runCli(["status", blockedId], { cwd, home });
+    assert.match(printed.stdout, new RegExp(`${blockedId}\\s+web\\s+feature\\s+queued`));
+    assert.match(printed.stdout, /Blocked: web has no test command/);
+    assert.doesNotMatch(printed.stdout, /attempts/);
+
+    const detail = jobDetail({ job: blocked, events, maxFixRounds: config.maxFixRounds });
+    assert.equal(detail.job.column, "needs-hand");
+    assert.equal(detail.job.hand, true);
+    assert.equal(detail.job.reason, "Blocked: web has no test command");
+    assert.equal(detail.job.retry, false);
+    assert.equal(detail.job.timeline[0]?.entries.some((entry) => entry.summary === "Blocked · web has no test command"), true);
+    const page = {
+      csrf: "token",
+      repos: [
+        { name: "web", path: web, hasTest: false },
+        { name: "api", path: api, hasTest: true },
+      ],
+      workflows: ["feature", "investigation"],
+      workflowsNeedingTest: ["feature"],
+    };
+    const board = buildBoard(status.jobs, events);
+    const jobHtml = renderApp({ css: "", section: "job", board, attention: status.attention, detail, page });
+    assert.match(jobHtml, /Blocked: web has no test command/);
+    assert.match(jobHtml, /href="\/settings\?repo=web&amp;field=test"/);
+    assert.match(jobHtml, /Edit web in Settings/);
+    const pipeline = renderApp({ css: "", section: "pipeline", board, attention: status.attention, page });
+    const handColumn = pipeline.slice(pipeline.indexOf('data-column="needs-hand"'), pipeline.indexOf('data-column="done"'));
+    assert.match(handColumn, new RegExp(`id="job-${blockedId}"`));
+    assert.match(handColumn, /Blocked: web has no test command/);
+    assert.match(handColumn, /Edit web in Settings/);
+    const hand = renderApp({ css: "", section: "hand", board, attention: status.attention, page });
+    assert.match(hand, /Needs a hand/);
+    assert.match(hand, /Blocked: web has no test command/);
+    assert.match(hand, /id="intake-warn"/);
+    assert.match(hand, /data-workflow="feature"[^>]*data-needs-test="true"/);
+    assert.match(hand, /data-repo="web"[^>]*data-has-test="false"/);
+    assert.match(hand, /has no test command\. You can still add this job/);
+
+    raw.repos.web.test = testCommand;
+    writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+    const launched = runCli(["tick"], { cwd, home });
+    assert.equal(launched.status, 0, launched.stderr);
+    assert.equal(launched.stderr.includes(logLine), false, launched.stderr);
+    assert.match(launched.stdout, new RegExp(`launch ${blockedId}\\s+web`));
+    assert.doesNotMatch(launched.stdout, new RegExp(`blocked ${blockedId}`));
+    const running = waitForStatus(
+      cwd,
+      home,
+      blockedId,
+      new RegExp(`${blockedId}\\s+web\\s+feature\\s+needs-human`),
+    );
+    assert.doesNotMatch(running, /Blocked:/);
+    const after = loadKilnConfig(path);
+    const laterEvents = readEvents(after.kilnDir, { warn: () => {} });
+    assert.equal(laterEvents.filter((event) => event.event === "launch.blocked" && event.job_id === blockedId).length, 1);
+    assert.equal(laterEvents.filter((event) => event.event === "launch.cleared" && event.job_id === blockedId).length, 1);
+    assert.equal(activeLaunchBlock(laterEvents, blockedId), undefined);
+    const cleared = readStatus(after).jobs.find((job) => job.jobId === blockedId);
+    assert.ok(cleared);
+    assert.equal(cleared.launchBlock, undefined);
+    assert.equal(cleared.state, "needs-human");
+    assert.ok(runIds(web).length > 0);
   });
 
   it("feeds a failing review back to the builder and still reaches the gate", () => {

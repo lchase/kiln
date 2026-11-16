@@ -1,5 +1,5 @@
 import { scheduledRetry, attentionReason } from "./attention.js";
-import type { KilnEvent } from "./events.js";
+import { launchBlockLabel, type KilnEvent, type LaunchBlock } from "./events.js";
 import type { FailureClass } from "./failure.js";
 import { feedbackRoundLabel } from "./feedback.js";
 import type { StatusJobView } from "./report.js";
@@ -156,6 +156,8 @@ export interface JobView {
   log: boolean;
   logTail?: string;
   reviewPostError?: string;
+  /** Set while a config precondition is refusing launch. */
+  launchBlock?: LaunchBlock;
 }
 
 export function isInbox(job: StatusJobView): boolean {
@@ -164,9 +166,14 @@ export function isInbox(job: StatusJobView): boolean {
   return job.state === "needs-human" && job.gates.length > 0 && !job.stopReason && !job.feedbackReason;
 }
 
-/** Needs a person, and not an open gate. A scheduled retry stays in flight. */
+/**
+ * Needs a person, and not an open gate. A scheduled retry stays in flight.
+ * A queued job blocked on a repo setting is here too: the user has to change
+ * config before the next tick can launch it.
+ */
 export function isHand(job: StatusJobView): boolean {
   if (isInbox(job) || scheduledRetry(job)) return false;
+  if (job.launchBlock) return true;
   return job.state === "needs-human" || job.state === "failed" || job.state === "dead" || job.state === "invalid";
 }
 
@@ -242,6 +249,7 @@ export function projectJob(job: StatusJobView, events: readonly KilnEvent[]): Jo
     eventCount: activity.count,
     ...(target.prUrl || job.prUrl ? { prUrl: target.prUrl ?? job.prUrl } : {}),
     ...(target.prNumber || job.prNumber ? { prNumber: target.prNumber ?? job.prNumber } : {}),
+    ...(job.launchBlock ? { launchBlock: job.launchBlock } : {}),
     dependsOn: job.dependsOn.map((dep) => ({
       jobId: dep.jobId,
       state: dep.state,
@@ -430,6 +438,10 @@ function summarizeEvent(event: KilnEvent): string {
       return `Added · ${event.properties.workflow}`;
     case "job.retried":
       return "Retried";
+    case "launch.blocked":
+      return `Blocked · ${event.properties.reason}`;
+    case "launch.cleared":
+      return "Launch block cleared";
     case "run.started":
       return `Run started · ${event.properties.workflow}`;
     case "phase.started":
@@ -681,6 +693,7 @@ function finishedLine(job: StatusJobView): string {
 }
 
 function handLine(job: StatusJobView, failure: { class?: FailureClass; fingerprint?: string } | undefined): string {
+  if (job.launchBlock) return launchBlockLabel(job.launchBlock);
   if (job.reviewPostError) return job.reviewPostError;
   let label = "Needs a person";
   if (job.stopReason === "attempt-cap") label = "Attempt cap";

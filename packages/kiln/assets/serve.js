@@ -343,6 +343,26 @@
     return box ? box.getAttribute("data-path") || "" : "";
   }
 
+  function selectedHasTest() {
+    var box = document.getElementById("repo-pick");
+    if (!box) return true;
+    var flag = box.getAttribute("data-has-test");
+    if (flag === null || flag === "") return true;
+    return flag !== "false";
+  }
+
+  function selectedNeedsTest() {
+    var select = document.getElementById("workflow");
+    if (select && select.options && select.selectedIndex >= 0) {
+      var opt = select.options[select.selectedIndex];
+      return Boolean(opt && opt.getAttribute("data-needs-test") === "true");
+    }
+    var host = document.getElementById("workflow-pick");
+    if (!host) return false;
+    var pressed = host.querySelector('[data-workflow][aria-pressed="true"]');
+    return Boolean(pressed && pressed.getAttribute("data-needs-test") === "true");
+  }
+
   function selectedWorkflow() {
     var select = document.getElementById("workflow");
     if (select) return select.value || "";
@@ -382,6 +402,14 @@
     setFieldError("source-error", spec || tickets, showFieldError("source"));
     setFieldError("jira-error", jira, showFieldError("jira"));
     var blocked = !repo || !workflow || Boolean(prompt || spec || tickets || jira);
+    var warn = document.getElementById("intake-warn");
+    if (warn) {
+      var missingTest = Boolean(repo) && selectedNeedsTest() && !selectedHasTest();
+      warn.hidden = !missingTest;
+      warn.textContent = missingTest
+        ? repo + " has no test command. You can still add this job. It stays blocked until Settings > Repos sets a test command."
+        : "";
+    }
     var submit = document.getElementById("add-submit");
     if (submit) submit.disabled = blocked || sending;
     var preview = document.getElementById("preview-job");
@@ -389,12 +417,29 @@
     return !blocked;
   }
 
+  function testFlag(repo) {
+    if (!repo || repo.hasTest === undefined || repo.hasTest === null || repo.hasTest === "") return "";
+    return repo.hasTest === false || repo.hasTest === "false" || repo.hasTest === "0" || repo.hasTest === 0 ? "0" : "1";
+  }
+
+  function hasTestAttr(repo) {
+    var flag = testFlag(repo);
+    if (!flag) return "";
+    return ' data-has-test="' + (flag === "1" ? "true" : "false") + '"';
+  }
+
+  function applyHasTest(box, repo) {
+    var flag = testFlag(repo);
+    if (!flag) box.removeAttribute("data-has-test");
+    else box.setAttribute("data-has-test", flag === "1" ? "true" : "false");
+  }
+
   function repoListKey(repos) {
     var parts = [];
     for (var i = 0; i < repos.length; i++) {
       var repo = repos[i];
       if (!repo || !repo.name) continue;
-      parts.push(repo.name + "\t" + (repo.path || ""));
+      parts.push(repo.name + "\t" + (repo.path || "") + "\t" + testFlag(repo));
     }
     return parts.join("\n");
   }
@@ -419,7 +464,7 @@
       for (var c = 0; c < items.length; c++) {
         var chip = items[c];
         var pressed = chip.name === value;
-        html += '<button type="button" class="pick" data-repo="' + esc(chip.name) + '" data-path="' + esc(chip.path || "") + '" aria-pressed="' + (pressed ? "true" : "false") + '">' + esc(chip.name) + "</button>";
+        html += '<button type="button" class="pick" data-repo="' + esc(chip.name) + '" data-path="' + esc(chip.path || "") + '"' + hasTestAttr(chip) + ' aria-pressed="' + (pressed ? "true" : "false") + '">' + esc(chip.name) + "</button>";
       }
     }
     if (mode === "select") {
@@ -427,7 +472,7 @@
       html += '<ul class="combo-list" id="repo-pick-list" role="listbox" hidden>';
       for (var o = 0; o < items.length; o++) {
         var opt = items[o];
-        html += '<li role="option" id="repo-opt-' + o + '" data-value="' + esc(opt.name) + '" data-path="' + esc(opt.path || "") + '" aria-selected="' + (opt.name === value ? "true" : "false") + '">' + esc(opt.name) + "</li>";
+        html += '<li role="option" id="repo-opt-' + o + '" data-value="' + esc(opt.name) + '" data-path="' + esc(opt.path || "") + '"' + hasTestAttr(opt) + ' aria-selected="' + (opt.name === value ? "true" : "false") + '">' + esc(opt.name) + "</li>";
       }
       html += '<li class="empty" role="presentation" hidden>No matching repos.</li></ul>';
     }
@@ -435,6 +480,7 @@
     box.setAttribute("data-mode", mode);
     box.setAttribute("data-value", value);
     box.setAttribute("data-path", path);
+    applyHasTest(box, selected);
     box.setAttribute("data-list", key);
     if (mode === "select") {
       box.removeAttribute("role");
@@ -516,6 +562,8 @@
     var value = option.getAttribute("data-value") || "";
     box.setAttribute("data-value", value);
     if (option.hasAttribute("data-path")) box.setAttribute("data-path", option.getAttribute("data-path") || "");
+    if (option.hasAttribute("data-has-test")) box.setAttribute("data-has-test", option.getAttribute("data-has-test") || "");
+    else box.removeAttribute("data-has-test");
     var options = box.querySelectorAll("[role='option']");
     for (var i = 0; i < options.length; i++) {
       options[i].setAttribute("aria-selected", options[i] === option ? "true" : "false");
@@ -1231,6 +1279,18 @@
     renderRepoList();
   }
 
+  function openQueriedRepo() {
+    if (body.getAttribute("data-section") !== "settings") return;
+    var params;
+    try { params = new URLSearchParams(window.location.search); } catch (err) { return; }
+    var repo = params.get("repo") || "";
+    if (!repo || !Object.prototype.hasOwnProperty.call(repoDraft, repo)) return;
+    startEdit(repo);
+    if (params.get("field") !== "test") return;
+    var input = document.getElementById("repo-test");
+    if (input && input.focus) input.focus();
+  }
+
   function loadSettings() {
     clearSettingsErrors();
     var saved = document.getElementById("settings-saved");
@@ -1251,6 +1311,7 @@
         if (editor) editor.hidden = true;
         applySettingsDocument(result.data);
         setSettingsTab("repos");
+        openQueriedRepo();
       })
       .catch(function () { showSettingsError("Could not load settings."); });
   }
@@ -1447,6 +1508,8 @@
       if (repoBox) {
         repoBox.setAttribute("data-value", pick.getAttribute("data-repo") || "");
         repoBox.setAttribute("data-path", pick.getAttribute("data-path") || "");
+        if (pick.hasAttribute("data-has-test")) repoBox.setAttribute("data-has-test", pick.getAttribute("data-has-test") || "");
+        else repoBox.removeAttribute("data-has-test");
       }
       syncValidity();
       return;

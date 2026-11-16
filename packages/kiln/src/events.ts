@@ -28,6 +28,8 @@ export const EVENT_NAMES = [
   "job.added",
   "job.cancelled",
   "job.retried",
+  "launch.blocked",
+  "launch.cleared",
   "run.started",
   "phase.started",
   "phase.finished",
@@ -66,6 +68,27 @@ const JobAdded = z.object({
 const JobRetried = z.object({
   by: z.literal("human"),
   repo: z.string().min(1),
+  once,
+});
+/**
+ * A repo setting the user can edit. `field` is the config key (`test`).
+ * Not a secret name: the redactor would mask a property called `key`.
+ */
+const LaunchFix = z.object({
+  kind: z.literal("repo-setting"),
+  repo: z.string().min(1),
+  field: z.string().min(1),
+});
+export type LaunchFix = z.infer<typeof LaunchFix>;
+/** Config refused the launch. Not a failure, and not an attempt. */
+const LaunchBlocked = z.object({
+  reason: z.string().min(1),
+  fix: LaunchFix,
+  once,
+});
+/** The precondition passed and the marker is no longer active. */
+const LaunchCleared = z.object({
+  reason: z.string().min(1),
   once,
 });
 const JobCancelled = z.object({
@@ -223,6 +246,8 @@ export const EventSchema = z.discriminatedUnion("event", [
   z.object({ ...envelope, event: z.literal("job.added"), job_id: z.string().min(1), properties: JobAdded }),
   z.object({ ...envelope, event: z.literal("job.cancelled"), job_id: z.string().min(1), properties: JobCancelled }),
   z.object({ ...envelope, event: z.literal("job.retried"), job_id: z.string().min(1), properties: JobRetried }),
+  z.object({ ...envelope, event: z.literal("launch.blocked"), job_id: z.string().min(1), properties: LaunchBlocked }),
+  z.object({ ...envelope, event: z.literal("launch.cleared"), job_id: z.string().min(1), properties: LaunchCleared }),
   z.object({ ...envelope, event: z.literal("run.started"), job_id: z.string().min(1), properties: RunStarted }),
   z.object({ ...envelope, event: z.literal("phase.started"), job_id: z.string().min(1), properties: PhaseStarted }),
   z.object({ ...envelope, event: z.literal("phase.finished"), job_id: z.string().min(1), properties: PhaseFinished }),
@@ -370,6 +395,43 @@ export function readEvents(kilnDir: string, options: ReadEventsOptions = {}): Ki
 
 export function eventsForJob(kilnDir: string, jobId: string, options?: ReadEventsOptions): KilnEvent[] {
   return readEvents(kilnDir, options).filter((event) => event.job_id === jobId);
+}
+
+/** One active config block. The board prints `Blocked: <reason>`. */
+export interface LaunchBlock {
+  reason: string;
+  fix: LaunchFix;
+}
+
+export function launchBlockLabel(block: LaunchBlock): string {
+  return `Blocked: ${block.reason}`;
+}
+
+/**
+ * `launch.blocked` events a later `launch.cleared` for the same reason has
+ * not retired. `once` is not used: a cleared block has to be recordable
+ * again if the setting is removed. The caller dedupes while one is active.
+ */
+export function activeLaunchBlocks(events: readonly KilnEvent[], jobId: string): LaunchBlock[] {
+  const active = new Map<string, { block: LaunchBlock; index: number }>();
+  events.forEach((event, index) => {
+    if (event.job_id !== jobId) return;
+    if (event.event === "launch.blocked") {
+      active.set(event.properties.reason, {
+        block: { reason: event.properties.reason, fix: event.properties.fix },
+        index,
+      });
+      return;
+    }
+    if (event.event === "launch.cleared") active.delete(event.properties.reason);
+  });
+  return [...active.values()].sort((left, right) => left.index - right.index).map((entry) => entry.block);
+}
+
+/** The newest active block, the one the board shows. */
+export function activeLaunchBlock(events: readonly KilnEvent[], jobId: string): LaunchBlock | undefined {
+  const blocks = activeLaunchBlocks(events, jobId);
+  return blocks.at(-1);
 }
 
 function buildEvent(draft: EventDraft): KilnEvent {

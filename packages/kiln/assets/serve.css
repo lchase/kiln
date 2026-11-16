@@ -651,7 +651,7 @@ h3 {
 .detail { display: grid; grid-template-columns: minmax(0, 1fr) var(--rail); gap: var(--space-5); align-items: start; }
 .list-head { margin-bottom: var(--space-4); }
 .list-head .meta, .meta, .hint, .ran, .outcome, .ev { color: var(--muted); }
-.meta, .hint, .ran, .outcome, .ev, .num, .k, .saved, .form-error, .field-error {
+.meta, .hint, .ran, .outcome, .ev, .num, .k, .saved, .form-error, .field-error, .form-warn {
   margin: 0;
   font-size: var(--text-xs);
   line-height: var(--leading-xs);
@@ -870,6 +870,7 @@ td, .commits li, .runs li, .ledger li { border-top: 0; border-bottom: var(--hair
 table { width: 100%; border-collapse: collapse; }
 td.num { text-align: right; font-family: var(--font-mono); }
 .config-error, .form-error, .field-error, .trigger .err { color: var(--state-failed); }
+.form-warn { color: var(--state-needs-hand); margin-top: var(--space-2); }
 .trigger .err { margin: var(--space-2) 0 0; font-family: var(--font-mono); white-space: pre-wrap; }
 #settings-error { white-space: pre-wrap; }
 .back { display: inline-block; margin-bottom: var(--space-3); }

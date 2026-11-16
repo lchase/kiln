@@ -1,3 +1,4 @@
+import type { LaunchBlock } from "./events.js";
 import type { FeedbackPlan, FeedbackRound } from "./feedback.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import { REVIEW_WORKFLOW } from "./workflow.js";
@@ -146,6 +147,12 @@ export interface ObservedJob {
   launchFailed: boolean;
   /** Fetch or base selection failed. Status shows it. The next tick retries. */
   launchError?: string;
+  /**
+   * Newest `launch.blocked` event a `launch.cleared` has not retired.
+   * A config precondition. It does not change derived state and does not
+   * spend an attempt. Status copies it only while the job is still queued.
+   */
+  launchBlock?: LaunchBlock;
   /** Pid from the launching breadcrumb, when that file exists. */
   launchPid?: number;
   /** Breadcrumb and log activity for a launch that has not journalled yet. */
@@ -264,6 +271,9 @@ function inFlight(job: ObservedJob, observation: Observation): boolean {
  * | cancelled before start | cancelled |
  * | otherwise | queued |
  *
+ * A launch block (missing repo test command, and the same kind of config
+ * precondition) leaves the job `queued`. It is not a failure.
+ *
  * `deliver=local`: `done` is a finished run whose gate says approve.
  * `deliver=pr`: that landed run is `in-review` while the pull request is open
  * (and in the gap before tick opens it) and `done` only once it has merged.
@@ -362,7 +372,7 @@ function needsDelivery(job: ObservedJob): boolean {
   return true;
 }
 
-function canLaunch(job: ObservedJob, observation: Observation): boolean {
+export function canLaunch(job: ObservedJob, observation: Observation): boolean {
   if (job.cancelled || job.error || job.run || job.launching || job.launchFailed || job.fixInProgress) return false;
   return dependenciesMet(job, observation);
 }

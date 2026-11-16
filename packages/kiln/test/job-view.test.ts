@@ -227,6 +227,56 @@ describe("job view", () => {
     assert.equal(view.costUsd, null);
     assert.equal(view.deliverable, undefined);
   });
+
+  it("puts a queued job blocked on a missing test command in needs a hand", () => {
+    const blocked = job({
+      jobId: "SAMPLE-4",
+      title: "SAMPLE-4 Missing test",
+      repo: "web",
+      state: "queued",
+      launchBlock: {
+        reason: "web has no test command",
+        fix: { kind: "repo-setting", repo: "web", field: "test" },
+      },
+    });
+    const view = projectJob(
+      blocked,
+      [
+        event({
+          id: "block",
+          job_id: "SAMPLE-4",
+          run_id: null,
+          event: "launch.blocked",
+          step: null,
+          properties: {
+            reason: "web has no test command",
+            fix: { kind: "repo-setting", repo: "web", field: "test" },
+          },
+        }),
+      ],
+    );
+    assert.equal(view.column, "needs-hand");
+    assert.equal(view.hand, true);
+    assert.equal(view.inbox, false);
+    assert.equal(view.retry, false);
+    assert.equal(view.reason, "Blocked: web has no test command");
+    assert.equal(view.timeline[0]?.entries[0]?.summary, "Blocked · web has no test command");
+    const html = renderConsole("", buildAttention([blocked]), {
+      csrf: "token",
+      repos: [{ name: "web", path: "/tmp/web", hasTest: false }],
+      workflows: ["feature", "investigation"],
+      workflowsNeedingTest: ["feature"],
+      section: "hand",
+    });
+    assert.match(html, /Blocked: web has no test command/);
+    assert.match(html, /href="\/settings\?repo=web&amp;field=test"/);
+    assert.match(html, /Edit web in Settings/);
+    assert.match(html, /id="intake-warn"/);
+    assert.match(html, /data-workflow="feature"[^>]*data-needs-test="true"/);
+    assert.match(html, /data-workflow="investigation"[^>]*data-needs-test="false"/);
+    assert.match(html, /data-repo="web"[^>]*data-has-test="false"/);
+    assert.doesNotMatch(html, /action="\/api\/jobs\/SAMPLE-4\/retry"/);
+  });
 });
 
 describe("markdown", () => {
