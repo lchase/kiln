@@ -4,10 +4,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
+import vm from "node:vm";
 import { buildAttention } from "../src/attention.js";
 import { packageRoot } from "../src/paths.js";
 import type { StatusJobView } from "../src/report.js";
-import { renderConsole } from "../src/serve-page.js";
+import { renderConsole, renderMessagePage, renderTextPage } from "../src/serve-page.js";
 import { reapLaunches } from "./reap.js";
 
 const root = packageRoot();
@@ -241,6 +242,173 @@ after(async () => {
 });
 
 describe("serve pages", () => {
+  it("uses the sidebar kiln badge as the tab icon", () => {
+    const html = page([]);
+    const link = html.match(/<link rel="icon" type="image\/svg\+xml" href="(data:image\/svg\+xml,[^"]+)">/);
+    assert.ok(link?.[1]);
+    const svg = decodeURIComponent(link[1].slice("data:image/svg+xml,".length));
+    const brandStart = html.indexOf('<span class="logo"');
+    const brand = html.slice(brandStart, html.indexOf("</span>", brandStart));
+    const paths = (source: string) => [...source.matchAll(/<path d="([^"]+)"/g)].map((match) => match[1]);
+    assert.deepEqual(paths(svg), paths(brand));
+    assert.deepEqual(paths(svg), ["M3 12V6l5-3 5 3v6l-5 3-5-3z", "M3 6l5 3 5-3M8 9v6"]);
+    assert.match(brand, /stroke="currentColor"/);
+    assert.doesNotMatch(brand, /<rect /);
+    assert.doesNotMatch(svg, /currentColor|var\(--/);
+
+    const css = readFileSync(join(packageRoot(), "assets", "serve.css"), "utf8");
+    const tokens = css.slice(css.indexOf("/* tokens:start */"), css.indexOf("/* tokens:end */"));
+    const themeBlock = (id: string) => {
+      const start = css.indexOf(`/* theme:${id} */`);
+      assert.ok(start !== -1, id);
+      const end = css.indexOf("/* theme:end */", start);
+      return css.slice(start, end);
+    };
+    const decl = (block: string, name: string) => {
+      const found = block.match(new RegExp(`${name}:\\s*([^;]+);`));
+      assert.ok(found?.[1], name);
+      return found[1].trim();
+    };
+    const badge = Number.parseInt(decl(tokens, "--logo"), 10);
+    const radius = Number.parseInt(decl(tokens, "--radius-md"), 10);
+    const glyph = Number.parseInt(decl(tokens, "--icon"), 10);
+    const kiln = themeBlock("kiln");
+    const gruvbox = themeBlock("gruvbox-dark");
+    const fill = decl(kiln, "--primary");
+    const stroke = decl(kiln, "--on-primary");
+    const logo = css.match(/\.logo\s*\{[^}]+\}/)?.[0] ?? "";
+    assert.match(logo, /width:\s*var\(--logo\)/);
+    assert.match(logo, /height:\s*var\(--logo\)/);
+    assert.match(logo, /border-radius:\s*var\(--radius-md\)/);
+    assert.match(logo, /background:\s*var\(--primary\)/);
+    assert.match(logo, /color:\s*var\(--on-primary\)/);
+    const offset = (badge - glyph) / 2;
+    assert.match(svg, new RegExp(`viewBox="0 0 ${badge} ${badge}"`));
+    assert.match(svg, new RegExp(`<rect width="${badge}" height="${badge}" rx="${radius}" fill="${fill}"/>`));
+    assert.match(svg, new RegExp(`x="${offset}" y="${offset}" width="${glyph}" height="${glyph}"`));
+    assert.match(svg, new RegExp(`stroke="${stroke}"`));
+    assert.ok(svg.indexOf("<rect ") < svg.indexOf("<path "));
+    assert.equal(radius / badge, 4 / 28);
+
+    const paint = (theme: "kiln" | "gruvbox-dark") =>
+      renderConsole(css, buildAttention([]), { csrf: "", repos: [], workflows: [], section: "pipeline", theme });
+    const iconFill = (html: string) => {
+      const icon = html.match(/<link rel="icon" type="image\/svg\+xml" href="(data:image\/svg\+xml,[^"]+)">/);
+      assert.ok(icon?.[1]);
+      const decoded = decodeURIComponent(icon[1].slice("data:image/svg+xml,".length));
+      const rect = decoded.match(/<rect[^>]*fill="([^"]+)"/);
+      assert.ok(rect?.[1]);
+      return rect[1];
+    };
+    const kilnFill = iconFill(paint("kiln"));
+    const gruvboxFill = iconFill(paint("gruvbox-dark"));
+    assert.equal(kilnFill, decl(kiln, "--primary"));
+    assert.equal(gruvboxFill, decl(gruvbox, "--primary"));
+    assert.notEqual(kilnFill, gruvboxFill);
+
+    for (const other of [renderMessagePage("", "Not found", "Not found."), renderTextPage("", "Spec", "body")]) {
+      assert.match(other, /<link rel="icon" type="image\/svg\+xml" href="data:image\/svg\+xml,/);
+    }
+  });
+
+  it("repaints the tab icon when the board theme changes", () => {
+    const css = readFileSync(join(packageRoot(), "assets", "serve.css"), "utf8");
+    const block = (id: string) => {
+      const start = css.indexOf(`/* theme:${id} */`);
+      const end = css.indexOf("/* theme:end */", start);
+      return css.slice(start, end);
+    };
+    const color = (id: string, name: string) => {
+      const found = block(id).match(new RegExp(`${name}:\\s*(#[0-9a-fA-F]{3,8})`));
+      assert.ok(found?.[1], `${id} ${name}`);
+      return found[1];
+    };
+    const html = renderConsole(css, buildAttention([]), { csrf: "", repos: [], workflows: [], section: "settings", theme: "kiln" });
+    const initial = html.match(/href="(data:image\/svg\+xml,[^"]+)"/)?.[1];
+    assert.ok(initial);
+    const attrs: Record<string, string> = { rel: "icon", href: initial };
+    const link = {
+      attrs,
+      getAttribute: (key: string) => attrs[key] ?? null,
+      setAttribute: (key: string, value: string) => {
+        attrs[key] = value;
+      },
+    };
+    const documentElement = {
+      attrs: { "data-theme": "kiln" } as Record<string, string>,
+      getAttribute(key: string) {
+        return this.attrs[key] ?? null;
+      },
+      setAttribute(key: string, value: string) {
+        this.attrs[key] = value;
+      },
+    };
+    const themeButton = {
+      getAttribute: (key: string) => (key === "data-theme-choice" ? "gruvbox-dark" : null),
+      closest: (sel: string) => (sel === "#theme-pick [data-theme-choice]" ? themeButton : null),
+    };
+    const listeners: Record<string, (event: { target: typeof themeButton }) => void> = {};
+    const document = {
+      body: { getAttribute: () => "", classList: { add() {}, remove() {} } },
+      documentElement,
+      title: "",
+      getElementById: () => null,
+      querySelector: (sel: string) => (sel === 'link[rel="icon"]' ? link : null),
+      querySelectorAll: () => [],
+      addEventListener: (type: string, fn: (event: { target: typeof themeButton }) => void) => {
+        listeners[type] = fn;
+      },
+    };
+    const context = vm.createContext({
+      document,
+      localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+      sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+      fetch: () => new Promise(() => {}),
+      getComputedStyle: () => ({
+        getPropertyValue: (name: string) => {
+          const id = documentElement.getAttribute("data-theme") ?? "kiln";
+          if (name === "--primary") return color(id, "--primary");
+          if (name === "--on-primary") return color(id, "--on-primary");
+          return "";
+        },
+      }),
+      setInterval: () => 0,
+      setTimeout,
+      clearTimeout,
+      clearInterval,
+      console,
+      Promise,
+      Date,
+      Number,
+      String,
+      Boolean,
+      JSON,
+      Object,
+      Array,
+      Math,
+      Error,
+      RegExp,
+      isFinite,
+      isNaN,
+      parseInt,
+      parseFloat,
+      encodeURIComponent,
+      decodeURIComponent,
+      undefined,
+      NaN,
+      Infinity,
+    });
+    vm.runInContext(readFileSync(join(packageRoot(), "assets", "serve.js"), "utf8"), context);
+    const click = listeners.click;
+    assert.ok(click);
+    click({ target: themeButton });
+    const next = decodeURIComponent(link.getAttribute("href")?.slice("data:image/svg+xml,".length) ?? "");
+    assert.match(next, new RegExp(`fill="${color("gruvbox-dark", "--primary")}"`));
+    assert.match(next, new RegExp(`stroke="${color("gruvbox-dark", "--on-primary")}"`));
+    assert.doesNotMatch(next, new RegExp(`fill="${color("kiln", "--primary")}"`));
+    assert.equal(documentElement.getAttribute("data-theme"), "gruvbox-dark");
+  });
+
   it("escapes job text and does not link a javascript pull request url", () => {
     const html = page([
       viewJob({
@@ -450,7 +618,11 @@ describe("kiln serve", () => {
       assert.match(server.url, /^http:\/\/127\.0\.0\.1:\d+$/);
       const homePage = await text(server.url);
       assert.equal(homePage.status, 200);
+      assert.match(homePage.body, /<link rel="icon" type="image\/svg\+xml" href="data:image\/svg\+xml,/);
       assert.match(homePage.body, /kiln-serve/);
+      const favicon = await text(`${server.url}/favicon.ico`);
+      assert.equal(favicon.status, 204);
+      assert.equal(favicon.body, "");
       assert.match(homePage.body, /Needs a hand/);
       assert.match(homePage.body, /\(0\) Kiln/);
       assert.doesNotMatch(homePage.body, new RegExp(TOKEN));

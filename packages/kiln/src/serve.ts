@@ -979,8 +979,9 @@ function sendHtml(res: ServerResponse, status: number, html: string, secrets: st
     Connection: "close",
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
+    // data: is the inlined SVG favicon. default-src 'none' would block it.
     "Content-Security-Policy":
-      "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'none'; img-src data:; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     "Referrer-Policy": "same-origin",
   });
   res.end(body);
