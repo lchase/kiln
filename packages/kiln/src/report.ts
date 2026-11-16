@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { newestActivityAt } from "./activity.js";
 import { AUTH_FAILED_LINE } from "./auth.js";
 import { launchBlockLabel, type LaunchBlock } from "./events.js";
 import { readBoardFiles, readReviewRounds, type BoardFile, type BoardReviewRound } from "./board.js";
@@ -254,6 +255,8 @@ export interface StatusJobView {
   finishedAt?: string;
   /** Last lines of the launch log. */
   logTail?: string;
+  /** Time of the newest session activity event. Absent until a phase writes output. */
+  lastActivityAt?: string;
   /** Worktree diff stat, or the build summary when the tree is clean. */
   diffSummary?: string;
   /** Latest open step failure, from a `step.failed` event. */
@@ -401,6 +404,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
       ...(job.deliver ? { deliver: job.deliver } : {}),
       ...(job.createdAt ? { createdAt: job.createdAt } : {}),
       ...(job.logTail ? { logTail: job.logTail } : {}),
+      ...activityStamp(job),
       ...boardFields(job),
     };
   }
@@ -469,6 +473,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     ...(job.run?.finishedAt ? { finishedAt: job.run.finishedAt } : {}),
     ...(job.logTail ? { logTail: job.logTail } : {}),
     ...(job.diffSummary ? { diffSummary: job.diffSummary } : {}),
+    ...activityStamp(job),
     ...(failureDetail ? { failureDetail } : {}),
     ...(job.run?.sandboxError ? { sandboxError: job.run.sandboxError } : {}),
     ...(job.sandboxed ? { sandboxed: true } : {}),
@@ -507,6 +512,13 @@ function boardFields(job: ObservedJob): {
     ...(job.feedbackRounds?.length ? { feedbackRounds: job.feedbackRounds } : {}),
     ...(files.length > 0 ? { files } : {}),
   };
+}
+
+function activityStamp(job: ObservedJob): { lastActivityAt?: string } {
+  const run = job.run;
+  if (!run || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(run.runId)) return {};
+  const at = newestActivityAt(join(run.checkout, ".runs", run.runId));
+  return at ? { lastActivityAt: at } : {};
 }
 
 function progressFor(job: ObservedJob): StepProgress[] {

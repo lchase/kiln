@@ -218,6 +218,7 @@
     var date = new Date(iso);
     if (!isFinite(date.getTime())) return iso;
     if (mode === "clock" || mode === false) return date.toLocaleTimeString();
+    if (mode === "date") return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
     if (mode === "rel") return relativeTime(iso);
     return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
   }
@@ -2398,4 +2399,190 @@
   } catch (err) { /* private mode */ }
   poll();
   setInterval(poll, 3000);
+  startLive();
+
+  function startLive() {
+    var root = document.getElementById("live");
+    var feed = document.getElementById("live-feed");
+    if (!root || !feed) return;
+    var jobId = body.getAttribute("data-job") || "";
+    if (!jobId) return;
+    var cursor = root.getAttribute("data-cursor") || "";
+    var running = root.getAttribute("data-running") === "true";
+    var stick = running;
+    var ignoreScroll = true;
+    var timer = 0;
+    var note = document.getElementById("live-note");
+    var raw = document.getElementById("live-raw");
+    var toggle = document.getElementById("live-raw-toggle");
+    var error = document.getElementById("live-error");
+    var phases = {
+      spec: "Spec", build: "Build", verify: "Verify", security: "Security", ux: "UX", ui: "UI",
+      code: "Code", approver: "Approve", approve: "Approve", land: "Land", explore: "Explore",
+      draft: "Draft", fix: "Fix",
+    };
+
+    function phaseLabel(id) {
+      if (phases[id]) return phases[id];
+      return String(id || "Phase").replace(/[-_]/g, " ").replace(/\b\w/g, function (ch) { return ch.toUpperCase(); });
+    }
+
+    function follow() {
+      if (!stick) return;
+      var el = document.scrollingElement || document.documentElement;
+      el.scrollTop = el.scrollHeight;
+    }
+
+    window.addEventListener("scroll", function () {
+      if (ignoreScroll) return;
+      var el = document.scrollingElement || document.documentElement;
+      stick = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+    });
+
+    feed.addEventListener("click", function (event) {
+      var button = event.target && event.target.closest ? event.target.closest("button.live-summary") : null;
+      if (!button) return;
+      var open = button.getAttribute("aria-expanded") === "true";
+      button.setAttribute("aria-expanded", open ? "false" : "true");
+      button.textContent = open ? button.getAttribute("data-summary") || "" : button.getAttribute("data-detail") || "";
+    });
+
+    if (toggle && raw) {
+      toggle.addEventListener("click", function () {
+        var on = toggle.getAttribute("aria-pressed") !== "true";
+        toggle.setAttribute("aria-pressed", on ? "true" : "false");
+        raw.hidden = !on;
+        feed.hidden = on;
+        if (on && stick) follow();
+      });
+    }
+
+    function timeEl(iso, mode) {
+      var node = document.createElement("time");
+      node.setAttribute("datetime", iso);
+      node.setAttribute("data-time", mode);
+      node.textContent = iso;
+      return node;
+    }
+
+    function renderEvent(event) {
+      var li = document.createElement("li");
+      li.className = "live-event " + event.kind;
+      li.setAttribute("data-kind", event.kind);
+      li.setAttribute("data-summary", event.summary);
+      li.appendChild(timeEl(event.at, "clock"));
+      if (event.detail) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "live-summary";
+        button.setAttribute("aria-expanded", "false");
+        button.setAttribute("data-summary", event.summary);
+        button.setAttribute("data-detail", event.detail);
+        button.textContent = event.summary;
+        li.appendChild(button);
+      } else {
+        var span = document.createElement("span");
+        span.className = "live-summary";
+        span.textContent = event.summary;
+        li.appendChild(span);
+      }
+      localizeTimes(li);
+      return li;
+    }
+
+    function place(event) {
+      var empty = feed.querySelector(".empty");
+      if (empty) empty.remove();
+      if (event.kind === "command" || event.kind === "edit") {
+        var items = feed.querySelectorAll(".live-event");
+        for (var i = items.length - 1; i >= 0; i--) {
+          if (items[i].getAttribute("data-kind") !== event.kind) continue;
+          var prev = items[i].getAttribute("data-summary") || "";
+          if (event.summary.indexOf(prev) === 0 && prev) {
+            if (event.summary !== prev) items[i].replaceWith(renderEvent(event));
+            return;
+          }
+          break;
+        }
+      }
+      var blocks = feed.querySelectorAll(".live-phase");
+      var block = blocks.length ? blocks[blocks.length - 1] : null;
+      if (!block || block.getAttribute("data-phase") !== event.phase) {
+        block = document.createElement("section");
+        block.className = "live-phase";
+        block.setAttribute("data-phase", event.phase);
+        var heading = document.createElement("h3");
+        heading.appendChild(document.createTextNode(phaseLabel(event.phase) + " "));
+        heading.appendChild(timeEl(event.at, "date"));
+        var list = document.createElement("ol");
+        list.className = "live-events";
+        block.appendChild(heading);
+        block.appendChild(list);
+        feed.appendChild(block);
+      }
+      var listNode = block.querySelector(".live-events");
+      if (listNode) listNode.appendChild(renderEvent(event));
+    }
+
+    function apply(data) {
+      if (error) error.hidden = true;
+      var events = data && data.events ? data.events : [];
+      var kinds = { message: 1, tool: 1, edit: 1, command: 1, result: 1, error: 1 };
+      for (var i = 0; i < events.length; i++) {
+        var event = events[i];
+        if (!event || !kinds[event.kind] || typeof event.summary !== "string" || typeof event.at !== "string") continue;
+        place(event);
+      }
+      if (typeof data.cursor === "string") {
+        cursor = data.cursor;
+        root.setAttribute("data-cursor", cursor);
+      }
+      if (raw && typeof data.raw === "string") raw.textContent = data.raw;
+      running = data.running === true;
+      root.setAttribute("data-running", running ? "true" : "false");
+      if (note) {
+        if (running && data.phase) note.textContent = "Watching " + phaseLabel(data.phase);
+        else if (running) note.textContent = "Watching this run";
+        else note.textContent = "Last session";
+      }
+      follow();
+      if (!running && timer) {
+        clearInterval(timer);
+        timer = 0;
+      }
+    }
+
+    function pull() {
+      if (document.visibilityState === "hidden") return;
+      var query = cursor ? "?after=" + encodeURIComponent(cursor) : "";
+      fetch("/api/jobs/" + encodeURIComponent(jobId) + "/activity" + query, {
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      })
+        .then(function (response) {
+          if (!response.ok) throw new Error("status");
+          return response.json();
+        })
+        .then(apply)
+        .catch(function () {
+          if (!error) return;
+          error.hidden = false;
+          error.textContent = "Could not refresh activity.";
+        });
+    }
+
+    if (running) {
+      requestAnimationFrame(function () {
+        follow();
+        requestAnimationFrame(function () { ignoreScroll = false; });
+      });
+      pull();
+      timer = setInterval(pull, 2000);
+      document.addEventListener("visibilitychange", function () {
+        if (document.visibilityState === "visible" && running) pull();
+      });
+    } else {
+      ignoreScroll = false;
+    }
+  }
 })();

@@ -15,8 +15,11 @@ import {
   PIPELINE_COLUMNS,
   formatCost,
   formatDuration,
+  formatClock,
+  formatDay,
   formatLocal,
   formatRelative,
+  phaseLabel,
   shortSha,
   stateTone,
   type FindingView,
@@ -25,6 +28,7 @@ import {
   type PipelineColumn,
   type ReviewDeliverable,
 } from "./job-view.js";
+import type { ActivityEvent, ActivityFeed } from "./activity.js";
 import { icon, type IconName } from "./icons.js";
 import { renderMarkdown } from "./markdown.js";
 import { kilnVersion } from "./project.js";
@@ -70,7 +74,8 @@ export interface AppModel {
   stats?: StatsDocument;
   report?: DayReport;
   detail?: JobDetail;
-  tab?: "overview" | "changes" | "timeline";
+  tab?: "overview" | "live" | "changes" | "timeline";
+  activity?: ActivityFeed;
   triggers?: TriggerRow[];
 }
 
@@ -259,7 +264,7 @@ function mainHtml(model: AppModel, page: ServePageOptions): string {
     return `${error}<main class="main">${reportHtml(model.report)}</main>`;
   }
   if (model.section === "job" && model.detail) {
-    return `${error}<main class="main detail">${detailHtml(model.detail, model.tab ?? "overview", page.csrf)}</main>`;
+    return `${error}<main class="main detail">${detailHtml(model.detail, model.tab ?? "overview", page.csrf, model.activity)}</main>`;
   }
   if (model.section === "triggers") {
     return `${error}<main class="main">${triggersHtml(model.triggers ?? [])}</main>`;
@@ -555,8 +560,9 @@ function looksLikeLog(text: string): boolean {
   return /yak resume|worktree branch|suspended —/.test(text) || text.split("\n").length > 8;
 }
 
-function timeHtml(iso: string, mode: "rel" | "local" | "clock"): string {
-  const text = mode === "rel" ? formatRelative(iso) : mode === "clock" ? formatLocal(iso) : formatLocal(iso);
+function timeHtml(iso: string, mode: "rel" | "local" | "clock" | "date"): string {
+  const text =
+    mode === "rel" ? formatRelative(iso) : mode === "date" ? formatDay(iso) : mode === "clock" ? formatClock(iso) : formatLocal(iso);
   return `<time datetime="${escapeHtml(iso)}" data-time="${mode}">${escapeHtml(text)}</time>`;
 }
 
@@ -629,18 +635,20 @@ function postForm(action: string, kind: string, label: string, csrf: string): st
   return `<form method="post" action="${action}" class="act ${kind}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button type="submit">${label}</button></form>`;
 }
 
-function detailHtml(detail: JobDetail, tab: "overview" | "changes" | "timeline", _csrf: string): string {
+function detailHtml(detail: JobDetail, tab: "overview" | "live" | "changes" | "timeline", _csrf: string, activity?: ActivityFeed): string {
   const job = detail.job;
   const id = encodeURIComponent(job.jobId);
-  const tabs = (["overview", "changes", "timeline"] as const)
+  const liveDefault = job.column === "running";
+  const tabs = (["overview", "live", "changes", "timeline"] as const)
     .map((name) => {
-      const href = name === "overview" ? `/jobs/${id}` : `/jobs/${id}?tab=${name}`;
+      const href = name === "overview" && !liveDefault ? `/jobs/${id}` : `/jobs/${id}?tab=${name}`;
       const current = name === tab ? ` aria-current="page"` : "";
       const label = name[0]?.toUpperCase() + name.slice(1);
       return `<a href="${href}"${current}>${label}</a>`;
     })
     .join("");
-  const panel = tab === "changes" ? changesHtml(detail) : tab === "timeline" ? timelineHtml(detail) : overviewHtml(detail);
+  const panel =
+    tab === "changes" ? changesHtml(detail) : tab === "timeline" ? timelineHtml(detail) : tab === "live" ? liveHtml(job, activity) : overviewHtml(detail);
   const back = job.inbox ? "/inbox" : "/";
   const backLabel = job.inbox ? "Inbox" : "Pipeline";
   return `<div class="detail-main">
@@ -659,6 +667,51 @@ ${actionsHtml(job, "job", _csrf)}
 ${panel}
 </div>
 ${railHtml(detail)}`;
+}
+
+function liveHtml(job: BoardJob, activity: ActivityFeed | undefined): string {
+  const feed = activity ?? { running: job.column === "running", cursor: "", events: [], raw: "" };
+  const note = feed.running ? (feed.phase ? `Watching ${phaseLabel(feed.phase)}` : "Watching this run") : "Last session";
+  const phase = feed.phase ? ` data-phase="${escapeHtml(feed.phase)}"` : "";
+  return `<section class="live" id="live" data-running="${feed.running ? "true" : "false"}" data-cursor="${escapeHtml(feed.cursor)}"${phase}>
+<div class="live-bar"><p class="meta live-note" id="live-note">${escapeHtml(note)}</p><button type="button" class="btn" id="live-raw-toggle" aria-pressed="false" aria-controls="live-raw">Raw log</button></div>
+<p class="field-error" id="live-error" role="alert" hidden></p>
+<div class="live-feed" id="live-feed">${feedHtml(feed.events)}</div>
+<pre class="text live-raw" id="live-raw" hidden>${escapeHtml(feed.raw)}</pre>
+</section>`;
+}
+
+function feedHtml(events: readonly ActivityEvent[]): string {
+  if (events.length === 0) return `<p class="empty">No session output yet.</p>`;
+  const blocks: string[] = [];
+  let phase = "";
+  let started = "";
+  let items: string[] = [];
+  const flush = (): void => {
+    if (!phase) return;
+    blocks.push(
+      `<section class="live-phase" data-phase="${escapeHtml(phase)}"><h3>${escapeHtml(phaseLabel(phase))} ${timeHtml(started, "date")}</h3><ol class="live-events">${items.join("")}</ol></section>`,
+    );
+  };
+  for (const event of events) {
+    if (event.phase !== phase) {
+      flush();
+      phase = event.phase;
+      started = event.at;
+      items = [];
+    }
+    items.push(eventHtml(event));
+  }
+  flush();
+  return blocks.join("");
+}
+
+function eventHtml(event: ActivityEvent): string {
+  const summary = escapeHtml(event.summary);
+  const body = event.detail
+    ? `<button type="button" class="live-summary" aria-expanded="false" data-summary="${summary}" data-detail="${escapeHtml(event.detail)}">${summary}</button>`
+    : `<span class="live-summary">${summary}</span>`;
+  return `<li class="live-event ${escapeHtml(event.kind)}" data-kind="${escapeHtml(event.kind)}" data-summary="${summary}">${timeHtml(event.at, "clock")}${body}</li>`;
 }
 
 function overviewHtml(detail: JobDetail): string {
