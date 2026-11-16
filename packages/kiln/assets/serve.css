@@ -1108,6 +1108,11 @@ body.open .drawer { transform: none; }
   text-transform: none;
   letter-spacing: 0;
 }
+.live-phase h3 time {
+  margin-left: var(--space-2);
+  color: var(--muted);
+  font-weight: 400;
+}
 .live-events { list-style: none; margin: 0; padding: 0; }
 .live-event {
   display: flex;
@@ -1129,13 +1134,7 @@ button.live-summary {
   text-align: left;
   cursor: pointer;
 }
-.live-detail {
-  flex: 1 0 100%;
-  margin: 0;
-  color: var(--muted);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
+button.live-summary[aria-expanded="true"] { white-space: pre-wrap; }
 .live-event.error .live-summary { color: var(--state-failed); }
 .live-bar .btn[aria-pressed="true"] {
   background: var(--card-hover);

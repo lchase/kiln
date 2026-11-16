@@ -218,6 +218,7 @@
     var date = new Date(iso);
     if (!isFinite(date.getTime())) return iso;
     if (mode === "clock" || mode === false) return date.toLocaleTimeString();
+    if (mode === "date") return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
     if (mode === "rel") return relativeTime(iso);
     return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
   }
@@ -1875,13 +1876,11 @@
     });
 
     feed.addEventListener("click", function (event) {
-      var button = event.target && event.target.closest ? event.target.closest(".live-summary") : null;
-      if (!button || button.tagName !== "BUTTON") return;
-      var detail = button.parentElement ? button.parentElement.querySelector(".live-detail") : null;
-      if (!detail) return;
+      var button = event.target && event.target.closest ? event.target.closest("button.live-summary") : null;
+      if (!button) return;
       var open = button.getAttribute("aria-expanded") === "true";
       button.setAttribute("aria-expanded", open ? "false" : "true");
-      detail.hidden = open;
+      button.textContent = open ? button.getAttribute("data-summary") || "" : button.getAttribute("data-detail") || "";
     });
 
     if (toggle && raw) {
@@ -1907,20 +1906,16 @@
       li.className = "live-event " + event.kind;
       li.setAttribute("data-kind", event.kind);
       li.setAttribute("data-summary", event.summary);
-      li.appendChild(timeEl(event.at, "local"));
-      li.appendChild(timeEl(event.at, "rel"));
+      li.appendChild(timeEl(event.at, "clock"));
       if (event.detail) {
         var button = document.createElement("button");
         button.type = "button";
         button.className = "live-summary";
         button.setAttribute("aria-expanded", "false");
+        button.setAttribute("data-summary", event.summary);
+        button.setAttribute("data-detail", event.detail);
         button.textContent = event.summary;
-        var detail = document.createElement("p");
-        detail.className = "live-detail";
-        detail.hidden = true;
-        detail.textContent = event.detail;
         li.appendChild(button);
-        li.appendChild(detail);
       } else {
         var span = document.createElement("span");
         span.className = "live-summary";
@@ -1953,7 +1948,8 @@
         block.className = "live-phase";
         block.setAttribute("data-phase", event.phase);
         var heading = document.createElement("h3");
-        heading.textContent = phaseLabel(event.phase);
+        heading.appendChild(document.createTextNode(phaseLabel(event.phase) + " "));
+        heading.appendChild(timeEl(event.at, "date"));
         var list = document.createElement("ol");
         list.className = "live-events";
         block.appendChild(heading);

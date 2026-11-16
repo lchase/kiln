@@ -116,7 +116,7 @@ describe("activity parser", () => {
     assert.deepEqual(
       events.map((event) => event.summary),
       [
-        "I'll read the helper before editing it. The check lives in src/foo.ts.",
+        "I'll read the helper before editing it.",
         "Read src/foo.ts",
         "Edit src/foo.ts (+12 -3)",
         "Ran npm test - 3 failed",
@@ -325,6 +325,11 @@ describe("activity endpoint", () => {
       assert.match(page.body, /Edit src\/foo\.ts \(\+12 -3\)/);
       assert.match(page.body, /Ran npm test - 3 failed/);
       assert.match(page.body, /id="live-note">Watching Build</);
+      const feed = page.body.slice(page.body.indexOf('id="live-feed"'), page.body.indexOf('id="live-raw"'));
+      assert.match(feed, /data-time="clock"/);
+      assert.match(feed, /data-time="date"/);
+      assert.doesNotMatch(feed, /data-time="rel"/);
+      assert.doesNotMatch(feed, /class="live-detail"/);
       assert.equal(page.body.includes("tool_use"), false);
       assert.equal(page.body.includes(TOKEN), false);
       assert.equal(page.body.includes(MODEL_KEY), false);

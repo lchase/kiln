@@ -15,6 +15,8 @@ import {
   PIPELINE_COLUMNS,
   formatCost,
   formatDuration,
+  formatClock,
+  formatDay,
   formatLocal,
   formatRelative,
   phaseLabel,
@@ -500,8 +502,9 @@ function looksLikeLog(text: string): boolean {
   return /yak resume|worktree branch|suspended —/.test(text) || text.split("\n").length > 8;
 }
 
-function timeHtml(iso: string, mode: "rel" | "local" | "clock"): string {
-  const text = mode === "rel" ? formatRelative(iso) : mode === "clock" ? formatLocal(iso) : formatLocal(iso);
+function timeHtml(iso: string, mode: "rel" | "local" | "clock" | "date"): string {
+  const text =
+    mode === "rel" ? formatRelative(iso) : mode === "date" ? formatDay(iso) : mode === "clock" ? formatClock(iso) : formatLocal(iso);
   return `<time datetime="${escapeHtml(iso)}" data-time="${mode}">${escapeHtml(text)}</time>`;
 }
 
@@ -616,17 +619,19 @@ function feedHtml(events: readonly ActivityEvent[]): string {
   if (events.length === 0) return `<p class="empty">No session output yet.</p>`;
   const blocks: string[] = [];
   let phase = "";
+  let started = "";
   let items: string[] = [];
   const flush = (): void => {
     if (!phase) return;
     blocks.push(
-      `<section class="live-phase" data-phase="${escapeHtml(phase)}"><h3>${escapeHtml(phaseLabel(phase))}</h3><ol class="live-events">${items.join("")}</ol></section>`,
+      `<section class="live-phase" data-phase="${escapeHtml(phase)}"><h3>${escapeHtml(phaseLabel(phase))} ${timeHtml(started, "date")}</h3><ol class="live-events">${items.join("")}</ol></section>`,
     );
   };
   for (const event of events) {
     if (event.phase !== phase) {
       flush();
       phase = event.phase;
+      started = event.at;
       items = [];
     }
     items.push(eventHtml(event));
@@ -638,9 +643,9 @@ function feedHtml(events: readonly ActivityEvent[]): string {
 function eventHtml(event: ActivityEvent): string {
   const summary = escapeHtml(event.summary);
   const body = event.detail
-    ? `<button type="button" class="live-summary" aria-expanded="false">${summary}</button><p class="live-detail" hidden>${escapeHtml(event.detail)}</p>`
+    ? `<button type="button" class="live-summary" aria-expanded="false" data-summary="${summary}" data-detail="${escapeHtml(event.detail)}">${summary}</button>`
     : `<span class="live-summary">${summary}</span>`;
-  return `<li class="live-event ${escapeHtml(event.kind)}" data-kind="${escapeHtml(event.kind)}" data-summary="${escapeHtml(event.summary)}">${timeHtml(event.at, "local")}${timeHtml(event.at, "rel")}${body}</li>`;
+  return `<li class="live-event ${escapeHtml(event.kind)}" data-kind="${escapeHtml(event.kind)}" data-summary="${summary}">${timeHtml(event.at, "clock")}${body}</li>`;
 }
 
 function overviewHtml(detail: JobDetail): string {

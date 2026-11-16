@@ -306,6 +306,20 @@ export function formatLocal(iso: string): string {
   return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
+/** Time of day only, with seconds. The browser rewrites it locally. */
+export function formatClock(iso: string): string {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return iso;
+  return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
+}
+
+/** Calendar day only. The browser rewrites it locally. */
+export function formatDay(iso: string): string {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return iso;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
 export function shortSha(sha: string): string {
   return sha.slice(0, 7);
 }
