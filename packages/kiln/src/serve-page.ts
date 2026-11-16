@@ -335,8 +335,9 @@ function groupedJobs(jobs: readonly JobView[], section: "repos" | "history", csr
   const blocks = PIPELINE_COLUMNS.flatMap((column) => {
     const rows = jobs.filter((job) => job.column === column);
     if (rows.length === 0) return [];
+    const cards = rows.map((job) => jobRow(job, section, csrf)).join("\n");
     return [
-      `<section class="state-group"><h3><span class="chip ${column}">${escapeHtml(COLUMN_LABEL[column])}</span><span class="badge">${rows.length}</span></h3><div class="jobs">${rows.map((job) => jobRow(job, section, csrf)).join("\n")}</div></section>`,
+      `<section class="state-group"><div class="jobs"><h3>${escapeHtml(COLUMN_LABEL[column])}<span class="badge">${rows.length}</span></h3>\n${cards}</div></section>`,
     ];
   });
   return blocks.length === 0 ? `<p class="empty">No jobs.</p>` : blocks.join("");
