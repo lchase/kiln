@@ -318,7 +318,6 @@
   }
 
   var titleDirty = false;
-  var issueDirty = false;
   var sourceKind = "prompt";
   var specPath = "";
   var ticketsDir = "";
@@ -375,7 +374,7 @@
     var prompt = source.kind === "prompt" && !String(source.text || "").trim() ? "Prompt is required." : "";
     var spec = source.kind === "spec" && !source.path ? "Choose a spec file." : "";
     var tickets = source.kind === "tickets" && !source.dir ? "Choose a tickets folder." : "";
-    var jira = source.kind === "jira" && !source.key ? "Enter a Jira key." : "";
+    var jira = source.kind === "jira" && !source.key ? "Enter a Jira issue." : "";
     setFieldError("repo-error", repo ? "" : "Choose a repo.", showFieldError("repo"));
     setFieldError("workflow-error", workflow ? "" : "Choose a workflow.", showFieldError("workflow"));
     setFieldError("prompt-error", prompt, showFieldError("prompt"));
@@ -643,10 +642,10 @@
     var issueField = document.getElementById("issue-field");
     var afterField = document.getElementById("after-field");
     var preview = document.getElementById("preview-job");
-    if (titleField) titleField.hidden = sourceKind === "tickets";
-    if (issueField) issueField.hidden = sourceKind === "tickets";
+    if (titleField) titleField.hidden = sourceKind === "tickets" || sourceKind === "jira";
+    if (issueField) issueField.hidden = sourceKind === "tickets" || sourceKind === "jira";
     if (afterField) afterField.hidden = sourceKind === "tickets";
-    if (preview) preview.hidden = sourceKind !== "tickets";
+    if (preview) preview.hidden = sourceKind !== "tickets" && sourceKind !== "jira";
     var pre = document.getElementById("intake-preview");
     if (pre) { pre.hidden = true; pre.textContent = ""; }
     showIntakeError("");
@@ -655,20 +654,8 @@
       var title = document.getElementById("job-title");
       if (promptBox && title) title.value = titleFromPrompt(promptBox.value);
     }
-    syncIssueDefault();
     if (sourceKind === "spec" || sourceKind === "tickets") openBrowser();
     syncValidity();
-  }
-
-  function syncIssueDefault() {
-    var input = document.getElementById("job-issue");
-    if (!input || issueDirty) return;
-    if (sourceKind !== "jira") {
-      input.value = "";
-      return;
-    }
-    var key = document.getElementById("jira-key");
-    input.value = key ? key.value.trim().toUpperCase() : "";
   }
 
   function openIntake() {
@@ -699,11 +686,13 @@
     var source = sourceBody();
     var payload = { repo: repo, workflow: workflow, source: source };
     if (dryRun) payload.dryRun = true;
-    if (sourceKind !== "tickets") {
+    if (sourceKind === "prompt" || sourceKind === "spec") {
       var issue = document.getElementById("job-issue");
       if (issue && issue.value.trim()) payload.issue = issue.value.trim();
       var title = document.getElementById("job-title");
       if (title && titleDirty) payload.title = title.value;
+    }
+    if (sourceKind !== "tickets") {
       var checked = document.querySelectorAll("#after-list input:checked");
       if (checked.length) {
         payload.after = [];
@@ -2217,13 +2206,8 @@
   }
   var titleInput = document.getElementById("job-title");
   if (titleInput) titleInput.addEventListener("input", function () { titleDirty = true; });
-  var issueInput = document.getElementById("job-issue");
-  if (issueInput) issueInput.addEventListener("input", function () { issueDirty = true; });
   var jiraKey = document.getElementById("jira-key");
-  if (jiraKey) jiraKey.addEventListener("input", function () {
-    syncIssueDefault();
-    syncValidity();
-  });
+  if (jiraKey) jiraKey.addEventListener("input", function () { syncValidity(); });
   document.addEventListener("input", function (event) {
     var field = event.target;
     if (!field || !field.getAttribute) return;

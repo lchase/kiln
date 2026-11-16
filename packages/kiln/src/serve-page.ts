@@ -850,7 +850,7 @@ function intakeSheet(intake: ServePageOptions, attention: AttentionView): string
 <p class="meta" id="picked"></p>
 <p class="field-error" id="source-error" role="alert" hidden></p>
 </div>
-<div data-pane="jira" hidden><label class="field"><span class="k">Jira key</span><input id="jira-key" type="text" placeholder="PROJ-123" autocomplete="off" spellcheck="false" aria-describedby="jira-error">
+<div data-pane="jira" hidden><label class="field"><span class="k">Jira issue</span><input id="jira-key" type="text" placeholder="PROJ-123 or issue URL" autocomplete="off" spellcheck="false" aria-describedby="jira-error">
 <p class="field-error" id="jira-error" role="alert" hidden></p></label></div>
 <label class="field" id="issue-field"><span class="k">Issue</span><input id="job-issue" type="text" placeholder="ABC-123" autocomplete="off" spellcheck="false"></label>
 <label class="field" id="title-field"><span class="k">Title</span><input id="job-title" type="text" autocomplete="off"></label>

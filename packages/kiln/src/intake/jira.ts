@@ -67,7 +67,8 @@ export interface AddJiraResult {
  * One issue becomes one job. Re-running the same key prints the existing id.
  */
 export async function addFromJira(config: LoadedKilnConfig, input: AddJiraInput): Promise<AddJiraResult> {
-  const key = normalizeIssueKey(input.key);
+  const env = input.env ?? process.env;
+  const key = normalizeIssueKey(input.key, firstSet(env[ENV_BASE_URL], config.jira?.baseUrl));
   if (input.issue !== undefined) {
     const explicit = input.issue.trim().toUpperCase();
     if (!ISSUE_KEY.test(explicit)) {
@@ -241,10 +242,37 @@ function parseSearchIssues(payload: unknown, credentials: JiraCredentials): Jira
   return out;
 }
 
-export function normalizeIssueKey(raw: string): string {
-  const key = raw.trim().toUpperCase();
-  if (!ISSUE_KEY.test(key)) {
-    throw new Error(`Jira issue key ${JSON.stringify(raw)} is not a KEY-123 identifier.`);
+/** `KEY-123`, or an http(s) URL with `/browse/KEY-123` or `selectedIssue`. A URL from another host is rejected when `baseUrl` is set. */
+export function normalizeIssueKey(raw: string, baseUrl?: string): string {
+  const trimmed = raw.trim();
+  const bad = () => new Error(`Jira issue key ${JSON.stringify(raw)} is not a KEY-123 identifier.`);
+  if (!trimmed.includes("://")) {
+    const plain = trimmed.toUpperCase();
+    if (!ISSUE_KEY.test(plain)) throw bad();
+    return plain;
+  }
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw bad();
+  }
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || !url.hostname) throw bad();
+  const parts = url.pathname.split("/");
+  const browseAt = parts.findIndex((part) => part.toLowerCase() === "browse");
+  let key = browseAt >= 0 ? (parts[browseAt + 1] ?? "").trim().toUpperCase() : "";
+  if (!ISSUE_KEY.test(key)) key = (url.searchParams.get("selectedIssue") ?? "").trim().toUpperCase();
+  if (!ISSUE_KEY.test(key)) throw bad();
+  let expected = "";
+  try {
+    if (baseUrl?.trim()) expected = new URL(baseUrl.trim()).hostname;
+  } catch {
+    expected = "";
+  }
+  if (expected && url.hostname !== expected) {
+    throw new Error(
+      `Jira URL host ${JSON.stringify(url.hostname)} does not match the configured Jira host ${JSON.stringify(expected)}.`,
+    );
   }
   return key;
 }
