@@ -19,7 +19,7 @@ Spacing is a 4px grid:
 | `--space-8` | 64px | Page end |
 | `--hairline` | 1px | Borders |
 
-Radii stay tight. `--radius-sm` is 2px (buttons and small controls). `--radius-md` is 4px (inputs). `--radius-lg` is 6px (cards and columns). `--radius-pill` is chips only. `--radius-full` is circles.
+Radii stay tight. `--radius-sm` is 2px (buttons and small controls). `--radius-md` is 4px (inputs, tags, chips, filter chips, and count badges). `--radius-lg` is 6px (cards and columns). `--radius-full` is circles. There is no pill radius.
 
 Icon size is `--icon` (16px, on the 4px grid). Stroke is `--icon-stroke` (2, Lucide's unitless stroke in a 24 viewBox). Both live in the shared token block.
 
@@ -75,6 +75,37 @@ State colors (say the word as well as the color):
 - A card that needs a person says `Needs a decision` in `--muted`. Sentence case.
 - The pipeline tray may scroll sideways. Chip rows and form controls may not.
 
+## Chips
+
+- A tag (workflow name), a status, a filter chip (Repo, Workflow, All), and a count badge are rectangles. Radius is `--radius-md`. Horizontal padding is `--space-2`.
+- Filter chips keep the control height (`--control-h`). Tags and badges use `--badge`.
+- Do not use a pill radius. Do not round one chip and leave the next square.
+
+## Steps
+
+- A job shows the workflow's step list. The card does not show the current step as plain text.
+- Done steps are `--muted` with a check. The current step is `--primary` and weight 500. Upcoming steps are `--faint`. A failed step uses `--state-failed`.
+- Names are separated by `›`.
+- A pipeline card is narrow. It uses a segmented bar (one segment per step) plus the current step name. Done segments are `--muted`. The current segment is `--primary`. Upcoming segments are `--line`.
+- Inbox, repo, and history rows use the same stepper. Wide rows show the names. The job page always shows the full stepper. The phase list under it keeps durations and notes.
+
+## Liveness
+
+- `lastActivityAt` is the timestamp stall detection already uses: the later of the run's journal activity and the launch log mtime.
+- A running job with activity inside 2 minutes (`QUIET_AFTER_MS`) shows a slow pulsing dot in `--state-running`. The word `Working` is in the page for a screen reader and is not a second label.
+- No activity for longer than 2 minutes, while still inside `stallTimeoutMs`, shows a static dot and `quiet Nm` (whole minutes).
+- Past `stallTimeoutMs`, the label is `stalled` and the dot does not pulse. The driver still kills and retries that run. `stallTimeoutMs` of 0 or below does not mark a job stalled.
+- Queued, needs you, needs a hand, and done do not pulse and do not show quiet or stalled.
+- `prefers-reduced-motion: reduce` leaves the dot static.
+- No glow, no shimmer bar, and no left accent bar. The dot is the only motion.
+
+## Links
+
+- Links do not underline, including on hover.
+- A link is `--code`. Hover moves it to `--ink`. Focus uses the shared `:focus-visible` ring.
+- A title link is `--ink` and moves to `--code` on hover.
+- Spec, log, and findings are `.text-btn`: one Lucide icon and a label, height `--control-h`, radius `--radius-md`. They are not underlined prose.
+
 ## Sidebar
 
 - Brand (logo, Kiln, version) stays at the top.
@@ -90,7 +121,7 @@ Official Lucide, inlined (`src/icons.ts`). Do not add a React icon package. Do n
 - One icon on each nav row: Pipeline `columns-3`, Inbox `inbox`, Needs a hand `hand-helping`, Repos `folder-git-2`, History `history`, Stats `chart-column`, Today `calendar`, Triggers `zap`, Settings `settings`.
 - Repo sublinks (`api`, `web`) stay text.
 - Footer: `pause` / `play`, and `bell` / `bell-off` for notify.
-- Add job stays a labeled button. Do not icon-spam cards, chips, or meta rows.
+- Add job stays a labeled button. Do not icon-spam cards, chips, or meta rows. The exceptions are the step check and the spec, log, and findings buttons.
 - Draw with `.icon`: `var(--icon)`, `var(--icon-stroke)`, `currentColor`, `fill: none`. No fill except a Lucide mark that is meant to be filled. These marks are not.
 - Active nav: `--ink` icon and label, on the existing selected background (`--card-hover`). Inactive: `--muted`. Hover may use `--ink`. Do not paint nav icons, the footer, or other chrome with `--primary`.
 - Icon-only hit targets use `--hit` (44px). A nav row can stay compact when the whole row is the target. Pause and notify include a label, so they stay on `--control-h`.
@@ -115,8 +146,9 @@ Kiln notifies only when the needs-you count grows, and only while sending is on.
 
 - No left or top accent bar on a card, and no thicker colored border in its place.
 - No glow, and no gradient or tinted wash on a card.
+- No pill shapes on tags, status, filter chips, or count badges.
 - No all-caps marketing eyebrows.
-- Do not paint chrome, nav icons, or the sidebar footer with `--primary`. It is for the action button only (Approve, Add job).
+- Do not paint chrome, nav icons, or the sidebar footer with `--primary`. It is for the action button (Approve, Add job) and the current step.
 - Do not add a second accent color for decoration.
 
 ## Forms
@@ -154,7 +186,7 @@ Kiln adapts published palettes onto the tokens above. It does not vendor theme s
 - **Gruvbox Dark and Gruvbox Light.** Official Gruvbox (`morhetz/gruvbox`): dark uses the bright accents, light uses the faded accents. MIT/X11.
 - **Catppuccin** Mocha, Macchiato, Frappé, and Latte. Official palette 1.8.0. Mauve is the accent. MIT, copyright Catppuccin. https://catppuccin.com/palette
 - **Monospace Dark and Monospace Light.** Published UI colors from Keksi's Monospace theme (`keksiqc/monospace-theme`, MIT, copyright 2024 Keksi), as carried in the Orca port `faisalmuhammad/orca-monospace-themes`. The upstream theme is a modification of the Google IDX theme. This board uses the palette only.
-- **Lucide.** Nav and footer icons are the official Lucide 1.70.0 paths (`columns-3`, `inbox`, `hand-helping`, `folder-git-2`, `history`, `chart-column`, `calendar`, `zap`, `settings`, `pause`, `play`, `bell`, `bell-off`), inlined. ISC, copyright Lucide Icons and Contributors. https://lucide.dev https://github.com/lucide-icons/lucide
+- **Lucide.** Nav, footer, file, and step icons are the official Lucide 1.70.0 paths (`columns-3`, `inbox`, `hand-helping`, `folder-git-2`, `history`, `chart-column`, `calendar`, `zap`, `settings`, `pause`, `play`, `bell`, `bell-off`, `check`, `file-text`, `scroll-text`, `list-checks`), inlined. ISC, copyright Lucide Icons and Contributors. https://lucide.dev https://github.com/lucide-icons/lucide
 
 ## Tables and lists
 
@@ -181,7 +213,10 @@ Kiln adapts published palettes onto the tokens above. It does not vendor theme s
 ## Checklist for any new screen
 
 - Spacing, type, radius, and color come from tokens. Colors come from the active theme. The style guard passes.
-- The screen follows the Don't list: no card bars, glow, washes, or all-caps eyebrows.
+- The screen follows the Don't list: no card bars, glow, washes, pills, or all-caps eyebrows.
+- Tags, status, filter chips, and count badges share `--radius-md` and `--space-2` padding.
+- A running card shows the step bar and liveness. The job page shows the full stepper.
+- Links have no underline. Focus rings stay. Spec, log, and findings are `.text-btn`.
 - The screen uses the page gutter and stays within `--content-max`.
 - Drawer content is padded on all sides. The footer is sticky. The primary action is on the right, Cancel on its left.
 - Labels sit above fields. Fields are full width. Hints and errors are inline. The primary action stays disabled until the form is valid.

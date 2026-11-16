@@ -3,6 +3,7 @@ import type { KilnEvent } from "./events.js";
 import type { FailureClass } from "./failure.js";
 import { feedbackRoundLabel } from "./feedback.js";
 import type { StatusJobView } from "./report.js";
+import { isStalled } from "./reliability.js";
 import { parseReviewDraft, type ReviewFinding, type ReviewSeverity } from "./review-post.js";
 import { parseReviewSource } from "./triggers.js";
 
@@ -49,6 +50,23 @@ export const COLUMN_LABEL: Record<PipelineColumn, string> = {
 };
 
 export type PhaseStatus = "pending" | "running" | "done" | "failed" | "skipped";
+
+/** No agent output for this long, and the job is still inside the stall timeout, is quiet. */
+export const QUIET_AFTER_MS = 2 * 60 * 1000;
+
+export type ActivityLiveness = "working" | "quiet" | "stalled" | "idle";
+
+export interface ActivityRead {
+  liveness: ActivityLiveness;
+  /** `Working` (screen reader), `quiet Nm`, or `stalled`. Omitted when idle. */
+  label?: string;
+}
+
+export interface StepMark {
+  id: string;
+  label: string;
+  status: PhaseStatus;
+}
 
 export interface PhaseView {
   id: string;
@@ -121,7 +139,11 @@ export interface JobView {
   since?: string;
   costUsd: number | null;
   currentPhase?: string;
+  /** Workflow leaf steps, in order. The board stepper renders this list. */
+  steps: StepMark[];
   phases: PhaseView[];
+  /** ISO activity time from status. The same clock stall detection uses. */
+  lastActivityAt?: string;
   deliverable?: Deliverable;
   headSha?: string;
   branch?: string;
@@ -217,7 +239,9 @@ export function projectJob(job: StatusJobView, events: readonly KilnEvent[]): Jo
     ...(since ? { since } : {}),
     costUsd: jobCost(own),
     ...(current ? { currentPhase: current } : {}),
+    steps: job.steps.map((step) => ({ id: step.id, label: labelOf(step.id), status: stepStatus(step.phase) })),
     phases,
+    ...(job.lastActivityAt ? { lastActivityAt: job.lastActivityAt } : {}),
     ...(deliverable ? { deliverable } : {}),
     ...(target.headSha ? { headSha: target.headSha } : {}),
     ...(job.branch ? { branch: job.branch } : {}),
@@ -305,6 +329,31 @@ export function formatLocal(iso: string): string {
 
 export function shortSha(sha: string): string {
   return sha.slice(0, 7);
+}
+
+/**
+ * Running plus a fresh `lastActivityAt` is working. Older than two minutes,
+ * and still inside the stall timeout, is quiet. Past the stall timeout is
+ * stalled (`isStalled`, so a timeout of 0 never stalls). Every other column
+ * is idle: queued, needs you, needs a hand, and done do not animate.
+ */
+export function activityLiveness(input: {
+  column: PipelineColumn;
+  lastActivityAt?: string;
+  now?: number;
+  stallTimeoutMs: number;
+}): ActivityRead {
+  if (input.column !== "running" || !input.lastActivityAt) return { liveness: "idle" };
+  const at = Date.parse(input.lastActivityAt);
+  if (!Number.isFinite(at)) return { liveness: "idle" };
+  const now = input.now ?? Date.now();
+  if (isStalled(at, now, input.stallTimeoutMs)) return { liveness: "stalled", label: "stalled" };
+  const age = now - at;
+  if (age > QUIET_AFTER_MS) {
+    const minutes = Math.max(2, Math.floor(age / 60_000));
+    return { liveness: "quiet", label: `quiet ${minutes}m` };
+  }
+  return { liveness: "working", label: "Working" };
 }
 
 export function stateTone(state: string): string {
