@@ -844,6 +844,7 @@ function pageOptions(state: LiveConfig, csrf: string): ServePageOptions {
     spend,
     ...(state.configError ? { configError: state.configError } : {}),
     theme: state.config.boardTheme,
+    stallTimeoutMs: state.config.stallTimeoutMs,
   };
 }
 
