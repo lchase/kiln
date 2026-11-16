@@ -32,7 +32,7 @@ import { isPaused, pauseFactory, resumeFactory, spendFor } from "./rails.js";
 import { readSettings, saveSettings } from "./settings.js";
 import { triggerRows } from "./triggers.js";
 import { formatServeStartup } from "./version.js";
-import { listWorkflowNames, overlayLoadCounts } from "./workflow.js";
+import { listWorkflowNames, overlayLoadCounts, workflowNamesNeedingTest } from "./workflow.js";
 
 export interface ServeOptions {
   config: LoadedKilnConfig;
@@ -58,6 +58,7 @@ interface LiveConfig {
 interface ServeRepo {
   name: string;
   path: string;
+  hasTest: boolean;
 }
 
 /**
@@ -830,7 +831,7 @@ function tokenFromDisk(configPath: string): string | undefined {
 
 function repoList(config: LoadedKilnConfig): ServeRepo[] {
   return Object.entries(config.repos)
-    .map(([name, repo]) => ({ name, path: repo.path }))
+    .map(([name, repo]) => ({ name, path: repo.path, hasTest: Boolean(repo.test?.trim()) }))
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
@@ -840,6 +841,7 @@ function pageOptions(state: LiveConfig, csrf: string): ServePageOptions {
     csrf,
     repos: repoList(state.config),
     workflows: listWorkflowNames(state.config.overlay.workflowsDir),
+    workflowsNeedingTest: workflowNamesNeedingTest(state.config.overlay.workflowsDir),
     paused: isPaused(state.config.kilnDir),
     spend,
     ...(state.configError ? { configError: state.configError } : {}),

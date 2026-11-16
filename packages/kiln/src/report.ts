@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { AUTH_FAILED_LINE } from "./auth.js";
+import { launchBlockLabel, type LaunchBlock } from "./events.js";
 import { readBoardFiles, readReviewRounds, type BoardFile, type BoardReviewRound } from "./board.js";
 import { feedbackRoundText, type FeedbackRound } from "./feedback.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
@@ -27,6 +28,8 @@ export interface LaunchReport {
   retry?: boolean;
   /** A pull-request fix. The line in the tick report says `fix`, not `launch`. */
   kind?: "fix";
+  /** Config refused the launch. The line says `blocked`. Not a failure. */
+  blocked?: boolean;
 }
 
 export interface DeliverReport {
@@ -213,6 +216,8 @@ export interface StatusJobView {
   reviewUrl?: string;
   launchFailed: boolean;
   launchError?: string;
+  /** Set while a config precondition is refusing launch. The state stays `queued`. */
+  launchBlock?: LaunchBlock;
   /** Recorded attempts. `0` when the job has no attempt ledger. */
   attemptCount: number;
   /** Configured budget. The board prints `attempt N/M`. */
@@ -314,6 +319,7 @@ export function statusDetails(job: StatusJobView): string[] {
   }
   if (job.state === "failed" && job.launchFailed && job.logPath) lines.push(`log ${job.logPath}`);
   if (job.state === "failed" && job.launchError) lines.push(job.launchError);
+  if (job.launchBlock) lines.push(launchBlockLabel(job.launchBlock));
   if (job.sandboxError && (job.state === "failed" || job.state === "dead" || job.state === "needs-human")) {
     lines.push(`sandbox ${job.sandboxError}`);
   }
@@ -444,6 +450,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     ...(job.feedbackLedgerError ? { feedbackLedgerError: job.feedbackLedgerError } : {}),
     ...(feedbackReason ? { feedbackReason } : {}),
     ...(job.launchError ? { launchError: job.launchError } : {}),
+    ...(state === "queued" && job.launchBlock ? { launchBlock: job.launchBlock } : {}),
     ...(job.delivery?.error ? { deliveryError: job.delivery.error } : {}),
     ...(job.delivery?.viewError ? { viewError: job.delivery.viewError } : {}),
     prPending: state === "in-review" && !prNumber,
@@ -602,7 +609,7 @@ export function renderTick(
     if (note.trim()) lines.push(note);
   }
   for (const launch of launches) {
-    const verb = launch.kind === "fix" ? "fix" : launch.retry ? "retry" : "launch";
+    const verb = launch.blocked ? "blocked" : launch.kind === "fix" ? "fix" : launch.retry ? "retry" : "launch";
     lines.push(`${verb} ${launch.jobId}  ${launch.repo}`);
     for (const line of launch.output.split("\n")) {
       if (line.trim()) lines.push(`  ${line}`);

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { launchBlockLabel } from "./events.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import type { StatusJobView, StatusState, StatusView } from "./report.js";
 import { AUTH_FAILED_LINE } from "./auth.js";
@@ -194,6 +195,7 @@ export function attentionReason(job: StatusJobView, tail = errorTail(job)): stri
     case "approved":
       return "Approved, still finishing";
     case "queued":
+      if (job.launchBlock) return launchBlockLabel(job.launchBlock);
       return job.waitReason ?? "Queued, ready to launch";
     case "blocked":
       return job.waitReason ?? oneLine(waitingOn(job));

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { packageRoot } from "../src/paths.js";
 import { yakCliPath } from "../src/report.js";
-import { materializeWorkflow, workflowInputs, workflowNeedsTestCommand } from "../src/workflow.js";
+import { materializeWorkflow, workflowInputs, workflowNamesNeedingTest, workflowNeedsTestCommand } from "../src/workflow.js";
 
 const root = packageRoot();
 const keep: string[] = [];
@@ -179,6 +179,10 @@ describe("investigation workflow", () => {
     assert.doesNotMatch(prompt, /<!-- factory:/);
     assert.equal(workflowNeedsTestCommand(readFileSync(join(root, "workflows", "investigation.yaml"), "utf8")), false);
     assert.equal(workflowNeedsTestCommand(readFileSync(join(root, "workflows", "feature.yaml"), "utf8")), true);
+    const needingTest = workflowNamesNeedingTest();
+    assert.equal(needingTest.includes("feature"), true);
+    assert.equal(needingTest.includes("investigation"), false);
+    assert.equal(needingTest.includes("review"), false);
 
     const source = yak(["run", "workflows/investigation.yaml", "--adapter", "mock", "--isolation", "none"], root);
     assert.equal(source.status, 1, source.stderr);

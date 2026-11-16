@@ -38,6 +38,8 @@ import { listWorkflowNames } from "./workflow.js";
 export interface ServeRepoOption {
   name: string;
   path: string;
+  /** False when `repos.<name>.test` is missing or blank. Omit when the page does not know. */
+  hasTest?: boolean;
 }
 
 export type AppSection = "pipeline" | "inbox" | "hand" | "repos" | "history" | "stats" | "report" | "settings" | "job" | "triggers";
@@ -46,6 +48,8 @@ export interface ServePageOptions {
   csrf: string;
   repos: ServeRepoOption[];
   workflows: string[];
+  /** Workflows whose verify step runs the repo test command. */
+  workflowsNeedingTest?: string[];
   configError?: string;
   paused?: boolean;
   spend?: SpendSnapshot;
@@ -315,7 +319,7 @@ function listHtml(model: AppModel, csrf: string): string {
     return `<header class="list-head"><h2>Inbox</h2><p class="meta">Approve, reject, or revise. Approving a review posts the draft as a comment. Kiln does not approve or merge.</p></header>${jobList(board.inbox, "inbox", "Nothing is waiting on a gate.", csrf)}`;
   }
   if (model.section === "hand") {
-    return `<header class="list-head"><h2>Needs a hand</h2><p class="meta">A breaker tripped, a cap was hit, a review could not be posted, or a run failed with no retry left.</p></header>${jobList(board.hand, "hand", "Nothing needs a person.", csrf)}`;
+    return `<header class="list-head"><h2>Needs a hand</h2><p class="meta">A breaker tripped, a cap was hit, a review could not be posted, a launch is blocked on a repo setting, or a run failed with no retry left.</p></header>${jobList(board.hand, "hand", "Nothing needs a person.", csrf)}`;
   }
   if (model.section === "history") {
     return `<header class="list-head"><h2>History</h2></header>${jobList(board.history, "history", "No finished jobs.", csrf)}`;
@@ -375,9 +379,11 @@ function pipeCard(job: JobView): string {
   const cost = formatCost(job.costUsd);
   const age = job.since ? timeHtml(job.since, "rel") : "";
   const phase = job.currentPhase ? `<span class="meta">${escapeHtml(job.currentPhase)}</span>` : "";
+  const blocked = job.launchBlock ? `<p class="reason">${escapeHtml(job.reason)}</p>${launchFixHtml(job)}` : "";
   return `<article class="card" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}"${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
 <a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a>
 <div class="job-meta"><span class="meta">${escapeHtml(job.repo)}</span><span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}${phase}</div>
+${blocked}
 </article>`;
 }
 
@@ -408,7 +414,7 @@ function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", 
   const classes = ["job"];
   if (section === "inbox") classes.push("decision");
   if (job.scheduledRetry) classes.push("retrying");
-  if (section === "inbox" || (section === "hand" && !job.scheduledRetry)) classes.push("human");
+  if (section === "inbox" || (section === "hand" && !job.scheduledRetry && !job.launchBlock)) classes.push("human");
   const flag = classes.includes("human") ? `<span class="flag">Needs a decision</span>` : "";
   const repo = section === "repos" ? "" : `<span class="meta">${escapeHtml(job.repo)}</span>`;
   const sandbox = job.sandboxed ? `<span class="meta">sandbox · docker</span>` : "";
@@ -423,6 +429,7 @@ function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", 
   const deps = dependsHtml(job);
   const body = section === "inbox" ? decisionBody(job) : "";
   const reason = section === "inbox" && !showReason(job) ? "" : `<p class="reason">${escapeHtml(job.reason)}</p>`;
+  const fix = launchFixHtml(job);
   const feedback = feedbackHtml(job);
   const tail = section !== "inbox" && job.logTail ? logDisclosure(job.logTail) : "";
   const notes = visibleNotes(job, section);
@@ -434,7 +441,7 @@ function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", 
 <div class="job-main">
 <div class="job-top">${flag}<a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a></div>
 <div class="job-meta"><span class="num">${escapeHtml(job.jobId)}</span>${repo}<span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span><span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}${sandbox}${pr}</div>
-${reason}${section === "inbox" ? ranHtml(job) : ""}${history}${unsafe}${retrying}${attempt}${deps}${feedback}${body}${notes}${tail}${unseen}${links}
+${reason}${fix}${section === "inbox" ? ranHtml(job) : ""}${history}${unsafe}${retrying}${attempt}${deps}${feedback}${body}${notes}${tail}${unseen}${links}
 </div>
 ${actionsHtml(job, section, csrf)}
 </article>`;
@@ -559,6 +566,13 @@ function clipTail(text: string): string {
   return tail.join("\n");
 }
 
+function launchFixHtml(job: JobView): string {
+  const fix = job.launchBlock?.fix;
+  if (!fix) return "";
+  const href = `/settings?${new URLSearchParams({ repo: fix.repo, field: fix.field }).toString()}`;
+  return `<p class="links"><a href="${escapeHtml(href)}">Edit ${escapeHtml(fix.repo)} in Settings</a></p>`;
+}
+
 function fileLinks(job: BoardJob): string {
   const id = encodeURIComponent(job.jobId);
   const links: string[] = [];
@@ -637,6 +651,7 @@ function detailHtml(detail: JobDetail, tab: "overview" | "changes" | "timeline",
 ${job.ask ? `<p class="ask">${escapeHtml(job.ask)}</p>` : ""}
 ${job.workflow === "review" && job.canApprove ? `<p class="meta">Approving posts this draft as a pull request comment. Kiln does not approve the pull request or merge it.</p>` : ""}
 ${showReason(job) ? `<p class="reason">${escapeHtml(job.reason)}</p>` : ""}
+${launchFixHtml(job)}
 <p class="unseen" data-unseen-for="${escapeHtml(job.jobId)}" hidden></p>
 </header>
 <nav class="tabs" aria-label="Job">${tabs}</nav>
@@ -834,8 +849,9 @@ function intakeSheet(intake: ServePageOptions, attention: AttentionView): string
 <div class="intake-body">
 <div class="field" id="repo-field"><span class="k" id="repo-label">Repo</span>${repoPicker(intake.repos)}
 <p class="field-error" id="repo-error" role="alert" hidden></p></div>
-<div class="field" id="workflow-field"><span class="k" id="workflow-label">Workflow</span>${workflowPicker(intake.workflows)}
-<p class="field-error" id="workflow-error" role="alert" hidden></p></div>
+<div class="field" id="workflow-field"><span class="k" id="workflow-label">Workflow</span>${workflowPicker(intake.workflows, new Set(intake.workflowsNeedingTest ?? []))}
+<p class="field-error" id="workflow-error" role="alert" hidden></p>
+<p class="form-warn" id="intake-warn" role="status" hidden></p></div>
 <div class="field"><span class="k" id="source-label">Source</span>
 <div class="seg" role="group" aria-labelledby="source-label">
 <button type="button" data-source="prompt" aria-pressed="true">Prompt</button>
@@ -1069,7 +1085,18 @@ ${themePicker(theme)}
 }
 
 function repoListKey(repos: readonly ServeRepoOption[]): string {
-  return repos.map((repo) => `${repo.name}\t${repo.path}`).join("\n");
+  return repos.map((repo) => `${repo.name}\t${repo.path}\t${testFlag(repo)}`).join("\n");
+}
+
+/** Matches the flag `serve.js` rebuilds the picker from. Blank when unknown. */
+function testFlag(repo: ServeRepoOption): string {
+  if (repo.hasTest === undefined) return "";
+  return repo.hasTest ? "1" : "0";
+}
+
+function hasTestAttr(repo: ServeRepoOption): string {
+  if (repo.hasTest === undefined) return "";
+  return ` data-has-test="${repo.hasTest ? "true" : "false"}"`;
 }
 
 function repoPicker(repos: ServeRepoOption[]): string {
@@ -1085,35 +1112,35 @@ function repoPicker(repos: ServeRepoOption[]): string {
     const options = repos
       .map((repo, index) => {
         const on = repo.name === selected.name;
-        return `<li role="option" id="repo-opt-${index}" data-value="${escapeHtml(repo.name)}" data-path="${escapeHtml(repo.path)}" aria-selected="${on ? "true" : "false"}">${escapeHtml(repo.name)}</li>`;
+        return `<li role="option" id="repo-opt-${index}" data-value="${escapeHtml(repo.name)}" data-path="${escapeHtml(repo.path)}"${hasTestAttr(repo)} aria-selected="${on ? "true" : "false"}">${escapeHtml(repo.name)}</li>`;
       })
       .join("");
-    return `<div class="combo" id="repo-pick" data-mode="select" data-value="${escapeHtml(selected.name)}" data-path="${escapeHtml(selected.path)}" data-list="${list}"><input id="repo-pick-query" class="combo-input" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="repo-pick-list" aria-labelledby="repo-label" placeholder="Search repos" value="${escapeHtml(selected.name)}" autocomplete="off" spellcheck="false"><ul class="combo-list" id="repo-pick-list" role="listbox" hidden>${options}<li class="empty" role="presentation" hidden>No matching repos.</li></ul></div>`;
+    return `<div class="combo" id="repo-pick" data-mode="select" data-value="${escapeHtml(selected.name)}" data-path="${escapeHtml(selected.path)}"${hasTestAttr(selected)} data-list="${list}"><input id="repo-pick-query" class="combo-input" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="repo-pick-list" aria-labelledby="repo-label" placeholder="Search repos" value="${escapeHtml(selected.name)}" autocomplete="off" spellcheck="false"><ul class="combo-list" id="repo-pick-list" role="listbox" hidden>${options}<li class="empty" role="presentation" hidden>No matching repos.</li></ul></div>`;
   }
   const buttons = repos
     .map((repo, index) => {
       const on = index === 0;
-      return `<button type="button" class="pick" data-repo="${escapeHtml(repo.name)}" data-path="${escapeHtml(repo.path)}" aria-pressed="${on ? "true" : "false"}">${escapeHtml(repo.name)}</button>`;
+      return `<button type="button" class="pick" data-repo="${escapeHtml(repo.name)}" data-path="${escapeHtml(repo.path)}"${hasTestAttr(repo)} aria-pressed="${on ? "true" : "false"}">${escapeHtml(repo.name)}</button>`;
     })
     .join("");
-  return `<div class="picks" id="repo-pick" data-mode="chips" data-value="${escapeHtml(selected.name)}" data-path="${escapeHtml(selected.path)}" data-list="${list}" role="group" aria-labelledby="repo-label">${buttons}</div>`;
+  return `<div class="picks" id="repo-pick" data-mode="chips" data-value="${escapeHtml(selected.name)}" data-path="${escapeHtml(selected.path)}"${hasTestAttr(selected)} data-list="${list}" role="group" aria-labelledby="repo-label">${buttons}</div>`;
 }
 
-function workflowPicker(names: string[]): string {
+function workflowPicker(names: string[], needsTest: ReadonlySet<string>): string {
   const selected = names.includes("feature") ? "feature" : (names[0] ?? "");
   if (names.length === 0 || names.length > PICK_CHIP_MAX) {
     const options =
       names.length === 0
         ? `<option value="">none</option>`
         : names
-            .map((name) => `<option value="${escapeHtml(name)}"${name === selected ? " selected" : ""}>${escapeHtml(name)}</option>`)
+            .map((name) => `<option value="${escapeHtml(name)}" data-needs-test="${needsTest.has(name) ? "true" : "false"}"${name === selected ? " selected" : ""}>${escapeHtml(name)}</option>`)
             .join("");
     return `<select id="workflow" name="workflow" aria-labelledby="workflow-label">${options}</select>`;
   }
   const buttons = names
     .map(
       (name) =>
-        `<button type="button" data-workflow="${escapeHtml(name)}" aria-pressed="${name === selected ? "true" : "false"}">${escapeHtml(name)}</button>`,
+        `<button type="button" data-workflow="${escapeHtml(name)}" aria-pressed="${name === selected ? "true" : "false"}" data-needs-test="${needsTest.has(name) ? "true" : "false"}">${escapeHtml(name)}</button>`,
     )
     .join("");
   return `<div class="seg" id="workflow-pick" data-mode="chips" data-workflow="${escapeHtml(selected)}" role="group" aria-labelledby="workflow-label">${buttons}</div>`;
