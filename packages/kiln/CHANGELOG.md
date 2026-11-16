@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.1](https://github.com/lchase/kiln/compare/kiln-v0.19.0...kiln-v0.19.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* space repo status groups with the shared job list ([#68](https://github.com/lchase/kiln/issues/68)) ([7dc64c9](https://github.com/lchase/kiln/commit/7dc64c98f99ddb53a222ea3cf867643eb594f97c))
+* surface a job blocked on a missing test command ([#69](https://github.com/lchase/kiln/issues/69)) ([d108a0e](https://github.com/lchase/kiln/commit/d108a0e6dacf05fa6c4f1d656b9a10296821ffc2))
+
 ## [0.19.0](https://github.com/lchase/kiln/compare/kiln-v0.18.0...kiln-v0.19.0) (2026-11-15)
 
 
