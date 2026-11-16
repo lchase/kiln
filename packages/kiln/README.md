@@ -260,7 +260,7 @@ Set `JIRA_BASE_URL` (for example `https://acme.atlassian.net`), `JIRA_EMAIL`, an
 }
 ```
 
-Create a token at <https://id.atlassian.com/manage-profile/security/api-tokens>. Kiln sends it as Basic auth and does not write it into the job, the spec, or error text. A missing value is an error that names `JIRA_BASE_URL`, `JIRA_EMAIL`, or `JIRA_API_TOKEN`.
+Create a token at <https://id.atlassian.com/manage-profile/security/api-tokens>. Kiln sends it as Basic auth and does not write it into the job, the spec, or error text. A missing value is an error that names `JIRA_BASE_URL`, `JIRA_EMAIL`, or `JIRA_API_TOKEN`. `acceptanceField` is an optional custom field id. When it is set, Kiln reads acceptance criteria from that field instead of looking up a field named Acceptance criteria. The board shows whether the token is set and does not send the value.
 
 A Blocks link where this issue is blocked by another key becomes `dependsOn` when a kiln job with `source` `jira` and that key already exists. Otherwise Kiln prints a warning naming the key and still creates the job. `--after` is merged with those ids. Issue type Spike or Research uses the same rule as a spike ticket and is imported as `investigation`. Running add again for the same key prints the existing job id and creates nothing. `--dry-run` prints the job and writes nothing.
 
@@ -312,7 +312,7 @@ Two triggers are built in. `review-requests` is a schedule, cron `0 * * * *` (mi
 }
 ```
 
-`every` defaults to `5m` (`30s`, `5m`, `1h`). `label` and `status` compile to JQL. A `jql` string replaces them. `enabled` defaults to true. The Triggers page and `PUT /api/settings` send `{ "triggers": [{ "id", "enabled" }] }` and leave cron, JQL, label, and repo on the file. The Triggers page shows each trigger's schedule, whether it is enabled, and, for `review-requests`, the label and the two caps. Times on that page are the browser's local time.
+`every` defaults to `5m` (`30s`, `5m`, `1h`). `label` and `status` compile to JQL. A `jql` string replaces them. `enabled` defaults to true. Settings edits triggers, routes, Jira, overlay paths, and the rest of the file. The Triggers page shows each trigger's schedule, whether it is enabled, and, for `review-requests`, the label and the two caps. Times on that page are the browser's local time.
 
 A cron fires once per slot. While serve was down, startup fires the latest missed slot once and does not replay the ones behind it. A Jira poll that was missed does the same: one search, not one per skipped interval. The router writes `trigger.routed` with a `dedupe` property (`review:<repo>:<number>:<head sha>`, `jira:<trigger>:<issue>`, `pr:<job>:<comment>`). A later tick that sees that value does not create another job. Comments and commits from `kiln`, a `[bot]` login, a `kiln:` subject, or a `Kiln-Job` trailer are ignored.
 

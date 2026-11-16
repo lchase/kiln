@@ -365,6 +365,42 @@ describe("jira intake", () => {
     );
   });
 
+  it("uses a configured acceptance field and does not list Jira fields", async () => {
+    const { config } = tempKiln({
+      baseUrl: BASE,
+      email: EMAIL,
+      apiToken: TOKEN,
+      acceptanceField: "customfield_10050",
+    });
+    assert.equal(config.jira?.acceptanceField, "customfield_10050");
+    const body = issue("PROJ-1", {
+      summary: "Show the empty state",
+      description: { type: "doc", version: 1, content: [] },
+      issuetype: { name: "Story" },
+      issuelinks: [],
+      status: { name: "To Do" },
+      customfield_10050: {
+        type: "doc",
+        version: 1,
+        content: [{ type: "paragraph", content: [{ type: "text", text: "The page shows the empty sentence." }] }],
+      },
+    });
+    const stub = stubFetch((url) => {
+      if (url.includes("/rest/api/3/field")) return { status: 500, body: {} };
+      if (url.includes("/rest/api/3/issue/")) return { status: 200, body };
+      return { status: 404, body: {} };
+    });
+    const result = await addFromJira(config, addInput("PROJ-1", stub.fetch, {}));
+    assert.equal(result.created, true);
+    const job = readJobs(config)[0];
+    assert.ok(job);
+    assert.match(specText(config, job), /The page shows the empty sentence/);
+    assert.equal(
+      stub.calls.some((call) => call.url.includes("/rest/api/3/field")),
+      false,
+    );
+  });
+
   it("maps an existing blocked-by job into dependsOn and warns when the job is missing", async () => {
     const { cwd, config } = tempKiln();
     const blocker = issue("PROJ-1", {
