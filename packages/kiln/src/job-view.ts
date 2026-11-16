@@ -143,6 +143,8 @@ export interface JobView {
   failureClass?: FailureClass;
   fingerprint?: string;
   latestEventAt?: string;
+  /** Time of the newest session activity event. Absent until a phase writes output. */
+  lastActivityAt?: string;
   eventCount: number;
   prUrl?: string;
   prNumber?: number;
@@ -239,6 +241,7 @@ export function projectJob(job: StatusJobView, events: readonly KilnEvent[]): Jo
     ...(failure?.class ? { failureClass: failure.class } : {}),
     ...(failure?.fingerprint ? { fingerprint: shortFingerprint(failure.fingerprint) } : {}),
     ...(activity.latest ? { latestEventAt: activity.latest } : {}),
+    ...(job.lastActivityAt ? { lastActivityAt: job.lastActivityAt } : {}),
     eventCount: activity.count,
     ...(target.prUrl || job.prUrl ? { prUrl: target.prUrl ?? job.prUrl } : {}),
     ...(target.prNumber || job.prNumber ? { prNumber: target.prNumber ?? job.prNumber } : {}),
@@ -765,6 +768,10 @@ function reviewLabel(name: string, summary: string): string {
   if (!text) return "";
   if (text.toLowerCase().startsWith(name.toLowerCase())) return text;
   return `${name}: ${text}`;
+}
+
+export function phaseLabel(id: string): string {
+  return labelOf(id);
 }
 
 function labelOf(id: string): string {
