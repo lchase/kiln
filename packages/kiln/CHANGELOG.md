@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.1](https://github.com/lchase/kiln/compare/kiln-v0.20.0...kiln-v0.20.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* stop the board calling gh pr view on every request ([#86](https://github.com/lchase/kiln/issues/86)) ([db7a09f](https://github.com/lchase/kiln/commit/db7a09f851f6cd725d51067100bfef24ab0c9273))
+
 ## [0.20.0](https://github.com/lchase/kiln/compare/kiln-v0.19.1...kiln-v0.20.0) (2026-11-26)
 
 
