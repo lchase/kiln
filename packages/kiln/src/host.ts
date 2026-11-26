@@ -150,6 +150,56 @@ export function defaultHost(): KilnHost {
   return { github: realGitHub, git: realGitRemote, feedback: realPullRequestFeedback };
 }
 
+/** One `view` answer, or the error it threw, and when it was read. */
+interface PullRequestViewEntry {
+  at: number;
+  view?: { state: PullRequestState; mergedAt: string | null };
+  error?: unknown;
+}
+
+/** Keyed by checkout and pull request number. Share one between the hosts of a process. */
+export type PullRequestViewCache = Map<string, PullRequestViewEntry>;
+
+/** How long `kiln serve` answers a page from the last pull request state it read. Longer than one default tick. */
+export const PULL_REQUEST_VIEW_TTL_MS = 45_000;
+
+/**
+ * Wrap `view` so a long-lived process does not run `gh pr view` for every
+ * job on every request. `refresh` always asks gh and stores the answer:
+ * the tick uses it, so its decisions are never stale. `read` answers from
+ * the cache while the entry is younger than `ttlMs`, and asks gh otherwise:
+ * page requests use it. A merged pull request stays merged, so that answer
+ * is kept for the life of the process. An error is kept for `ttlMs` too, so
+ * a gh outage does not put one failing call in front of every request.
+ */
+export function cachedGitHub(
+  github: GitHubHost,
+  options: { cache: PullRequestViewCache; mode: "read" | "refresh"; ttlMs?: number; now?: () => number },
+): GitHubHost {
+  const ttlMs = options.ttlMs ?? PULL_REQUEST_VIEW_TTL_MS;
+  const now = options.now ?? Date.now;
+  return {
+    ...github,
+    view(checkout, number) {
+      const key = `${checkout}\0${number}`;
+      const hit = options.cache.get(key);
+      if (hit?.view && (hit.view.state === "MERGED" || hit.view.mergedAt)) return hit.view;
+      if (options.mode === "read" && hit && now() - hit.at < ttlMs) {
+        if (hit.view) return hit.view;
+        throw hit.error;
+      }
+      try {
+        const view = github.view(checkout, number);
+        options.cache.set(key, { at: now(), view });
+        return view;
+      } catch (error) {
+        options.cache.set(key, { at: now(), error });
+        throw error;
+      }
+    },
+  };
+}
+
 /** `kiln tick` and `kiln serve`. Review requests use the operator's gh auth. */
 export function productionHost(): KilnHost {
   return { ...defaultHost(), reviews: { list: listReviewRequests } };

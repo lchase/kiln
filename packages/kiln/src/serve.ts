@@ -23,7 +23,7 @@ import {
 } from "./board-view.js";
 import { appendEvent, eventsForJob, readEvents } from "./events.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
-import { productionHost } from "./host.js";
+import { cachedGitHub, defaultHost, productionHost, type KilnHost, type PullRequestViewCache } from "./host.js";
 import { intakeJobs } from "./intake-http.js";
 import { jobBasename, packageRoot } from "./paths.js";
 import { SANDBOX_PREFLIGHT_PREFIX, sandboxIsEnabled } from "./sandbox.js";
@@ -143,9 +143,26 @@ export function loadServeCss(): string {
   return readFileSync(path, "utf8");
 }
 
+/**
+ * Pull request state for this serve process. Deriving a job's state runs
+ * `gh pr view`, about a second each, and a page derives it several times.
+ * The tick refreshes this cache. Page requests read it.
+ */
+const pullRequestViews: PullRequestViewCache = new Map();
+
+function tickHost(): KilnHost {
+  const host = productionHost();
+  return { ...host, github: cachedGitHub(host.github, { cache: pullRequestViews, mode: "refresh" }) };
+}
+
+function pageHost(): KilnHost {
+  const host = defaultHost();
+  return { ...host, github: cachedGitHub(host.github, { cache: pullRequestViews, mode: "read" }) };
+}
+
 function safeTick(config: LoadedKilnConfig, secrets: string[], triggerStartup: boolean): void {
   try {
-    const report = runTick(config, productionHost(), { startup: false, triggerStartup });
+    const report = runTick(config, tickHost(), { startup: false, triggerStartup });
     if (report.startsWith(SANDBOX_PREFLIGHT_PREFIX) || report.startsWith(AUTH_PREFLIGHT_PREFIX)) {
       const tickAt = report.indexOf("\ntick ");
       const head = tickAt === -1 ? report : report.slice(0, tickAt);
@@ -616,7 +633,7 @@ function sendFindings(
 
 function findJob(config: LoadedKilnConfig, jobId: string): StatusJobView | undefined {
   try {
-    return readStatus(config, jobId).jobs[0];
+    return readStatus(config, jobId, pageHost()).jobs[0];
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message === `No job ${jobId}.`) return undefined;
@@ -886,7 +903,7 @@ function pageOptions(state: LiveConfig, csrf: string): ServePageOptions {
 function statusDocument(state: LiveConfig): unknown {
   const spend = spendFor(state.config.kilnDir, state.config.dailyDollarCap);
   return {
-    ...readStatus(state.config),
+    ...readStatus(state.config, undefined, pageHost()),
     repos: repoList(state.config),
     configError: state.configError ?? null,
     paused: isPaused(state.config.kilnDir),
@@ -927,7 +944,7 @@ function renderShell(
     activity?: ActivityFeed;
   } = {},
 ): string {
-  const status = readStatus(state.config);
+  const status = readStatus(state.config, undefined, pageHost());
   const events = readEvents(state.config.kilnDir, { warn: () => {} });
   const board = buildBoard(status.jobs, events);
   const page = pageOptions(state, csrf);
@@ -948,7 +965,7 @@ function renderShell(
 }
 
 function boardPayload(state: LiveConfig): unknown {
-  const status = readStatus(state.config);
+  const status = readStatus(state.config, undefined, pageHost());
   const events = readEvents(state.config.kilnDir, { warn: () => {} });
   const spend = spendFor(state.config.kilnDir, state.config.dailyDollarCap);
   return {
@@ -974,7 +991,7 @@ function reportDocument(state: LiveConfig) {
 
 function unseenDocument(state: LiveConfig, seenValues: string[]) {
   const events = readEvents(state.config.kilnDir, { warn: () => {} });
-  const board = buildBoard(readStatus(state.config).jobs, events);
+  const board = buildBoard(readStatus(state.config, undefined, pageHost()).jobs, events);
   return unseenChanges(events, parseSeenQuery(seenValues), new Set(board.inbox.map((job) => job.jobId)));
 }
 
