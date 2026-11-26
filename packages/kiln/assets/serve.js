@@ -2219,6 +2219,43 @@
     el.textContent = jobs + (jobs === 1 ? " job · " : " jobs · ") + new Date().toLocaleTimeString();
   }
 
+  function paintLiveness() {
+    var stall = Number(body.getAttribute("data-stall") || "0");
+    var quietAfter = Number(body.getAttribute("data-quiet") || "120000");
+    var now = Date.now();
+    var nodes = document.querySelectorAll(".liveness");
+    for (var i = 0; i < nodes.length; i++) {
+      var live = nodes[i];
+      var card = live.closest("[data-activity]");
+      if (!card) continue;
+      if ((card.getAttribute("data-column") || "") !== "running") {
+        live.hidden = true;
+        continue;
+      }
+      var at = Date.parse(card.getAttribute("data-activity") || "");
+      if (!isFinite(at)) continue;
+      var age = now - at;
+      var label = live.querySelector(".liveness-label");
+      var dot = live.querySelector(".live-dot");
+      live.classList.remove("working", "quiet", "stalled");
+      live.hidden = false;
+      if (stall > 0 && age > stall) {
+        live.classList.add("stalled");
+        if (label) label.textContent = "stalled";
+        if (dot) dot.hidden = true;
+      } else if (age > quietAfter) {
+        var minutes = Math.max(2, Math.floor(age / 60000));
+        live.classList.add("quiet");
+        if (label) label.textContent = "quiet " + minutes + "m";
+        if (dot) dot.hidden = false;
+      } else {
+        live.classList.add("working");
+        if (label) label.textContent = "Working";
+        if (dot) dot.hidden = false;
+      }
+    }
+  }
+
   function poll() {
     fetch("/api/jobs", { cache: "no-store", headers: { Accept: "application/json" } })
       .then(function (response) {
@@ -2256,6 +2293,7 @@
           }
         }
         stamp(true);
+        paintLiveness();
       })
       .catch(function () { stamp(false); });
   }
@@ -2397,6 +2435,7 @@
     var open = localStorage.getItem("kiln-drawer");
     if (open) openJob(open);
   } catch (err) { /* private mode */ }
+  paintLiveness();
   poll();
   setInterval(poll, 3000);
   startLive();

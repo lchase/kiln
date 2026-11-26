@@ -13,6 +13,8 @@ import {
 import {
   COLUMN_LABEL,
   PIPELINE_COLUMNS,
+  QUIET_AFTER_MS,
+  activityLiveness,
   formatCost,
   formatDuration,
   formatClock,
@@ -22,11 +24,13 @@ import {
   phaseLabel,
   shortSha,
   stateTone,
+  type ActivityRead,
   type FindingView,
   type JobView,
   type PhaseView,
   type PipelineColumn,
   type ReviewDeliverable,
+  type StepMark,
 } from "./job-view.js";
 import type { ActivityEvent, ActivityFeed } from "./activity.js";
 import { icon, type IconName } from "./icons.js";
@@ -34,6 +38,7 @@ import { renderMarkdown } from "./markdown.js";
 import { kilnVersion } from "./project.js";
 import type { StatusJobView } from "./report.js";
 import { formatSpend, type SpendSnapshot } from "./rails.js";
+import { DEFAULT_STALL_TIMEOUT_MS } from "./schemas.js";
 import { SECRET_PLACEHOLDER } from "./schemas.js";
 import { BOARD_THEME_CHOICES, DEFAULT_BOARD_THEME, type BoardThemeId } from "./theme.js";
 import type { TriggerRow } from "./triggers.js";
@@ -62,6 +67,14 @@ export interface ServePageOptions {
   repo?: string;
   /** Board palette. Missing uses Kiln. */
   theme?: BoardThemeId;
+  /** Stall clock. Missing uses the config default. Screenshots and tests pass a fixed `now`. */
+  stallTimeoutMs?: number;
+  now?: number;
+}
+
+interface BoardClock {
+  stallTimeoutMs: number;
+  now?: number;
 }
 
 export interface AppModel {
@@ -182,6 +195,7 @@ ${intakeSheet(page, model.attention)}
     csrf: page.csrf,
     section: model.section,
     theme: page.theme ?? DEFAULT_BOARD_THEME,
+    stallTimeoutMs: page.stallTimeoutMs,
     ...(job ? { jobId: job.jobId, latest: job.latestEventAt } : {}),
     live: true,
     body,
@@ -264,15 +278,22 @@ function mainHtml(model: AppModel, page: ServePageOptions): string {
     return `${error}<main class="main">${reportHtml(model.report)}</main>`;
   }
   if (model.section === "job" && model.detail) {
-    return `${error}<main class="main detail">${detailHtml(model.detail, model.tab ?? "overview", page.csrf, model.activity)}</main>`;
+    return `${error}<main class="main detail">${detailHtml(model.detail, model.tab ?? "overview", page.csrf, clockOf(page), model.activity)}</main>`;
   }
   if (model.section === "triggers") {
     return `${error}<main class="main">${triggersHtml(model.triggers ?? [])}</main>`;
   }
   if (model.section === "pipeline") {
-    return `${error}<main class="main">${pipelineHtml(allJobs(model.board))}</main>`;
+    return `${error}<main class="main">${pipelineHtml(allJobs(model.board), clockOf(page))}</main>`;
   }
-  return `${error}<main class="main">${listHtml(model, page.csrf)}</main>`;
+  return `${error}<main class="main">${listHtml(model, page.csrf, clockOf(page))}</main>`;
+}
+
+function clockOf(page: ServePageOptions): BoardClock {
+  return {
+    stallTimeoutMs: page.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS,
+    ...(page.now !== undefined ? { now: page.now } : {}),
+  };
 }
 
 function triggersHtml(rows: readonly TriggerRow[]): string {
@@ -318,16 +339,16 @@ function allJobs(board: BoardDocument): JobView[] {
   return board.repos.flatMap((group) => group.jobs);
 }
 
-function listHtml(model: AppModel, csrf: string): string {
+function listHtml(model: AppModel, csrf: string, clock: BoardClock): string {
   const board = model.board;
   if (model.section === "inbox") {
-    return `<header class="list-head"><h2>Inbox</h2><p class="meta">Approve, reject, or revise. Approving a review posts the draft as a comment. Kiln does not approve or merge.</p></header>${jobList(board.inbox, "inbox", "Nothing is waiting on a gate.", csrf)}`;
+    return `<header class="list-head"><h2>Inbox</h2><p class="meta">Approve, reject, or revise. Approving a review posts the draft as a comment. Kiln does not approve or merge.</p></header>${jobList(board.inbox, "inbox", "Nothing is waiting on a gate.", csrf, clock)}`;
   }
   if (model.section === "hand") {
-    return `<header class="list-head"><h2>Needs a hand</h2><p class="meta">A breaker tripped, a cap was hit, a review could not be posted, a launch is blocked on a repo setting, or a run failed with no retry left.</p></header>${jobList(board.hand, "hand", "Nothing needs a person.", csrf)}`;
+    return `<header class="list-head"><h2>Needs a hand</h2><p class="meta">A breaker tripped, a cap was hit, a review could not be posted, a launch is blocked on a repo setting, or a run failed with no retry left.</p></header>${jobList(board.hand, "hand", "Nothing needs a person.", csrf, clock)}`;
   }
   if (model.section === "history") {
-    return `<header class="list-head"><h2>History</h2></header>${jobList(board.history, "history", "No finished jobs.", csrf)}`;
+    return `<header class="list-head"><h2>History</h2></header>${jobList(board.history, "history", "No finished jobs.", csrf, clock)}`;
   }
   const groups = model.repo ? board.repos.filter((group) => group.repo === model.repo) : board.repos;
   if (groups.length === 0) return `<header class="list-head"><h2>Repos</h2></header><p class="empty">No jobs.</p>`;
@@ -335,14 +356,14 @@ function listHtml(model: AppModel, csrf: string): string {
   return `<header class="list-head"><h2>${heading}</h2></header>${groups
     .map((group) => {
       const label = model.repo ? "" : `<h3>${escapeHtml(group.repo)}</h3>`;
-      return `<section class="repo-block">${label}${groupedJobs(group.jobs, "repos", csrf)}</section>`;
+      return `<section class="repo-block">${label}${groupedJobs(group.jobs, "repos", csrf, clock)}</section>`;
     })
     .join("")}`;
 }
 
-function pipelineHtml(jobs: readonly JobView[]): string {
+function pipelineHtml(jobs: readonly JobView[], clock: BoardClock): string {
   const columns = PIPELINE_COLUMNS.map((column) => {
-    const cards = jobs.filter((job) => job.column === column).map((job) => pipeCard(job)).join("");
+    const cards = jobs.filter((job) => job.column === column).map((job) => pipeCard(job, clock)).join("");
     return `<section class="col" data-column="${column}">
 <header class="full"><h2>${escapeHtml(COLUMN_LABEL[column])}</h2><span class="count"></span></header>
 <div class="slim-face"><span>${escapeHtml(COLUMN_LABEL[column])}</span><span class="count"></span></div>
@@ -379,24 +400,23 @@ function filtersHtml(jobs: readonly JobView[]): string {
   return `<div class="filters"><div class="filter"><span class="k">Repo</span>${repoButtons}</div><div class="filter"><span class="k">Workflow</span>${workflowButtons}</div></div>`;
 }
 
-function pipeCard(job: JobView): string {
+function pipeCard(job: JobView, clock: BoardClock): string {
   const id = encodeURIComponent(job.jobId);
   const cost = formatCost(job.costUsd);
   const age = job.since ? timeHtml(job.since, "rel") : "";
-  const phase = job.currentPhase ? `<span class="meta">${escapeHtml(job.currentPhase)}</span>` : "";
   const blocked = job.launchBlock ? `<p class="reason">${escapeHtml(job.reason)}</p>${launchFixHtml(job)}` : "";
-  return `<article class="card" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}"${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
+  return `<article class="card" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}"${activityAttrs(job)}${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
 <a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a>
-<div class="job-meta"><span class="meta">${escapeHtml(job.repo)}</span><span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}${phase}</div>
-${blocked}
+<div class="job-meta"><span class="meta">${escapeHtml(job.repo)}</span><span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}</div>
+${progressHtml(job, clock, false)}${blocked}
 </article>`;
 }
 
-function groupedJobs(jobs: readonly JobView[], section: "repos" | "history", csrf: string): string {
+function groupedJobs(jobs: readonly JobView[], section: "repos" | "history", csrf: string, clock: BoardClock): string {
   const blocks = PIPELINE_COLUMNS.flatMap((column) => {
     const rows = jobs.filter((job) => job.column === column);
     if (rows.length === 0) return [];
-    const cards = rows.map((job) => jobRow(job, section, csrf)).join("\n");
+    const cards = rows.map((job) => jobRow(job, section, csrf, clock)).join("\n");
     return [
       `<section class="state-group"><div class="jobs"><h3>${escapeHtml(COLUMN_LABEL[column])}<span class="badge">${rows.length}</span></h3>\n${cards}</div></section>`,
     ];
@@ -409,12 +429,13 @@ function jobList(
   section: "inbox" | "hand" | "repos" | "history",
   empty: string,
   csrf: string,
+  clock: BoardClock,
 ): string {
   if (jobs.length === 0) return `<p class="empty">${escapeHtml(empty)}</p>`;
-  return `<div class="jobs">${jobs.map((job) => jobRow(job, section, csrf)).join("\n")}</div>`;
+  return `<div class="jobs">${jobs.map((job) => jobRow(job, section, csrf, clock)).join("\n")}</div>`;
 }
 
-function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", csrf: string): string {
+function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", csrf: string, clock: BoardClock): string {
   const id = encodeURIComponent(job.jobId);
   const classes = ["job"];
   if (section === "inbox") classes.push("decision");
@@ -442,11 +463,11 @@ function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", 
   const links = fileLinks(job);
   const age = job.since ? timeHtml(job.since, "rel") : "";
   const cost = formatCost(job.costUsd);
-  return `<article class="${classes.join(" ")}" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}" data-deps="${escapeHtml(job.dependsOn.map((dep) => dep.jobId).join(" "))}"${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
+  return `<article class="${classes.join(" ")}" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}" data-deps="${escapeHtml(job.dependsOn.map((dep) => dep.jobId).join(" "))}"${activityAttrs(job)}${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
 <div class="job-main">
 <div class="job-top">${flag}<a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a></div>
 <div class="job-meta"><span class="num">${escapeHtml(job.jobId)}</span>${repo}<span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span><span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}${sandbox}${pr}</div>
-${reason}${fix}${section === "inbox" ? ranHtml(job) : ""}${history}${unsafe}${retrying}${attempt}${deps}${feedback}${body}${notes}${tail}${unseen}${links}
+${progressHtml(job, clock, false)}${reason}${fix}${section === "inbox" ? ranHtml(job) : ""}${history}${unsafe}${retrying}${attempt}${deps}${feedback}${body}${notes}${tail}${unseen}${links}
 </div>
 ${actionsHtml(job, section, csrf)}
 </article>`;
@@ -472,7 +493,7 @@ function decisionBody(job: JobView): string {
     job.workflow === "review" && job.canApprove
       ? `<p class="meta">Approving posts this draft as a pull request comment. Kiln does not approve the pull request or merge it.</p>`
       : "";
-  return `${ask}${policy}${ticksHtml(job.phases)}${deliverableHtml(job)}`;
+  return `${ask}${policy}${deliverableHtml(job)}`;
 }
 
 function ranHtml(job: JobView): string {
@@ -486,15 +507,54 @@ function ranHtml(job: JobView): string {
   return `<p class="ran">${escapeHtml(bits.join(" · "))}</p>`;
 }
 
-function ticksHtml(phases: readonly PhaseView[]): string {
-  if (phases.length === 0) return "";
-  const items = phases
-    .map((phase) => {
-      const mark = phase.status === "done" ? "✓" : phase.status === "failed" ? "×" : phase.status === "running" ? "●" : "○";
-      return `<li class="tick ${phase.status}"><span class="mark" aria-hidden="true">${mark}</span>${escapeHtml(phase.label)}</li>`;
+function activityAttrs(job: JobView): string {
+  const activity = job.stallActivityAt ? ` data-activity="${escapeHtml(job.stallActivityAt)}"` : "";
+  return ` data-column="${escapeHtml(job.column)}"${activity}`;
+}
+
+function progressHtml(job: JobView, clock: BoardClock, full: boolean): string {
+  if (job.steps.length === 0) return "";
+  const live = activityLiveness({
+    column: job.column,
+    ...(job.stallActivityAt ? { lastActivityAt: job.stallActivityAt } : {}),
+    ...(clock.now !== undefined ? { now: clock.now } : {}),
+    stallTimeoutMs: clock.stallTimeoutMs,
+  });
+  const focus = focusStep(job.steps);
+  const items = job.steps
+    .map((step) => {
+      const cls = stepClass(step.status);
+      const mark = step.status === "done" ? icon("check", "icon mark") : "";
+      const current = step.status === "running" || step.status === "failed" ? ` aria-current="step"` : "";
+      return `<li class="step ${cls}"${current}>${mark}<span class="name">${escapeHtml(step.label)}</span></li>`;
     })
     .join("");
-  return `<ol class="ticks">${items}</ol>`;
+  const nowName = focus ? `<span class="step-now ${stepClass(focus.status)}" aria-hidden="true">${escapeHtml(focus.label)}</span>` : "";
+  const liveness = live.liveness === "idle" ? "" : livenessHtml(live);
+  const meta = nowName || liveness ? `<div class="progress-meta">${nowName}${liveness}</div>` : "";
+  const variant = full ? " steps-full" : "";
+  return `<div class="progress"><ol class="steps${variant}" aria-label="Steps">${items}</ol>${meta}</div>`;
+}
+
+function stepClass(status: StepMark["status"]): string {
+  if (status === "done") return "done";
+  if (status === "skipped") return "skipped";
+  if (status === "running") return "current";
+  if (status === "failed") return "failed";
+  return "upcoming";
+}
+
+function focusStep(steps: readonly StepMark[]): StepMark | undefined {
+  return (
+    steps.find((step) => step.status === "running") ??
+    steps.find((step) => step.status === "failed") ??
+    [...steps].reverse().find((step) => step.status === "done")
+  );
+}
+
+function livenessHtml(live: ActivityRead): string {
+  const dot = live.liveness === "stalled" ? "" : `<span class="live-dot" aria-hidden="true"></span>`;
+  return `<span class="liveness ${live.liveness}">${dot}<span class="liveness-label">${escapeHtml(live.label ?? "")}</span></span>`;
 }
 
 function deliverableHtml(job: JobView, skipPr = false): string {
@@ -582,11 +642,15 @@ function launchFixHtml(job: JobView): string {
 function fileLinks(job: BoardJob): string {
   const id = encodeURIComponent(job.jobId);
   const links: string[] = [];
-  if (job.spec) links.push(`<a href="/jobs/${id}/spec">spec</a>`);
-  if (job.log) links.push(`<a href="/jobs/${id}/log">log</a>`);
-  if (job.findings) links.push(`<a href="/jobs/${id}/findings">Findings</a>`);
+  if (job.spec) links.push(fileLink(`/jobs/${id}/spec`, "file-text", "Spec"));
+  if (job.log) links.push(fileLink(`/jobs/${id}/log`, "scroll-text", "Log"));
+  if (job.findings) links.push(fileLink(`/jobs/${id}/findings`, "list-checks", "Findings"));
   if (links.length === 0) return "";
-  return `<p class="links">${links.join(" ")}</p>`;
+  return `<p class="links">${links.join("")}</p>`;
+}
+
+function fileLink(href: string, name: IconName, label: string): string {
+  return `<a class="text-btn" href="${href}">${icon(name)}<span>${escapeHtml(label)}</span></a>`;
 }
 
 function feedbackHtml(job: BoardJob): string {
@@ -635,7 +699,13 @@ function postForm(action: string, kind: string, label: string, csrf: string): st
   return `<form method="post" action="${action}" class="act ${kind}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button type="submit">${label}</button></form>`;
 }
 
-function detailHtml(detail: JobDetail, tab: "overview" | "live" | "changes" | "timeline", _csrf: string, activity?: ActivityFeed): string {
+function detailHtml(
+  detail: JobDetail,
+  tab: "overview" | "live" | "changes" | "timeline",
+  _csrf: string,
+  clock: BoardClock,
+  activity?: ActivityFeed,
+): string {
   const job = detail.job;
   const id = encodeURIComponent(job.jobId);
   const liveDefault = job.column === "running";
@@ -651,11 +721,13 @@ function detailHtml(detail: JobDetail, tab: "overview" | "live" | "changes" | "t
     tab === "changes" ? changesHtml(detail) : tab === "timeline" ? timelineHtml(detail) : tab === "live" ? liveHtml(job, activity) : overviewHtml(detail);
   const back = job.inbox ? "/inbox" : "/";
   const backLabel = job.inbox ? "Inbox" : "Pipeline";
-  return `<div class="detail-main">
+  return `<div class="detail-main"${activityAttrs(job)}>
 <a class="back" href="${back}">${backLabel}</a>
 <header class="list-head">
 <div class="job-top"><h2>${escapeHtml(job.title)}</h2><span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span></div>
 <div class="job-meta"><a href="/repos/${encodeURIComponent(job.repo)}">${escapeHtml(job.repo)}</a><span class="chip">${escapeHtml(job.workflow)}</span>${job.branch ? `<span class="mono">${escapeHtml(job.branch)}</span>` : ""}${prLinkHtml(job.repo, job.prNumber, job.prUrl, job.headSha)}</div>
+${progressHtml(job, clock, true)}
+${fileLinks(job)}
 ${job.ask ? `<p class="ask">${escapeHtml(job.ask)}</p>` : ""}
 ${job.workflow === "review" && job.canApprove ? `<p class="meta">Approving posts this draft as a pull request comment. Kiln does not approve the pull request or merge it.</p>` : ""}
 ${showReason(job) ? `<p class="reason">${escapeHtml(job.reason)}</p>` : ""}
@@ -1237,12 +1309,14 @@ function document(options: {
   theme?: BoardThemeId;
   jobId?: string;
   latest?: string;
+  stallTimeoutMs?: number;
   live: boolean;
   body: string;
 }): string {
   const job = options.jobId ? ` data-job="${escapeHtml(options.jobId)}"` : "";
   const latest = options.latest ? ` data-latest="${escapeHtml(options.latest)}"` : "";
   const theme = options.theme ?? DEFAULT_BOARD_THEME;
+  const stall = options.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS;
   return `<!DOCTYPE html>
 <html lang="en" data-theme="${theme}">
 <head>
@@ -1255,7 +1329,7 @@ ${faviconLink(options.css, theme)}
 ${options.css}
 </style>
 </head>
-<body data-section="${escapeHtml(options.section)}" data-needs-you="${options.needsYou}" data-revision="${escapeHtml(options.revision)}" data-csrf="${escapeHtml(options.csrf ?? "")}" data-pick-limit="${PICK_CHIP_MAX}"${job}${latest}>
+<body data-section="${escapeHtml(options.section)}" data-needs-you="${options.needsYou}" data-revision="${escapeHtml(options.revision)}" data-csrf="${escapeHtml(options.csrf ?? "")}" data-pick-limit="${PICK_CHIP_MAX}" data-stall="${stall}" data-quiet="${QUIET_AFTER_MS}"${job}${latest}>
 ${options.body}
 ${options.live ? `<script>\n${LIVE_SCRIPT}\n</script>` : ""}
 </body>

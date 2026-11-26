@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildAttention } from "../src/attention.js";
-import { projectJob } from "../src/job-view.js";
+import { QUIET_AFTER_MS, activityLiveness, projectJob, type PipelineColumn } from "../src/job-view.js";
+import { buildBoard, jobDetail } from "../src/board-view.js";
+import { renderApp } from "../src/serve-page.js";
 import { renderMarkdown } from "../src/markdown.js";
 import { kilnVersion } from "../src/project.js";
 import type { StatusJobView } from "../src/report.js";
@@ -276,6 +278,136 @@ describe("job view", () => {
     assert.match(html, /data-workflow="investigation"[^>]*data-needs-test="false"/);
     assert.match(html, /data-repo="web"[^>]*data-has-test="false"/);
     assert.doesNotMatch(html, /action="\/api\/jobs\/SAMPLE-4\/retry"/);
+  });
+});
+
+describe("activity liveness", () => {
+  const now = Date.parse("2026-11-15T18:00:00.000Z");
+  const stall = 15 * 60 * 1000;
+
+  it("classifies lastActivityAt as working, quiet, or stalled", () => {
+    const running = (iso?: string, stallTimeoutMs = stall) =>
+      activityLiveness({
+        column: "running",
+        ...(iso ? { lastActivityAt: iso } : {}),
+        now,
+        stallTimeoutMs,
+      });
+    assert.deepEqual(running(new Date(now - 30_000).toISOString()), { liveness: "working", label: "Working" });
+    assert.deepEqual(running(new Date(now - QUIET_AFTER_MS).toISOString()), { liveness: "working", label: "Working" });
+    assert.deepEqual(running(new Date(now - QUIET_AFTER_MS - 1).toISOString()), { liveness: "quiet", label: "quiet 2m" });
+    assert.deepEqual(running(new Date(now - 4 * 60_000).toISOString()), { liveness: "quiet", label: "quiet 4m" });
+    assert.deepEqual(running(new Date(now - stall).toISOString()), { liveness: "quiet", label: "quiet 15m" });
+    assert.deepEqual(running(new Date(now - stall - 1).toISOString()), { liveness: "stalled", label: "stalled" });
+    assert.deepEqual(running(new Date(now - 60 * 60_000).toISOString(), 0), { liveness: "quiet", label: "quiet 60m" });
+    assert.equal(running(undefined).liveness, "idle");
+    assert.equal(running("not-a-time").liveness, "idle");
+    const fresh = new Date(now - 5_000).toISOString();
+    for (const column of ["queued", "needs-you", "needs-hand", "done"] as const satisfies readonly PipelineColumn[]) {
+      assert.equal(activityLiveness({ column, lastActivityAt: fresh, now, stallTimeoutMs: stall }).liveness, "idle", column);
+    }
+  });
+
+  it("renders a step bar on the pipeline and the full stepper on the job", () => {
+    const plan = [
+      { id: "spec", phase: "done" as const },
+      { id: "build", phase: "current" as const },
+      { id: "verify", phase: "pending" as const },
+      { id: "land", phase: "pending" as const },
+    ];
+    const working = job({
+      jobId: "WEB-118",
+      title: "Ship the weekly summary",
+      state: "running",
+      steps: plan,
+      stallActivityAt: new Date(now - 45_000).toISOString(),
+      specPath: "/tmp/spec.md",
+      logPath: "/tmp/log.txt",
+    });
+    const quiet = job({
+      jobId: "API-22",
+      title: "Index the public catalog",
+      repo: "api",
+      state: "running",
+      steps: [
+        { id: "spec", phase: "done" },
+        { id: "build", phase: "done" },
+        { id: "verify", phase: "current" },
+        { id: "land", phase: "pending" },
+      ],
+      stallActivityAt: new Date(now - 4 * 60_000).toISOString(),
+    });
+    const stalled = job({
+      jobId: "API-23",
+      title: "Wait on a stalled run",
+      repo: "api",
+      state: "running",
+      steps: plan,
+      stallActivityAt: new Date(now - stall - 1).toISOString(),
+    });
+    const queued = job({
+      jobId: "WEB-104",
+      title: "Queue the weekly digest",
+      state: "queued",
+      stallActivityAt: new Date(now - 5_000).toISOString(),
+      steps: plan.map((step) => ({ ...step, phase: "pending" as const })),
+    });
+    const projected = projectJob(working, []);
+    assert.equal(projected.stallActivityAt, working.stallActivityAt);
+    assert.deepEqual(
+      projected.steps.map((step) => [step.label, step.status]),
+      [
+        ["Spec", "done"],
+        ["Build", "running"],
+        ["Verify", "pending"],
+        ["Land", "pending"],
+      ],
+    );
+
+    const jobs = [working, quiet, stalled, queued];
+    const attention = buildAttention(jobs);
+    const board = buildBoard(jobs, []);
+    const page = {
+      csrf: "token",
+      repos: [
+        { name: "web", path: "/repos/web" },
+        { name: "api", path: "/repos/api" },
+      ],
+      workflows: ["feature"],
+      stallTimeoutMs: stall,
+      now,
+    };
+    const html = renderApp({ css: "", section: "pipeline", board, attention, page });
+    const slice = (id: string) => html.slice(html.indexOf(`id="job-${id}"`), html.indexOf("</article>", html.indexOf(`id="job-${id}"`)));
+    const workingCard = slice("WEB-118");
+    assert.match(workingCard, /class="steps"/);
+    assert.doesNotMatch(workingCard, /steps-full/);
+    assert.match(workingCard, /class="step-now current"/);
+    assert.match(workingCard, />Build</);
+    assert.match(workingCard, /class="liveness working"/);
+    assert.match(workingCard, /data-activity="2026-11-15T17:59:15.000Z"/);
+    assert.match(slice("API-22"), /class="liveness quiet"[\s\S]*quiet 4m/);
+    const stalledCard = slice("API-23");
+    assert.match(stalledCard, /class="liveness stalled"/);
+    assert.match(stalledCard, />stalled</);
+    assert.doesNotMatch(stalledCard, /live-dot/);
+    assert.doesNotMatch(slice("WEB-104"), /liveness/);
+    assert.match(html, /class="repo-f"/);
+    assert.match(html, /class="chip"/);
+
+    const detail = jobDetail({ job: working, events: [], maxFixRounds: 2 });
+    const jobHtml = renderApp({ css: "", section: "job", board, attention, page, detail, tab: "overview" });
+    const stepper = jobHtml.slice(jobHtml.indexOf('class="steps steps-full"'), jobHtml.indexOf("</ol>"));
+    assert.match(stepper, /Spec/);
+    assert.match(stepper, /aria-current="step"[\s\S]*Build/);
+    assert.match(stepper, /Verify/);
+    assert.match(stepper, /Land/);
+    assert.match(jobHtml, /class="liveness working"/);
+    assert.match(jobHtml, /class="text-btn" href="\/jobs\/WEB-118\/spec"/);
+    assert.match(jobHtml, /class="text-btn" href="\/jobs\/WEB-118\/log"/);
+    assert.match(jobHtml, />Spec</);
+    assert.match(jobHtml, />Log</);
+    assert.doesNotMatch(jobHtml, />spec</);
   });
 });
 

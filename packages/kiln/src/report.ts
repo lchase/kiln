@@ -247,6 +247,13 @@ export interface StatusJobView {
   canRevise: boolean;
   /** Leaf steps with phases taken from yak run events. Empty when the workflow has no steps. */
   steps: StepProgress[];
+  /**
+   * Latest activity stall detection uses: the later of the run journal
+   * (event time or journal mtime, folded with the log mtime) and the launch
+   * log mtime. ISO. Omitted when neither exists. `lastActivityAt` is a
+   * different clock: the newest session activity event.
+   */
+  stallActivityAt?: string;
   /** Job file `createdAt`. */
   createdAt?: string;
   /** Yak `run.started` time. */
@@ -372,6 +379,7 @@ function statusHeader(job: StatusJobView): string {
 }
 
 function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView {
+  const stallAt = stallStamp(job);
   if (job.error) {
     return {
       jobId: job.jobId,
@@ -401,6 +409,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
       canReject: false,
       canRevise: false,
       steps: progressFor(job),
+      ...(stallAt ? { stallActivityAt: stallAt } : {}),
       ...(job.deliver ? { deliver: job.deliver } : {}),
       ...(job.createdAt ? { createdAt: job.createdAt } : {}),
       ...(job.logTail ? { logTail: job.logTail } : {}),
@@ -468,6 +477,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     canReject: gates.some((gate) => gate.choices.includes("reject")),
     canRevise: gates.some((gate) => gate.choices.includes("approve") || gate.choices.includes("revise")),
     steps: progressFor(job),
+    ...(stallAt ? { stallActivityAt: stallAt } : {}),
     ...(job.createdAt ? { createdAt: job.createdAt } : {}),
     ...(job.run?.startedAt ? { startedAt: job.run.startedAt } : {}),
     ...(job.run?.finishedAt ? { finishedAt: job.run.finishedAt } : {}),
@@ -512,6 +522,15 @@ function boardFields(job: ObservedJob): {
     ...(job.feedbackRounds?.length ? { feedbackRounds: job.feedbackRounds } : {}),
     ...(files.length > 0 ? { files } : {}),
   };
+}
+
+/** Later of the run activity clock and the launch log clock, as ISO. */
+function stallStamp(job: ObservedJob): string | undefined {
+  const runAt = job.run?.activityMs;
+  const launchAt = job.launchActivityMs;
+  const ms = runAt === undefined ? launchAt : launchAt === undefined ? runAt : Math.max(runAt, launchAt);
+  if (ms === undefined || !Number.isFinite(ms)) return undefined;
+  return new Date(ms).toISOString();
 }
 
 function activityStamp(job: ObservedJob): { lastActivityAt?: string } {

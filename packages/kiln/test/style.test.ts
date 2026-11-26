@@ -218,6 +218,18 @@ describe("board style", () => {
     assert.doesNotMatch(wide, /id="workflow-pick"/);
   });
 
+  it("uses rectangles for chips and does not underline links", () => {
+    assert.doesNotMatch(css, /--radius-pill/);
+    assert.match(css, /\.tick, \.chip \{[^}]*border-radius:\s*var\(--radius-md\)/);
+    assert.match(css, /\.badge \{[^}]*border-radius:\s*var\(--radius-md\)/);
+    assert.match(css, /\.repo-f, \.wf-f \{[^}]*border-radius:\s*var\(--radius-md\)/);
+    assert.match(css, /\.repo-f, \.wf-f \{[^}]*padding:\s*0 var\(--space-2\)/);
+    assert.doesNotMatch(css, /a:hover\s*\{[^}]*underline/);
+    assert.match(css, /prefers-reduced-motion:\s*reduce/);
+    assert.match(css, /\.text-btn \{/);
+    assert.match(css, /\.liveness\.working \.live-dot \{[^}]*animation:\s*live-pulse/);
+  });
+
   it("labels each After job once", () => {
     const attention = buildAttention([
       job("SAMPLE-1", "queued", "web"),
@@ -293,7 +305,7 @@ describe("board style", () => {
     assert.match(card, /<span class="chip">feature<\/span>/);
     assert.match(card, /data-time="rel"/);
     assert.match(card, /Queued, ready to launch/);
-    assert.match(card, /<a href="\/jobs\/j202611150001\/spec">spec<\/a>/);
+    assert.match(card, /<a class="text-btn" href="\/jobs\/j202611150001\/spec">[\s\S]*?<span>Spec<\/span><\/a>/);
     assert.doesNotMatch(card, /border-left|accent/);
 
     const block = (selector: string) => {
