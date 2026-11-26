@@ -34,7 +34,8 @@ jobs:
       - run: npm test -w @lchase/kiln
       - run: npm run build -w @lchase/kiln
 
-      - run: npm pack -w @lchase/kiln --pack-destination "$RUNNER_TEMP/pack"
+      # npm does not create the pack destination.
+      - run: mkdir -p "$RUNNER_TEMP/pack" && npm pack -w @lchase/kiln --pack-destination "$RUNNER_TEMP/pack"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
