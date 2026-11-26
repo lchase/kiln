@@ -21,7 +21,7 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "scripts": {
     "build": "tsup src/cli/index.ts --format esm --target node22 --clean",

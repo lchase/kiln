@@ -26,7 +26,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          # package.json engines.node is >=22. There is no .nvmrc.
+          # package.json engines.node is >=22.12. There is no .nvmrc.
           node-version: 22
           cache: npm
 
