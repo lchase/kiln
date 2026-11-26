@@ -295,6 +295,8 @@ A job's step list (card stepper, job page stepper, and the Overview phase list) 
 
 A page does not ask GitHub for a pull request's state on every request. The tick reads it with `gh pr view` and the board answers from that for up to 45 seconds, so a merge can take until the next tick to show. A merged pull request is not asked about again while serve is running. `kiln status` and `kiln tick` on the command line always ask.
 
+Approve, Reject, Revise, and Retry on the board show the action in progress on the button and lock the row until the page changes, so one click posts once.
+
 `kiln retry <jobId>` relaunches a failed or dead job with the same launch tick uses, and clears `<kiln-dir>/attempts/<job-id>.json`. A landed job that only failed to open its pull request is delivered again instead. The board's Retry button calls that same function.
 
 By default, serve runs `kiln tick` once when it starts and then every 30 seconds. `--tick <seconds>` changes the interval. `--no-tick` leaves the factory where it is. The tick uses the same lock as `kiln tick`, so a second tick exits with "another kiln tick is running" instead of launching twice. The tick re-reads the config first, so a repo registered while serve is open is launchable on the next tick.

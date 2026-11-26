@@ -569,6 +569,27 @@ h3 {
   color: var(--ink);
   cursor: pointer;
 }
+.d-actions button:disabled { opacity: var(--disabled); cursor: not-allowed; }
+.d-actions button[aria-busy="true"] { opacity: 1; cursor: progress; }
+.d-actions button[aria-busy="true"]::before {
+  content: "";
+  display: inline-block;
+  width: var(--space-3);
+  height: var(--space-3);
+  margin-right: var(--space-2);
+  vertical-align: middle;
+  box-sizing: border-box;
+  border: var(--track) solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--radius-full);
+  animation: act-spin 0.8s linear infinite;
+}
+@keyframes act-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .d-actions button[aria-busy="true"]::before { animation: none; }
+}
 .pause button {
   display: inline-flex;
   align-items: center;

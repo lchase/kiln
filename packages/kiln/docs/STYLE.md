@@ -155,6 +155,17 @@ Kiln notifies only when the needs-you count grows, and only while sending is on.
 - Do not paint chrome, nav icons, or the sidebar footer with `--primary`. It is for the action button (Approve, Add job) and the current step.
 - Do not add a second accent color for decoration.
 
+## Pending actions
+
+- Approve, Reject, Revise, and Retry post a form, and the answer takes a moment. On click the button keeps its
+  place, shows a small spinning ring before its label, and the label changes to the action in progress
+  (`Approving…`, `Rejecting…`, `Sending back…`, `Retrying…`). It carries `aria-busy="true"`.
+- Every other button in that row is disabled and the note field is read-only until the page changes. A second click
+  does not post again.
+- The ring is the only motion. `prefers-reduced-motion: reduce` leaves it still. The label change carries the
+  state without it.
+- The page does not reload itself while an action is on its way.
+
 ## Forms
 
 - Label above the control (`.k` or a `<label>`).
