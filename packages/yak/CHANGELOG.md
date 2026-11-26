@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/lchase/kiln/compare/yak-v0.10.0...yak-v0.10.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* require Node 22.12 or later ([#83](https://github.com/lchase/kiln/issues/83)) ([fe465a0](https://github.com/lchase/kiln/commit/fe465a08e75c9a55d0faf431aed9a26f75ccec9f))
+
 ## [0.10.0](https://github.com/lchase/kiln/compare/yak-v0.9.0...yak-v0.10.0) (2026-11-10)
 
 

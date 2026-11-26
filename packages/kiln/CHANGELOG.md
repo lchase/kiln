@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.20.0](https://github.com/lchase/kiln/compare/kiln-v0.19.1...kiln-v0.20.0) (2026-11-26)
+
+
+### Features
+
+* show workflow steps and running liveness on the board ([#71](https://github.com/lchase/kiln/issues/71)) ([096f015](https://github.com/lchase/kiln/commit/096f015b7338290ec015a4ac49baa16a26446db5))
+
+
+### Bug Fixes
+
+* require Node 22.12 or later ([#83](https://github.com/lchase/kiln/issues/83)) ([fe465a0](https://github.com/lchase/kiln/commit/fe465a08e75c9a55d0faf431aed9a26f75ccec9f))
+* take the shell away from the pull request review agent ([#73](https://github.com/lchase/kiln/issues/73)) ([fe654db](https://github.com/lchase/kiln/commit/fe654dbb136392b43f06abbf20136abec851f5c2))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @lchase/yak bumped from 0.10.0 to 0.10.1
+
 ## [0.19.1](https://github.com/lchase/kiln/compare/kiln-v0.19.0...kiln-v0.19.1) (2026-11-16)
 
 
