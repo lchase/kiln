@@ -256,7 +256,8 @@ function toolOf(name: string, input: ToolInput, root: string | undefined): ToolV
 /**
  * Drops a leading `cd` into the worktree and shows worktree paths relative to it.
  * `cd <root>/<sub> && rest` reads `in <sub>: rest`. Only `<root>` on a path boundary
- * matches, so `<root>-other` and paths outside the worktree stay as written.
+ * matches (start, whitespace, quote, `=`, `(` or `:` before it), so `<root>-other`, `/mnt<root>`
+ * and paths outside the worktree stay as written.
  */
 function tidyCommand(command: string, root: string | undefined): string {
   if (!root) return command;
@@ -264,7 +265,7 @@ function tidyCommand(command: string, root: string | undefined): string {
   const lead = new RegExp(`^\\s*cd\\s+(["']?)${at}(/[^"'\\s;&|]*)?\\1\\s*(?:&&|;)\\s*`).exec(command);
   const sub = lead?.[2]?.replace(/^\/+|\/+$/g, "");
   const rest = (lead ? command.slice(lead[0].length) : command).replace(
-    new RegExp(`${at}(?:/|(?=[\\s"';&)]|$))`, "g"),
+    new RegExp(`(?<![^\\s"'=(:])${at}(?:/|(?=[\\s"';&)]|$))`, "g"),
     (match) => (match.endsWith("/") ? "" : "."),
   );
   return sub ? `in ${sub}: ${rest}` : rest;
@@ -315,8 +316,9 @@ function said(text: string): { summary: string; detail?: string } {
   return trimmed === summary ? { summary } : { summary, detail: trimmed };
 }
 
+/** Redacts before cutting, so a token that straddles the cut cannot leak as a too-short prefix. */
 function clip(text: string): string {
-  const flat = text.trim().replace(/\s+/g, " ");
+  const flat = redact(text).trim().replace(/\s+/g, " ");
   return flat.length <= 160 ? flat : `${flat.slice(0, 159).trimEnd()}…`;
 }
 

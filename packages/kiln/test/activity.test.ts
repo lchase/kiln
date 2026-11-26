@@ -216,6 +216,17 @@ describe("activity from a recorded build session", () => {
     assert.equal(byId(events, "Read ").summary, "Read src/a.ts");
   });
 
+  it("leaves a root that only appears inside a longer path, and masks a token cut by the summary limit", () => {
+    const bash = (command: string) =>
+      line({ type: "system", subtype: "init", cwd: worktree }) +
+      line({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "b1", name: "Bash", input: { command } }] } });
+    const nested = parseActivityStream(bash(`ls /mnt${worktree}/a ${worktree}/b`), "build", AT)[0];
+    assert.equal(nested?.summary, `Ran ls /mnt${worktree}/a b`);
+    const straddle = parseActivityStream(bash(`echo ${"a".repeat(140)} ${FAKE_GH}`), "build", AT)[0];
+    assert.equal(straddle?.summary.includes("ghp_"), false, straddle?.summary);
+    assert.equal(straddle?.summary.includes("[redacted]"), true, straddle?.summary);
+  });
+
   it("keeps the full original command and the output tail in the detail", () => {
     const events = parseActivityStream(recorded(), "build", AT);
     assert.equal(
