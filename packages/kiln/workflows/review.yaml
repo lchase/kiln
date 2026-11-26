@@ -10,6 +10,10 @@
 # the packaged prompt. Without it, a file in the kiln home prompts/ tree wins.
 # The packaged file is the generic default.
 #
+# The pull request is someone else's code, so the agent has no shell. `diff`
+# is a host command step that prints the change, and `draft` reads it from
+# the prompt. `KILN_REVIEW_BASE` is the base commit Kiln resolved at launch.
+#
 # `adapter: "mock"` reads `test/fixtures/kiln-review/draft.json` from the checkout.
 name: kiln-review
 version: "1"
@@ -24,8 +28,23 @@ inputSchema:
       baseRef: { type: string }
     required: [title, spec, runNonce, baseRef]
 steps:
-  - id: draft
+  # --no-ext-diff and --no-textconv: a .gitattributes in the pull request
+  # must not pick a diff driver or a textconv filter from the operator's
+  # git config.
+  # ponytail: the diff is cut at 200KB. The agent still has Read, Grep, and
+  # Glob on the whole tree, and --stat lists every changed file first.
+  - id: diff
     needs: [input]
+    command:
+      run: |
+        base="${KILN_REVIEW_BASE:?KILN_REVIEW_BASE is empty}"
+        git --no-pager diff --no-ext-diff --no-textconv --no-color --stat "$base...HEAD" -- || exit 1
+        git --no-pager diff --no-ext-diff --no-textconv --no-color "$base...HEAD" -- | head -c 200000
+      capture: [stdout, stderr, exitCode]
+    produces: diff
+
+  - id: draft
+    needs: [input, diff]
     agent:
       model: opus
       prompt:
@@ -48,7 +67,7 @@ steps:
                   comment: { type: string, minLength: 1 }
                 required: [severity, file, line, comment]
           required: [markdown, findings]
-      tools: [Read, Grep, Glob, Bash]
+      tools: [Read, Grep, Glob]
     produces: draft
 
   - id: approve

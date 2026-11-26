@@ -1521,6 +1521,8 @@ function launchJob(
 
   let baseSha: string;
   let specText: string;
+  /** Base commit the review workflow's host `diff` step compares the pull request head against. */
+  let reviewBase: string | undefined;
   try {
     clearLaunchError(config.kilnDir, job.id);
     const blocked = commitAgentSandbox(config, job.id, job.workflow, workflow, logPath, sandboxFacts);
@@ -1533,6 +1535,13 @@ function launchJob(
       const number = Number(job.source?.ref.split(":")[2]);
       if (Number.isInteger(number) && number > 0) ensureReviewHead(repo.path, number, pinned);
       baseSha = resolveCommit(host, repo.path, pinned);
+      reviewBase = resolveLaunchBase({
+        checkout: repo.path,
+        deliver: "pr",
+        stack: false,
+        ...(repo.base ? { configuredBase: repo.base } : {}),
+        git: host.git,
+      });
     } else {
       baseSha = resolveLaunchBase({
         checkout: repo.path,
@@ -1563,6 +1572,7 @@ function launchJob(
     KILN_TEST: testCommand,
     KILN_TASK_TITLE: job.title,
     KILN_VERIFY_WRAPPER: join(packageRoot(), "dist", "truncate-output.js"),
+    ...(reviewBase ? { KILN_REVIEW_BASE: reviewBase } : {}),
   };
   return spawnLogged(config, host, { jobId: job.id, repo: job.repo, cwd: repo.path, args, env, logPath });
 }
