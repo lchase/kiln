@@ -30,9 +30,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.228",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.330",
     "@anthropic-ai/sdk": "^0.116.0",
-    "@clack/prompts": "^1.7.0",
+    "@clack/prompts": "^1.9.0",
     "ajv": "^8.20.0",
     "commander": "^12.1.0",
     "ink": "^7.1.1",
@@ -46,11 +46,11 @@
   "devDependencies": {
     "@types/jexl": "^2.3.4",
     "@types/node": "^22.7.4",
-    "@types/react": "^19.2.18",
+    "@types/react": "^19.3.0",
     "tsup": "^8.3.0",
-    "tsx": "^4.19.1",
+    "tsx": "^4.23.15",
     "typescript": "^5.6.2",
-    "vite": "^8.3.5",
-    "vitest": "^5.0.5"
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
   }
 }
