@@ -231,7 +231,7 @@ function pendingFailure(job: ObservedJob, config: LoadedKilnConfig, options: Rec
       runId: run.runId,
       pid: run.pid,
       killPid: run.pid,
-      detail: "no yak event or log output",
+      detail: "no yak event, log, or session output",
     };
   }
   if (runLive) return undefined;
@@ -604,4 +604,20 @@ export function fileMtimeMs(path: string): number | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Newest mtime among a directory's direct entries (stat only, never read), or undefined. */
+export function newestMtimeMs(dir: string): number | undefined {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return undefined;
+  }
+  let newest: number | undefined;
+  for (const name of names) {
+    const ms = fileMtimeMs(join(dir, name));
+    if (ms !== undefined && (newest === undefined || ms > newest)) newest = ms;
+  }
+  return newest;
 }

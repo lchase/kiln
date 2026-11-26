@@ -82,6 +82,7 @@ import {
 import {
   fileMtimeMs,
   isPidAlive,
+  newestMtimeMs,
   readAttemptLedger,
   recoverRuns,
   resetAttemptLedger,
@@ -1653,7 +1654,10 @@ function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun[]> {
       const sandboxError = sandboxFailureDetail(stepEvents);
       const cost = costFromJournal(events);
       const pid = livePid(events);
-      const activityMs = eventActivityMs(events) ?? fileMtimeMs(join(runDir, "journal.jsonl"));
+      const activityMs = later(
+        eventActivityMs(events) ?? fileMtimeMs(join(runDir, "journal.jsonl")),
+        newestMtimeMs(join(runDir, "sessions")),
+      );
       const finishedReason =
         finished && typeof finished.reason === "string" ? finished.reason : undefined;
       const run: ObservedRun = {

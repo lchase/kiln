@@ -91,7 +91,7 @@ State colors (say the word as well as the color):
 
 ## Liveness
 
-- `lastActivityAt` is the timestamp stall detection already uses: the later of the run's journal activity and the launch log mtime.
+- `lastActivityAt` is the timestamp stall detection already uses: the later of the run's journal activity, the launch log mtime, and the mtime of the newest file under the run's `sessions/` directory.
 - A running job with activity inside 2 minutes (`QUIET_AFTER_MS`) shows a slow pulsing dot in `--state-running`. The word `Working` is in the page for a screen reader and is not a second label.
 - No activity for longer than 2 minutes, while still inside `stallTimeoutMs`, shows a static dot and `quiet Nm` (whole minutes).
 - Past `stallTimeoutMs`, the label is `stalled` and the dot does not pulse. The driver still kills and retries that run. `stallTimeoutMs` of 0 or below does not mark a job stalled.
