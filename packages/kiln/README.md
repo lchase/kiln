@@ -291,7 +291,7 @@ A job's step list (card stepper, job page stepper, and the Overview phase list) 
 
 `GET /api/jobs` and `GET /api/jobs/<id>` return that view as JSON, including the attention sections. `GET /api/status` is that same list plus `repos` (name and path) and `configError` (`null`, or the validation message). `GET /api/jobs` carries those two fields too, and the page polls it every 3 seconds, so a repo added from the CLI shows up on the Add job chips without a separate reload. `POST /api/jobs` adds work through the intake adapters. The body is `{ repo, workflow, title?, issue?, after?, stack?, dryRun?, source }` where `source` is `{ kind: "prompt", text }`, `{ kind: "spec", path }`, `{ kind: "tickets", dir, context? }`, or `{ kind: "jira", key }`. `issue` is an optional `KEY-123` id, the same field `kiln add --issue` stores. With `deliver=pr` the draft title is `[ABC-123] Title` and the remote branch is `ABC-123-slug`. A Jira `key` is `PROJ-123` or a browse URL. The source stores that issue key when `issue` is omitted, and rejects a different key. A tickets import does not take `issue`; each file has its own. `dryRun: true` previews a tickets import or a Jira issue and writes nothing. A Jira preview includes the fetched summary as the title. The response is `{ ids: string[] }`. Spec and ticket paths must be absolute and under the home directory.
 
-`POST /api/jobs/<id>/approve`, `POST /api/jobs/<id>/reject`, and `POST /api/jobs/<id>/retry` call the same functions as the CLI. Every POST requires the CSRF token embedded in the page (`X-Kiln-CSRF`, or a `csrf` field on the approve forms). A request whose Origin or Host is not this localhost port is rejected. That check also covers `GET /api/fs`. `GET /api/fs?path=` lists directories and `.md` files under the home directory. A chosen `.md` file returns its first 40 lines. Paths outside the home directory, hidden directories, and other files are refused. The page and the stylesheet ship inside the package (`assets/serve.css`, `assets/serve.js`, read from the package root).
+`POST /api/jobs/<id>/approve`, `POST /api/jobs/<id>/reject`, `POST /api/jobs/<id>/retry`, `POST /api/jobs/<id>/cancel`, and `POST /api/jobs/<id>/remove` call the same functions as the CLI. Every POST requires the CSRF token embedded in the page (`X-Kiln-CSRF`, or a `csrf` field on the approve forms). A request whose Origin or Host is not this localhost port is rejected. That check also covers `GET /api/fs`. `GET /api/fs?path=` lists directories and `.md` files under the home directory. A chosen `.md` file returns its first 40 lines. Paths outside the home directory, hidden directories, and other files are refused. The page and the stylesheet ship inside the package (`assets/serve.css`, `assets/serve.js`, read from the package root).
 
 A page does not ask GitHub for a pull request's state on every request. The tick reads it with `gh pr view` and the board answers from that for up to 45 seconds, so a merge can take until the next tick to show. A merged pull request is not asked about again while serve is running. `kiln status` and `kiln tick` on the command line always ask.
 
@@ -336,6 +336,26 @@ A failed fire stores `last_error` and `lastErrorAt` under `<kiln-home>/triggers/
 
 `kiln cancel --queued` cancels jobs that have not started. `--repo` and `--workflow` narrow it. `POST /api/jobs/cancel` with `{ "queued": true }` does the same for the board. Both are idempotent: a second call cancels nothing new and writes no second `job.cancelled` event. Running, blocked, and finished jobs stay. Cancelling does not delete branches.
 
+`kiln cancel <jobId>` stops one job, whatever it is doing. A queued or blocked job becomes `cancelled`. A running
+run has its whole process tree killed, `yak cancel` closes its journal, and it is not retried; the worktree and
+branch stay as they are. A gated job's gate is closed without an approve or reject, and nothing is posted or landed.
+An in-review job stops being watched; its pull request stays open for you. A done or rejected job is left alone
+and the command says there is nothing to stop. The job file is stamped first and one `job.cancelled` records the
+prior state (`was`). Running it again writes nothing and prints `<id> already cancelled`.
+
+`kiln remove <jobId>` deletes Kiln's own records for a job that is not running, approved, gated, or in review: the
+job file, its spec copy under the kiln home, its rendered workflow, its attempt and feedback ledgers, its delivery
+record, its launch files, and its log. It refuses an active job (`Run kiln cancel <id> first.`) and a job another
+job depends on, naming those jobs. `events.jsonl` keeps the job's history and gains one `job.removed`. Git is not
+touched: the command prints the `yak/<run-id>` branch so you can delete it with `git branch -D`.
+
+`POST /api/jobs/<id>/cancel` and `POST /api/jobs/<id>/remove` call the same two functions. They need the CSRF
+token like every POST, and a GET changes nothing. A job id with `/`, `..`, or any character outside
+`A-Z a-z 0-9 . _ -` is rejected by both commands and both routes before any file is read. The job page shows
+"Stop job" while a job can be stopped and "Remove job" once it can be removed; each opens an in-page confirm
+button before it posts. `kiln ledger` counts a stop of a running, approved, or gated job as `stopped by hand`. A
+queued cancel is not counted.
+
 Jira search sends `JIRA_API_TOKEN` only as a Basic header in a child process. The token is not written into the job, the spec, or the event log. Polling is the only Jira ingress. A webhook can later call the same issue-to-event function.
 
 ## Tick, status, approve
@@ -368,7 +388,7 @@ State is derived from the yak journal, the gate files, and (for `deliver=pr`) `g
 | State | Meaning |
 | --- | --- |
 | `queued` | Dependencies are met, and the job has not started |
-| `cancelled` | Cancelled before it started. Tick does not launch it. No branch is deleted |
+| `cancelled` | Any job that was not done or rejected, stopped by `kiln cancel`. Tick does not launch, retry, deliver, or watch it. Dependents, after-merged and stacked, stay `blocked`. No branch is deleted |
 | `blocked` | An after-merged dependency is not `done`, or a stacked dependency has not landed. A missing job id is named |
 | `running` | Yak is alive, or the launch process is alive and has not written a journal |
 | `needs-human` | A gate is open, feedback is exhausted or ambiguous, the attempt cap is used, or the same fingerprint has failed `maxSameFingerprint` times. `kiln retry` clears an attempt-cap or fingerprint stop. `kiln revise --note` sends a gate back with a note |

@@ -32,3 +32,20 @@ export function jobBasename(id: string): string {
   }
   return safe;
 }
+
+const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * Reject a job id from a URL or the command line before it reaches a path.
+ * `jobBasename` sanitizes; this refuses. `..` is refused anywhere in the id.
+ */
+export function assertJobId(id: string): string {
+  if (!JOB_ID.test(id) || id.includes("..")) {
+    throw new Error(`Job id ${JSON.stringify(id)} is not valid.`);
+  }
+  return id;
+}
+
+export function isJobId(id: string): boolean {
+  return JOB_ID.test(id) && !id.includes("..");
+}

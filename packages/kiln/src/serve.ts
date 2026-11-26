@@ -6,7 +6,17 @@ import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { AUTH_PREFLIGHT_PREFIX } from "./auth.js";
 import { loadKilnConfig, type LoadedKilnConfig } from "./config.js";
-import { answerJob, cancelQueuedJobs, readStatus, retryJob, reviseJob, runTick, startupRecovery } from "./driver.js";
+import {
+  answerJob,
+  cancelJob,
+  cancelQueuedJobs,
+  readStatus,
+  removeJob,
+  retryJob,
+  reviseJob,
+  runTick,
+  startupRecovery,
+} from "./driver.js";
 import { browse } from "./fs-browse.js";
 import {
   branchOf,
@@ -25,7 +35,7 @@ import { appendEvent, eventsForJob, readEvents } from "./events.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
 import { cachedGitHub, defaultHost, productionHost, type KilnHost, type PullRequestViewCache } from "./host.js";
 import { intakeJobs } from "./intake-http.js";
-import { jobBasename, packageRoot } from "./paths.js";
+import { isJobId, jobBasename, packageRoot } from "./paths.js";
 import { SANDBOX_PREFLIGHT_PREFIX, sandboxIsEnabled } from "./sandbox.js";
 import type { StatusJobView } from "./report.js";
 import { renderApp, type AppSection, type ServePageOptions, renderMessagePage, renderTextPage } from "./serve-page.js";
@@ -45,7 +55,6 @@ export interface ServeOptions {
 
 const BODY_LIMIT = 65_536;
 const TEXT_LIMIT = 100_000;
-const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 interface LiveConfig {
   config: LoadedKilnConfig;
@@ -265,8 +274,8 @@ async function handle(
       redirect(res, redirectTarget(req));
       return;
     }
-    const action = /^\/api\/jobs\/([^/]+)\/(approve|reject|retry|revise)$/.exec(path);
-    if (!action?.[1] || (action[2] !== "approve" && action[2] !== "reject" && action[2] !== "retry" && action[2] !== "revise")) {
+    const action = /^\/api\/jobs\/([^/]+)\/(approve|reject|retry|revise|cancel|remove)$/.exec(path);
+    if (!action?.[1] || !action[2]) {
       sendJson(res, 404, { error: "Not found." }, secrets);
       return;
     }
@@ -277,6 +286,10 @@ async function handle(
     }
     if (action[2] === "retry") {
       await retry(req, res, config, css, secrets, jobId);
+      return;
+    }
+    if (action[2] === "cancel" || action[2] === "remove") {
+      stopOrRemove(req, res, config, css, secrets, jobId, action[2]);
       return;
     }
     if (action[2] === "revise") {
@@ -323,7 +336,7 @@ async function handle(
   }
   if (path === "/api/events") {
     const jobId = url.searchParams.get("job_id");
-    if (!jobId || !JOB_ID.test(jobId)) {
+    if (!jobId || !isJobId(jobId)) {
       sendJson(res, 400, { error: "job_id is required." }, secrets);
       return;
     }
@@ -608,6 +621,39 @@ async function retry(
   redirect(res, redirectTarget(req));
 }
 
+function stopOrRemove(
+  req: IncomingMessage,
+  res: ServerResponse,
+  config: LoadedKilnConfig,
+  css: string,
+  secrets: string[],
+  jobId: string,
+  kind: "cancel" | "remove",
+): void {
+  let body: Record<string, unknown>;
+  try {
+    if (kind === "cancel") {
+      const result = cancelJob(config, jobId);
+      body = { ok: true, outcome: result.outcome, ...(result.was ? { was: result.was } : {}), message: result.message };
+    } else {
+      const result = removeJob(config, jobId);
+      body = { ok: true, removed: result.removed, ...(result.branch ? { branch: result.branch } : {}) };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = message.startsWith("No job ") ? 404 : 409;
+    const title = kind === "cancel" ? "Could not stop" : "Could not remove";
+    if (wantsJson(req)) sendJson(res, status, { error: message }, secrets);
+    else sendHtml(res, status, renderMessagePage(css, title, message, config.boardTheme), secrets);
+    return;
+  }
+  if (wantsJson(req)) {
+    sendJson(res, 200, kind === "cancel" ? { ...body, job: findJob(config, jobId) } : body, secrets);
+    return;
+  }
+  redirect(res, kind === "remove" ? "/" : redirectTarget(req));
+}
+
 function sendFindings(
   res: ServerResponse,
   config: LoadedKilnConfig,
@@ -695,7 +741,7 @@ function parseJobId(raw: string): string | undefined {
   } catch {
     return undefined;
   }
-  if (!JOB_ID.test(id)) return undefined;
+  if (!isJobId(id)) return undefined;
   return id;
 }
 

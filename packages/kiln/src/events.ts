@@ -13,6 +13,7 @@ import {
 import { join } from "node:path";
 import { z } from "zod";
 import { redactDeep } from "./redact.js";
+import { JOB_STATES } from "./schemas.js";
 
 /**
  * Append-only event log at `<kilnDir>/events.jsonl` (`~/.kiln/events.jsonl`
@@ -27,6 +28,7 @@ import { redactDeep } from "./redact.js";
 export const EVENT_NAMES = [
   "job.added",
   "job.cancelled",
+  "job.removed",
   "job.retried",
   "launch.blocked",
   "launch.cleared",
@@ -91,9 +93,18 @@ const LaunchCleared = z.object({
   reason: z.string().min(1),
   once,
 });
+/** `was` is the derived state when a single job was stopped. A bulk queued cancel leaves it out. */
 const JobCancelled = z.object({
   repo: z.string().min(1),
   workflow: z.string().min(1),
+  was: z.enum(JOB_STATES).optional(),
+  once,
+});
+/** Kiln deleted its own records for the job. Git is untouched; `branch` is what the operator may delete. */
+const JobRemoved = z.object({
+  repo: z.string().min(1),
+  workflow: z.string().min(1),
+  branch: z.string().min(1).optional(),
   once,
 });
 const RunStarted = z.object({
@@ -245,6 +256,7 @@ const envelope = {
 export const EventSchema = z.discriminatedUnion("event", [
   z.object({ ...envelope, event: z.literal("job.added"), job_id: z.string().min(1), properties: JobAdded }),
   z.object({ ...envelope, event: z.literal("job.cancelled"), job_id: z.string().min(1), properties: JobCancelled }),
+  z.object({ ...envelope, event: z.literal("job.removed"), job_id: z.string().min(1), properties: JobRemoved }),
   z.object({ ...envelope, event: z.literal("job.retried"), job_id: z.string().min(1), properties: JobRetried }),
   z.object({ ...envelope, event: z.literal("launch.blocked"), job_id: z.string().min(1), properties: LaunchBlocked }),
   z.object({ ...envelope, event: z.literal("launch.cleared"), job_id: z.string().min(1), properties: LaunchCleared }),
