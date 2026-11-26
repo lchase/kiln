@@ -312,38 +312,41 @@ describe("run reliability", () => {
     const fresh = new Date(now.getTime() - 60_000);
     utimesSync(session, fresh, fresh);
 
-    const tick = runTick(config, undefined, { startup: true, now });
-    assert.doesNotMatch(tick, new RegExp(`stall ${id}`), tick);
-    assert.equal(isPidAlive(tree.parentPid), true);
-    assert.equal(tree.parent.exitCode, null);
-    assert.equal(readAttemptLedger(config.kilnDir, id), undefined);
+    try {
+      const tick = runTick(config, undefined, { startup: true, now });
+      assert.doesNotMatch(tick, new RegExp(`stall ${id}`), tick);
+      assert.equal(isPidAlive(tree.parentPid), true);
+      assert.equal(tree.parent.exitCode, null);
+      assert.equal(readAttemptLedger(config.kilnDir, id), undefined);
 
-    const board = (at: Date) => {
-      const job = readStatus(config, id).jobs[0];
-      assert.ok(job);
-      const view = projectJob(job, []);
-      return {
-        stallActivityAt: view.stallActivityAt,
-        live: activityLiveness({
-          column: view.column,
-          ...(view.stallActivityAt ? { lastActivityAt: view.stallActivityAt } : {}),
-          now: at.getTime(),
-          stallTimeoutMs: stall,
-        }),
+      const board = (at: Date) => {
+        const job = readStatus(config, id).jobs[0];
+        assert.ok(job);
+        const view = projectJob(job, []);
+        return {
+          stallActivityAt: view.stallActivityAt,
+          live: activityLiveness({
+            column: view.column,
+            ...(view.stallActivityAt ? { lastActivityAt: view.stallActivityAt } : {}),
+            now: at.getTime(),
+            stallTimeoutMs: stall,
+          }),
+        };
       };
-    };
-    const working = board(now);
-    assert.equal(working.stallActivityAt, fresh.toISOString());
-    assert.equal(working.live.liveness, "working");
+      const working = board(now);
+      assert.equal(working.stallActivityAt, fresh.toISOString());
+      assert.equal(working.live.liveness, "working");
 
-    const quietAt = new Date(now.getTime() - 5 * 60_000);
-    utimesSync(session, quietAt, quietAt);
-    const quiet = board(now);
-    assert.equal(quiet.stallActivityAt, quietAt.toISOString());
-    assert.deepEqual(quiet.live, { liveness: "quiet", label: "quiet 5m" });
+      const quietAt = new Date(now.getTime() - 5 * 60_000);
+      utimesSync(session, quietAt, quietAt);
+      const quiet = board(now);
+      assert.equal(quiet.stallActivityAt, quietAt.toISOString());
+      assert.deepEqual(quiet.live, { liveness: "quiet", label: "quiet 5m" });
 
-    killGroup(tree.parentPid);
-    await waitForExit(tree.parent);
+    } finally {
+      killGroup(tree.parentPid);
+      await waitForExit(tree.parent);
+    }
   });
 
   it("stalls a run whose session file is older than the stall timeout", async () => {
@@ -370,9 +373,13 @@ describe("run reliability", () => {
     const old = new Date(now.getTime() - stall - 60_000);
     utimesSync(session, old, old);
 
-    const tick = runTick(config, undefined, { startup: true, now });
-    assert.match(tick, new RegExp(`stall ${id}  stalled  attempt 1`), tick);
-    await waitForExit(tree.parent);
+    try {
+      const tick = runTick(config, undefined, { startup: true, now });
+      assert.match(tick, new RegExp(`stall ${id}  stalled  attempt 1`), tick);
+    } finally {
+      killGroup(tree.parentPid);
+      await waitForExit(tree.parent);
+    }
   });
 
   it("does not stall on stale session output when stall detection is disabled", async () => {
@@ -396,12 +403,15 @@ describe("run reliability", () => {
     writeFileSync(session, "not json {\n");
     utimesSync(session, stale, stale);
 
-    const tick = runTick(config, undefined, { startup: true, now });
-    assert.doesNotMatch(tick, new RegExp(`stall ${id}`), tick);
-    assert.equal(readAttemptLedger(config.kilnDir, id), undefined);
-    assert.equal(tree.parent.exitCode, null);
-    killGroup(tree.parentPid);
-    await waitForExit(tree.parent);
+    try {
+      const tick = runTick(config, undefined, { startup: true, now });
+      assert.doesNotMatch(tick, new RegExp(`stall ${id}`), tick);
+      assert.equal(readAttemptLedger(config.kilnDir, id), undefined);
+      assert.equal(tree.parent.exitCode, null);
+    } finally {
+      killGroup(tree.parentPid);
+      await waitForExit(tree.parent);
+    }
   });
 
   it("marks an orphan at startup, cleans only safe worktrees, and a second pass does not retry twice", () => {
