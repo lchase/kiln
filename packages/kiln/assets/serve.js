@@ -218,6 +218,7 @@
     var date = new Date(iso);
     if (!isFinite(date.getTime())) return iso;
     if (mode === "clock" || mode === false) return date.toLocaleTimeString();
+    if (mode === "date") return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
     if (mode === "rel") return relativeTime(iso);
     return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
   }
@@ -318,7 +319,6 @@
   }
 
   var titleDirty = false;
-  var issueDirty = false;
   var sourceKind = "prompt";
   var specPath = "";
   var ticketsDir = "";
@@ -341,6 +341,26 @@
   function intakeRepoPath() {
     var box = document.getElementById("repo-pick");
     return box ? box.getAttribute("data-path") || "" : "";
+  }
+
+  function selectedHasTest() {
+    var box = document.getElementById("repo-pick");
+    if (!box) return true;
+    var flag = box.getAttribute("data-has-test");
+    if (flag === null || flag === "") return true;
+    return flag !== "false";
+  }
+
+  function selectedNeedsTest() {
+    var select = document.getElementById("workflow");
+    if (select && select.options && select.selectedIndex >= 0) {
+      var opt = select.options[select.selectedIndex];
+      return Boolean(opt && opt.getAttribute("data-needs-test") === "true");
+    }
+    var host = document.getElementById("workflow-pick");
+    if (!host) return false;
+    var pressed = host.querySelector('[data-workflow][aria-pressed="true"]');
+    return Boolean(pressed && pressed.getAttribute("data-needs-test") === "true");
   }
 
   function selectedWorkflow() {
@@ -375,13 +395,21 @@
     var prompt = source.kind === "prompt" && !String(source.text || "").trim() ? "Prompt is required." : "";
     var spec = source.kind === "spec" && !source.path ? "Choose a spec file." : "";
     var tickets = source.kind === "tickets" && !source.dir ? "Choose a tickets folder." : "";
-    var jira = source.kind === "jira" && !source.key ? "Enter a Jira key." : "";
+    var jira = source.kind === "jira" && !source.key ? "Enter a Jira issue." : "";
     setFieldError("repo-error", repo ? "" : "Choose a repo.", showFieldError("repo"));
     setFieldError("workflow-error", workflow ? "" : "Choose a workflow.", showFieldError("workflow"));
     setFieldError("prompt-error", prompt, showFieldError("prompt"));
     setFieldError("source-error", spec || tickets, showFieldError("source"));
     setFieldError("jira-error", jira, showFieldError("jira"));
     var blocked = !repo || !workflow || Boolean(prompt || spec || tickets || jira);
+    var warn = document.getElementById("intake-warn");
+    if (warn) {
+      var missingTest = Boolean(repo) && selectedNeedsTest() && !selectedHasTest();
+      warn.hidden = !missingTest;
+      warn.textContent = missingTest
+        ? repo + " has no test command. You can still add this job. It stays blocked until Settings > Repos sets a test command."
+        : "";
+    }
     var submit = document.getElementById("add-submit");
     if (submit) submit.disabled = blocked || sending;
     var preview = document.getElementById("preview-job");
@@ -389,12 +417,29 @@
     return !blocked;
   }
 
+  function testFlag(repo) {
+    if (!repo || repo.hasTest === undefined || repo.hasTest === null || repo.hasTest === "") return "";
+    return repo.hasTest === false || repo.hasTest === "false" || repo.hasTest === "0" || repo.hasTest === 0 ? "0" : "1";
+  }
+
+  function hasTestAttr(repo) {
+    var flag = testFlag(repo);
+    if (!flag) return "";
+    return ' data-has-test="' + (flag === "1" ? "true" : "false") + '"';
+  }
+
+  function applyHasTest(box, repo) {
+    var flag = testFlag(repo);
+    if (!flag) box.removeAttribute("data-has-test");
+    else box.setAttribute("data-has-test", flag === "1" ? "true" : "false");
+  }
+
   function repoListKey(repos) {
     var parts = [];
     for (var i = 0; i < repos.length; i++) {
       var repo = repos[i];
       if (!repo || !repo.name) continue;
-      parts.push(repo.name + "\t" + (repo.path || ""));
+      parts.push(repo.name + "\t" + (repo.path || "") + "\t" + testFlag(repo));
     }
     return parts.join("\n");
   }
@@ -419,7 +464,7 @@
       for (var c = 0; c < items.length; c++) {
         var chip = items[c];
         var pressed = chip.name === value;
-        html += '<button type="button" class="pick" data-repo="' + esc(chip.name) + '" data-path="' + esc(chip.path || "") + '" aria-pressed="' + (pressed ? "true" : "false") + '">' + esc(chip.name) + "</button>";
+        html += '<button type="button" class="pick" data-repo="' + esc(chip.name) + '" data-path="' + esc(chip.path || "") + '"' + hasTestAttr(chip) + ' aria-pressed="' + (pressed ? "true" : "false") + '">' + esc(chip.name) + "</button>";
       }
     }
     if (mode === "select") {
@@ -427,7 +472,7 @@
       html += '<ul class="combo-list" id="repo-pick-list" role="listbox" hidden>';
       for (var o = 0; o < items.length; o++) {
         var opt = items[o];
-        html += '<li role="option" id="repo-opt-' + o + '" data-value="' + esc(opt.name) + '" data-path="' + esc(opt.path || "") + '" aria-selected="' + (opt.name === value ? "true" : "false") + '">' + esc(opt.name) + "</li>";
+        html += '<li role="option" id="repo-opt-' + o + '" data-value="' + esc(opt.name) + '" data-path="' + esc(opt.path || "") + '"' + hasTestAttr(opt) + ' aria-selected="' + (opt.name === value ? "true" : "false") + '">' + esc(opt.name) + "</li>";
       }
       html += '<li class="empty" role="presentation" hidden>No matching repos.</li></ul>';
     }
@@ -435,6 +480,7 @@
     box.setAttribute("data-mode", mode);
     box.setAttribute("data-value", value);
     box.setAttribute("data-path", path);
+    applyHasTest(box, selected);
     box.setAttribute("data-list", key);
     if (mode === "select") {
       box.removeAttribute("role");
@@ -501,7 +547,9 @@
     if (input) {
       input.setAttribute("aria-expanded", "false");
       input.removeAttribute("aria-activedescendant");
-      input.value = box.getAttribute("data-value") || "";
+      var selected = box.querySelector('[role="option"][aria-selected="true"]');
+      var label = selected && selected.getAttribute("data-label");
+      input.value = label || box.getAttribute("data-value") || "";
     }
     box.removeAttribute("data-active");
   }
@@ -516,11 +564,21 @@
     var value = option.getAttribute("data-value") || "";
     box.setAttribute("data-value", value);
     if (option.hasAttribute("data-path")) box.setAttribute("data-path", option.getAttribute("data-path") || "");
+    if (option.hasAttribute("data-has-test")) box.setAttribute("data-has-test", option.getAttribute("data-has-test") || "");
+    else box.removeAttribute("data-has-test");
     var options = box.querySelectorAll("[role='option']");
     for (var i = 0; i < options.length; i++) {
       options[i].setAttribute("aria-selected", options[i] === option ? "true" : "false");
     }
     closeCombo(box);
+    var input = box.querySelector("[role='combobox']");
+    if (input && option.hasAttribute("data-label")) input.value = option.getAttribute("data-label") || "";
+    var tab = option.getAttribute("data-settings-tab");
+    if (tab) {
+      setSettingsTab(tab);
+      return;
+    }
+    if (box.closest && box.closest("#settings-form")) markSettingsDirty();
     syncValidity();
   }
 
@@ -633,10 +691,10 @@
     var issueField = document.getElementById("issue-field");
     var afterField = document.getElementById("after-field");
     var preview = document.getElementById("preview-job");
-    if (titleField) titleField.hidden = sourceKind === "tickets";
-    if (issueField) issueField.hidden = sourceKind === "tickets";
+    if (titleField) titleField.hidden = sourceKind === "tickets" || sourceKind === "jira";
+    if (issueField) issueField.hidden = sourceKind === "tickets" || sourceKind === "jira";
     if (afterField) afterField.hidden = sourceKind === "tickets";
-    if (preview) preview.hidden = sourceKind !== "tickets";
+    if (preview) preview.hidden = sourceKind !== "tickets" && sourceKind !== "jira";
     var pre = document.getElementById("intake-preview");
     if (pre) { pre.hidden = true; pre.textContent = ""; }
     showIntakeError("");
@@ -645,20 +703,8 @@
       var title = document.getElementById("job-title");
       if (promptBox && title) title.value = titleFromPrompt(promptBox.value);
     }
-    syncIssueDefault();
     if (sourceKind === "spec" || sourceKind === "tickets") openBrowser();
     syncValidity();
-  }
-
-  function syncIssueDefault() {
-    var input = document.getElementById("job-issue");
-    if (!input || issueDirty) return;
-    if (sourceKind !== "jira") {
-      input.value = "";
-      return;
-    }
-    var key = document.getElementById("jira-key");
-    input.value = key ? key.value.trim().toUpperCase() : "";
   }
 
   function openIntake() {
@@ -689,11 +735,13 @@
     var source = sourceBody();
     var payload = { repo: repo, workflow: workflow, source: source };
     if (dryRun) payload.dryRun = true;
-    if (sourceKind !== "tickets") {
+    if (sourceKind === "prompt" || sourceKind === "spec") {
       var issue = document.getElementById("job-issue");
       if (issue && issue.value.trim()) payload.issue = issue.value.trim();
       var title = document.getElementById("job-title");
       if (title && titleDirty) payload.title = title.value;
+    }
+    if (sourceKind !== "tickets") {
       var checked = document.querySelectorAll("#after-list input:checked");
       if (checked.length) {
         payload.after = [];
@@ -812,17 +860,19 @@
   var themeApplied = document.documentElement.getAttribute("data-theme") || "kiln";
   var themeQueued = null;
   var themeSaving = false;
+  var triggerRows;
+  var routeRows;
+  var SETTINGS_TABS = ["repos", "global", "triggers", "routes", "jira", "overlay", "appearance", "advanced"];
 
   function setSettingsTab(tab) {
-    var repos = document.getElementById("settings-repos");
-    var globalPane = document.getElementById("settings-global");
-    var appearance = document.getElementById("settings-appearance");
-    if (repos) repos.hidden = tab !== "repos";
-    if (globalPane) globalPane.hidden = tab !== "global";
-    if (appearance) appearance.hidden = tab !== "appearance";
+    if (SETTINGS_TABS.indexOf(tab) === -1) tab = "repos";
+    for (var i = 0; i < SETTINGS_TABS.length; i++) {
+      var pane = document.getElementById("settings-" + SETTINGS_TABS[i]);
+      if (pane) pane.hidden = SETTINGS_TABS[i] !== tab;
+    }
     var buttons = document.querySelectorAll("#settings-form [data-settings-tab]");
-    for (var i = 0; i < buttons.length; i++) {
-      buttons[i].setAttribute("aria-pressed", buttons[i].getAttribute("data-settings-tab") === tab ? "true" : "false");
+    for (var j = 0; j < buttons.length; j++) {
+      buttons[j].setAttribute("aria-pressed", buttons[j].getAttribute("data-settings-tab") === tab ? "true" : "false");
     }
   }
 
@@ -887,6 +937,10 @@
     if (cap) cap.textContent = "Empty means no daily cap. Recorded dollars, local day.";
     if (stall) stall.textContent = "Default " + (settingsDefaults.stallTimeoutMs != null ? settingsDefaults.stallTimeoutMs : 900000) + " (15 minutes). 0 disables stall detection.";
     if (rounds) rounds.textContent = "Default " + (settingsDefaults.maxFixRounds != null ? settingsDefaults.maxFixRounds : 2) + ". Fix rounds before the job needs a person.";
+    var concurrent = document.getElementById("hint-concurrent");
+    var adapterHint = document.getElementById("hint-adapter");
+    if (concurrent) concurrent.textContent = "Default " + (settingsDefaults.maxConcurrent != null ? settingsDefaults.maxConcurrent : 2) + ". Jobs in flight at once. Empty uses that default.";
+    if (adapterHint) adapterHint.textContent = "Default " + (settingsDefaults.adapter || "claude-code") + ".";
     var attemptInput = document.getElementById("max-attempts");
     var stallInput = document.getElementById("stall-timeout");
     var roundInput = document.getElementById("max-fix-rounds");
@@ -909,6 +963,9 @@
     var cap = document.getElementById("daily-dollar-cap");
     if (fingerprint) fingerprint.value = data.maxSameFingerprint != null ? String(data.maxSameFingerprint) : "";
     if (cap) cap.value = data.dailyDollarCap != null ? String(data.dailyDollarCap) : "";
+    var concurrentInput = document.getElementById("max-concurrent");
+    if (concurrentInput) concurrentInput.value = data.maxConcurrent != null ? String(data.maxConcurrent) : "";
+    setPressed("#adapter-mode [data-adapter]", "data-adapter", data.adapter === "mock" ? "mock" : "claude-code");
     setPressed("#sandbox-mode [data-sandbox]", "data-sandbox", data.sandbox && data.sandbox.mode === "docker" ? "docker" : "off");
     var domains = document.getElementById("sandbox-domains");
     if (domains) domains.value = data.sandbox && data.sandbox.allowDomains ? data.sandbox.allowDomains.join("\n") : "";
@@ -1057,6 +1114,380 @@
     return el ? el.value : "";
   }
 
+  function choiceControl(host, options, selected) {
+    if (!host) return;
+    var current = selected || "";
+    var found = false;
+    for (var i = 0; i < options.length; i++) if (options[i].value === current) found = true;
+    if (!found && options[0]) current = options[0].value;
+    host.setAttribute("data-value", current);
+    if (options.length > pickLimit()) {
+      host.className = "combo";
+      host.removeAttribute("role");
+      var html = '<input class="combo-input" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="' + host.id + '-list" placeholder="Search" value="' + esc(choiceLabel(options, current)) + '" autocomplete="off" spellcheck="false">';
+      html += '<ul class="combo-list" id="' + host.id + '-list" role="listbox" hidden>';
+      for (var o = 0; o < options.length; o++) {
+        var opt = options[o];
+        html += '<li role="option" id="' + host.id + "-opt-" + o + '" data-value="' + esc(opt.value) + '" data-label="' + esc(opt.label) + '" aria-selected="' + (opt.value === current ? "true" : "false") + '">' + esc(opt.label) + "</li>";
+      }
+      html += "</ul>";
+      host.innerHTML = html;
+      return;
+    }
+    host.className = "seg";
+    host.setAttribute("role", "group");
+    var buttons = "";
+    for (var c = 0; c < options.length; c++) {
+      var chip = options[c];
+      buttons += '<button type="button" data-choice="' + esc(chip.value) + '" aria-pressed="' + (chip.value === current ? "true" : "false") + '">' + esc(chip.label) + "</button>";
+    }
+    host.innerHTML = buttons;
+  }
+
+  function choiceLabel(options, value) {
+    for (var i = 0; i < options.length; i++) if (options[i].value === value) return options[i].label;
+    return value;
+  }
+
+  function choiceValue(id) {
+    var host = document.getElementById(id);
+    return host ? host.getAttribute("data-value") || "" : "";
+  }
+
+  function repoOptions() {
+    var names = Object.keys(repoDraft).sort();
+    var options = [{ value: "", label: "Any" }];
+    for (var i = 0; i < names.length; i++) options.push({ value: names[i], label: names[i] });
+    return options;
+  }
+
+  function workflowNameList() {
+    var names = [];
+    var buttons = document.querySelectorAll("#workflow-pick [data-workflow]");
+    for (var i = 0; i < buttons.length; i++) names.push(buttons[i].getAttribute("data-workflow") || "");
+    var select = document.getElementById("workflow");
+    if (select && select.options) {
+      for (var o = 0; o < select.options.length; o++) if (select.options[o].value) names.push(select.options[o].value);
+    }
+    var seen = {};
+    var out = [];
+    for (var n = 0; n < names.length; n++) {
+      if (!names[n] || seen[names[n]]) continue;
+      seen[names[n]] = true;
+      out.push(names[n]);
+    }
+    out.sort();
+    return out;
+  }
+
+  function workflowOptions() {
+    var names = workflowNameList();
+    var options = [{ value: "", label: "Any" }];
+    for (var i = 0; i < names.length; i++) options.push({ value: names[i], label: names[i] });
+    return options;
+  }
+
+  function triggerIdOptions() {
+    var options = [];
+    var names = triggerRows ? triggerRows.rows : [];
+    for (var i = 0; i < names.length; i++) {
+      if (names[i] && names[i].id) options.push({ value: names[i].id, label: names[i].id });
+    }
+    if (!options.length) options.push({ value: "", label: "None" });
+    return options;
+  }
+
+  function showTriggerKind(kind) {
+    var blocks = document.querySelectorAll("#trigger-editor [data-for-kind]");
+    for (var i = 0; i < blocks.length; i++) blocks[i].hidden = blocks[i].getAttribute("data-for-kind") !== kind;
+  }
+
+  function writableTrigger(trigger) {
+    var entry = { id: trigger.id, kind: trigger.kind };
+    if (trigger.enabled === false) entry.enabled = false;
+    ["cron", "every", "repo", "jql", "label", "status"].forEach(function (key) {
+      if (trigger[key]) entry[key] = String(trigger[key]).trim();
+    });
+    var maxNew = optionalInt(trigger.maxNew);
+    var maxQueued = optionalInt(trigger.maxQueued);
+    if (maxNew !== undefined) entry.maxNew = maxNew;
+    if (maxQueued !== undefined) entry.maxQueued = maxQueued;
+    return entry;
+  }
+
+  function writableRoute(route) {
+    var entry = {
+      id: route.id,
+      trigger: route.trigger,
+      action: route.action === "attach" ? "attach" : "create",
+    };
+    if (route.workflow) entry.workflow = route.workflow;
+    if (route.repo) entry.repo = route.repo;
+    return entry;
+  }
+
+  function bindRows(spec) {
+    var rows = [];
+    var editing = null;
+    function render() {
+      var host = document.getElementById(spec.list);
+      if (!host) return;
+      if (!rows.length && !editing) {
+        host.innerHTML = '<p class="empty">' + spec.empty + "</p>";
+        return;
+      }
+      var html = "";
+      for (var i = 0; i < rows.length; i++) {
+        if (editing && editing.index === i) continue;
+        var row = rows[i];
+        html += '<div class="repo-row"><div><div class="num">' + esc(row.id || "Untitled") + '</div><div class="meta">' + esc(spec.summary(row)) + '</div></div><div class="d-actions"><button type="button" data-row-edit="' + spec.name + ":" + i + '">Edit</button>';
+        if (!row.builtin) html += '<button type="button" data-row-remove="' + spec.name + ":" + i + '">Delete</button>';
+        html += "</div></div>";
+      }
+      host.innerHTML = html;
+    }
+    function flush() {
+      if (!editing) return true;
+      var row = spec.read(editing);
+      showSlot(spec.idError, "");
+      if (!row.id) {
+        showSlot(spec.idError, "Id is required.");
+        return false;
+      }
+      if (spec.invalid && spec.invalid(row)) return false;
+      for (var i = 0; i < rows.length; i++) {
+        if (i !== editing.index && rows[i].id === row.id) {
+          showSlot(spec.idError, "A " + spec.noun + " named " + row.id + " is already in the list.");
+          return false;
+        }
+      }
+      if (editing.index == null) rows.push(row);
+      else rows[editing.index] = row;
+      editing.index = editing.index == null ? rows.length - 1 : editing.index;
+      return true;
+    }
+    function open(index, row) {
+      editing = { index: index, builtin: Boolean(row.builtin) };
+      spec.fill(row);
+      var editor = document.getElementById(spec.editor);
+      if (editor) editor.hidden = false;
+      render();
+      var idInput = document.getElementById(spec.idInput);
+      if (idInput && idInput.focus && !row.builtin) idInput.focus();
+    }
+    function close() {
+      editing = null;
+      var editor = document.getElementById(spec.editor);
+      if (editor) editor.hidden = true;
+      render();
+    }
+    return {
+      rows: function () { return rows; },
+      set: function (value) { rows = value; },
+      flush: flush,
+      close: close,
+      editing: function () { return editing; },
+      edit: function (index) {
+        if (!rows[index]) return;
+        if (editing && editing.index !== index && !flush()) return;
+        if (editing && editing.index === index) return;
+        open(index, rows[index]);
+      },
+      add: function (blank) {
+        if (editing && !flush()) return;
+        open(null, blank);
+      },
+      remove: function (index) {
+        var row = rows[index];
+        if (!row || row.builtin) return;
+        if (!window.confirm("Delete " + spec.noun + " " + (row.id || "untitled") + "?")) return;
+        if (editing && editing.index === index) close();
+        else if (editing && !flush()) return;
+        rows.splice(index, 1);
+        if (editing && editing.index != null && editing.index > index) editing.index -= 1;
+        markSettingsDirty();
+        render();
+      },
+    };
+  }
+
+  triggerRows = bindRows({
+    name: "triggers",
+    list: "trigger-list",
+    editor: "trigger-editor",
+    idInput: "trigger-id",
+    idError: "trigger.id",
+    noun: "trigger",
+    empty: "No triggers.",
+    read: readTriggerEditor,
+    fill: fillTriggerEditor,
+    summary: function (row) {
+      var bits = [row.kind, row.enabled === false ? "off" : "on"];
+      if (row.cron) bits.push(row.cron);
+      if (row.every) bits.push(row.every);
+      if (row.repo) bits.push(row.repo);
+      if (row.builtin) bits.push("built in");
+      return bits.join(" · ");
+    },
+  });
+
+  routeRows = bindRows({
+    name: "routes",
+    list: "route-list",
+    editor: "route-editor",
+    idInput: "route-id",
+    idError: "route.id",
+    noun: "route",
+    empty: "No routes.",
+    read: readRouteEditor,
+    fill: fillRouteEditor,
+    invalid: function (row) {
+      if (row.trigger) return false;
+      showSlot("route.id", "Trigger is required.");
+      return true;
+    },
+    summary: function (row) {
+      var bits = [row.action || "create", row.trigger || ""];
+      if (row.workflow) bits.push(row.workflow);
+      if (row.repo) bits.push(row.repo);
+      if (row.builtin) bits.push("built in");
+      return bits.join(" · ");
+    },
+  });
+
+  function fillTriggerEditor(trigger) {
+    var idInput = document.getElementById("trigger-id");
+    if (idInput) {
+      idInput.value = trigger.id || "";
+      idInput.readOnly = Boolean(trigger.builtin);
+    }
+    setPressed("#trigger-enabled [data-enabled]", "data-enabled", trigger.enabled === false ? "false" : "true");
+    var kind = trigger.kind || "schedule";
+    setPressed("#trigger-kind [data-kind]", "data-kind", kind);
+    var kindButtons = document.querySelectorAll("#trigger-kind [data-kind]");
+    for (var i = 0; i < kindButtons.length; i++) kindButtons[i].disabled = Boolean(trigger.builtin);
+    showTriggerKind(kind);
+    setInput("trigger-cron", trigger.cron);
+    setInput("trigger-label", kind === "schedule" ? trigger.label : "");
+    setInput("trigger-max-new", trigger.maxNew);
+    setInput("trigger-max-queued", trigger.maxQueued);
+    setInput("trigger-every", trigger.every);
+    setInput("trigger-jql", trigger.jql);
+    setInput("trigger-jira-label", kind === "jira" ? trigger.label : "");
+    setInput("trigger-status", trigger.status);
+    choiceControl(document.getElementById("trigger-repo"), repoOptions(), trigger.repo || "");
+  }
+
+  function setInput(id, value) {
+    var el = document.getElementById(id);
+    if (el) el.value = value != null && value !== "" ? String(value) : "";
+  }
+
+  function readTriggerEditor() {
+    var kind = selectedAttr("#trigger-kind [data-kind]", "data-kind", "schedule");
+    var trigger = {
+      id: inputValue("trigger-id").trim(),
+      kind: kind,
+      enabled: selectedAttr("#trigger-enabled [data-enabled]", "data-enabled", "true") !== "false",
+      builtin: Boolean(triggerRows && triggerRows.editing() && triggerRows.editing().builtin),
+    };
+    if (kind === "schedule") {
+      trigger.cron = inputValue("trigger-cron").trim();
+      trigger.label = inputValue("trigger-label").trim();
+      trigger.maxNew = inputValue("trigger-max-new").trim();
+      trigger.maxQueued = inputValue("trigger-max-queued").trim();
+    } else if (kind === "jira") {
+      trigger.every = inputValue("trigger-every").trim();
+      trigger.jql = inputValue("trigger-jql").trim();
+      trigger.label = inputValue("trigger-jira-label").trim();
+      trigger.status = inputValue("trigger-status").trim();
+      trigger.repo = choiceValue("trigger-repo");
+    }
+    return trigger;
+  }
+
+  function fillRouteEditor(route) {
+    var idInput = document.getElementById("route-id");
+    if (idInput) {
+      idInput.value = route.id || "";
+      idInput.readOnly = Boolean(route.builtin);
+    }
+    setPressed("#route-action [data-action]", "data-action", route.action === "attach" ? "attach" : "create");
+    choiceControl(document.getElementById("route-trigger"), triggerIdOptions(), route.trigger || "");
+    choiceControl(document.getElementById("route-workflow"), workflowOptions(), route.workflow || "");
+    choiceControl(document.getElementById("route-repo"), repoOptions(), route.repo || "");
+  }
+
+  function readRouteEditor() {
+    return {
+      id: inputValue("route-id").trim(),
+      trigger: choiceValue("route-trigger"),
+      action: selectedAttr("#route-action [data-action]", "data-action", "create"),
+      workflow: choiceValue("route-workflow"),
+      repo: choiceValue("route-repo"),
+      builtin: Boolean(routeRows && routeRows.editing() && routeRows.editing().builtin),
+    };
+  }
+
+  function fillJira(data) {
+    var jira = data.jira || {};
+    var base = document.getElementById("jira-base");
+    var email = document.getElementById("jira-email");
+    var acceptance = document.getElementById("jira-acceptance");
+    var token = document.getElementById("jira-token");
+    if (base) base.value = jira.baseUrl || "";
+    if (email) email.value = jira.email || "";
+    if (acceptance) acceptance.value = jira.acceptanceField || "";
+    if (token) token.textContent = jira.token || "not set";
+  }
+
+  function fillOverlay(data) {
+    var overlay = data.overlay || {};
+    var workflows = document.getElementById("overlay-workflows");
+    var prompts = document.getElementById("overlay-prompts");
+    var skills = document.getElementById("overlay-skills");
+    var paths = document.getElementById("overlay-skill-paths");
+    if (workflows) workflows.value = overlay.workflows || "";
+    if (prompts) prompts.value = overlay.prompts || "";
+    if (skills) skills.value = overlay.skills || "";
+    if (paths) paths.value = overlay.skillPaths ? overlay.skillPaths.join("\n") : "";
+  }
+
+  function fillAdvanced(file) {
+    var box = document.getElementById("settings-json");
+    if (box) box.value = JSON.stringify(file || {}, null, 2);
+  }
+
+  function currentSettingsTab() {
+    var pressed = document.querySelector('#settings-form [data-settings-tab][aria-pressed="true"]');
+    return pressed ? pressed.getAttribute("data-settings-tab") || "repos" : "repos";
+  }
+
+  function routeSettingsError(key, message) {
+    var rules = [
+      ["maxConcurrent", "global", "maxConcurrent"],
+      ["adapter", "global", "adapter"],
+      ["triggers.", "triggers", "trigger.form"],
+      ["routes.", "routes", "route.form"],
+      ["jira.", "jira", ""],
+      ["overlay.", "overlay", ""],
+      ["file", "advanced", "file"],
+    ];
+    for (var i = 0; i < rules.length; i++) {
+      var rule = rules[i];
+      var prefix = rule[0].charAt(rule[0].length - 1) === ".";
+      var match = prefix ? key.indexOf(rule[0]) === 0 : key === rule[0] || (rule[0] === "file" && key.indexOf("file.") === 0);
+      if (!match) continue;
+      setSettingsTab(rule[1]);
+      var index = new RegExp("^" + rule[1] + "\\.(\\d+)\\.").exec(key);
+      if (index && rule[1] === "triggers") triggerRows.edit(Number(index[1]));
+      if (index && rule[1] === "routes") routeRows.edit(Number(index[1]));
+      showSlot(rule[2] || key, message);
+      return true;
+    }
+    return false;
+  }
+
   function settingsPayload() {
     var repos = {};
     var names = Object.keys(repoDraft);
@@ -1095,16 +1526,59 @@
     var themeButton = document.querySelector('#theme-pick [aria-pressed="true"]');
     var themeId = themeButton ? themeButton.getAttribute("data-theme-choice") : "";
     if (themeId) body.board = { theme: themeId };
+    var concurrent = optionalInt(inputValue("max-concurrent"));
+    body.maxConcurrent = concurrent === undefined ? null : concurrent;
+    var adapter = selectedAttr("#adapter-mode [data-adapter]", "data-adapter", "claude-code");
+    if (adapter === "mock" || (settingsDoc && settingsDoc.adapter)) body.adapter = adapter;
+    body.triggers = triggerRows.rows().map(writableTrigger);
+    body.routes = routeRows.rows().map(writableRoute);
+    body.jira = {
+      baseUrl: inputValue("jira-base").trim(),
+      email: inputValue("jira-email").trim(),
+      acceptanceField: inputValue("jira-acceptance").trim(),
+    };
+    body.overlay = {
+      workflows: inputValue("overlay-workflows").trim(),
+      prompts: inputValue("overlay-prompts").trim(),
+      skills: inputValue("overlay-skills").trim(),
+      skillPaths: inputValue("overlay-skill-paths").split(/\n/).map(function (line) { return line.trim(); }).filter(Boolean),
+    };
     return body;
   }
 
   function preservedSettings(data) {
     var body = { revision: data.revision, repos: data.repos || {} };
-    ["stallTimeoutMs", "maxAttempts", "maxFixRounds", "maxSameFingerprint", "dailyDollarCap"].forEach(function (key) {
+    ["stallTimeoutMs", "maxAttempts", "maxFixRounds", "maxSameFingerprint", "dailyDollarCap", "maxConcurrent"].forEach(function (key) {
       if (data[key] !== undefined && data[key] !== null) body[key] = data[key];
     });
+    if (data.adapter) body.adapter = data.adapter;
     if (data.sandbox) body.sandbox = data.sandbox;
     return body;
+  }
+
+  function safePaint(value) {
+    var color = String(value || "").trim();
+    if (!color || /["'<>\\]/.test(color)) return "";
+    return color;
+  }
+
+  function paintFavicon() {
+    if (typeof getComputedStyle !== "function") return;
+    var link = document.querySelector('link[rel="icon"]');
+    if (!link || !link.getAttribute || !link.setAttribute) return;
+    var styles = getComputedStyle(document.documentElement);
+    if (!styles || !styles.getPropertyValue) return;
+    var fill = safePaint(styles.getPropertyValue("--primary"));
+    var stroke = safePaint(styles.getPropertyValue("--on-primary"));
+    if (!fill || !stroke) return;
+    var href = link.getAttribute("href") || "";
+    var prefix = "data:image/svg+xml,";
+    if (href.indexOf(prefix) !== 0) return;
+    var svg = decodeURIComponent(href.slice(prefix.length));
+    var next = svg
+      .replace(/(<rect\b[^>]*\bfill=")[^"]+(")/, "$1" + fill + "$2")
+      .replace(/(stroke=")[^"]+(")/, "$1" + stroke + "$2");
+    if (next !== svg) link.setAttribute("href", prefix + encodeURIComponent(next));
   }
 
   function chooseTheme(id) {
@@ -1112,6 +1586,7 @@
     settingsEpoch += 1;
     document.documentElement.setAttribute("data-theme", id);
     markTheme(id);
+    paintFavicon();
     themeQueued = id;
     if (!themeSaving) pumpTheme();
   }
@@ -1167,6 +1642,7 @@
   function restoreTheme() {
     document.documentElement.setAttribute("data-theme", themeApplied);
     markTheme(themeApplied);
+    paintFavicon();
   }
 
   function bodyCsrf() {
@@ -1203,6 +1679,13 @@
         showSlot("board.theme", message);
         continue;
       }
+      if (key === "maxConcurrent" || key === "adapter") {
+        setSettingsTab("global");
+        showSlot(key, message);
+        continue;
+      }
+      var routed = routeSettingsError(key, message);
+      if (routed) continue;
       if (key === "name" || key.indexOf("repos.") === 0) {
         setSettingsTab("repos");
         showSlot("name", message);
@@ -1222,6 +1705,7 @@
       themeApplied = themeId;
       document.documentElement.setAttribute("data-theme", themeId);
       markTheme(themeId);
+      paintFavicon();
     }
     if (editing && editing.original && Object.prototype.hasOwnProperty.call(repoDraft, editing.original)) {
       fillEditor(editing.original, repoDraft[editing.original]);
@@ -1229,6 +1713,49 @@
       closeEditor();
     }
     renderRepoList();
+    triggerRows.set((data.triggers || []).map(function (trigger) {
+      return {
+        id: trigger.id,
+        kind: trigger.kind,
+        enabled: trigger.enabled !== false,
+        builtin: Boolean(trigger.builtin),
+        cron: trigger.cron || "",
+        every: trigger.every || "",
+        repo: trigger.repo || "",
+        jql: trigger.jql || "",
+        label: trigger.label || "",
+        status: trigger.status || "",
+        maxNew: trigger.maxNew != null ? String(trigger.maxNew) : "",
+        maxQueued: trigger.maxQueued != null ? String(trigger.maxQueued) : "",
+      };
+    }));
+    routeRows.set((data.routes || []).map(function (route) {
+      return {
+        id: route.id,
+        trigger: route.trigger,
+        action: route.action === "attach" ? "attach" : "create",
+        workflow: route.workflow || "",
+        repo: route.repo || "",
+        builtin: Boolean(route.builtin),
+      };
+    }));
+    triggerRows.close();
+    routeRows.close();
+    fillJira(data);
+    fillOverlay(data);
+    fillAdvanced(data.file);
+  }
+
+  function openQueriedRepo() {
+    if (body.getAttribute("data-section") !== "settings") return;
+    var params;
+    try { params = new URLSearchParams(window.location.search); } catch (err) { return; }
+    var repo = params.get("repo") || "";
+    if (!repo || !Object.prototype.hasOwnProperty.call(repoDraft, repo)) return;
+    startEdit(repo);
+    if (params.get("field") !== "test") return;
+    var input = document.getElementById("repo-test");
+    if (input && input.focus) input.focus();
   }
 
   function loadSettings() {
@@ -1251,60 +1778,12 @@
         if (editor) editor.hidden = true;
         applySettingsDocument(result.data);
         setSettingsTab("repos");
+        openQueriedRepo();
       })
       .catch(function () { showSettingsError("Could not load settings."); });
   }
 
-  function toggleTrigger(button) {
-    var id = button.getAttribute("data-trigger-toggle");
-    var enabled = button.getAttribute("data-enabled") !== "true";
-    var error = document.getElementById("trigger-error");
-    if (error) error.hidden = true;
-    button.disabled = true;
-    fetch("/api/settings", { cache: "no-store", headers: { Accept: "application/json" } })
-      .then(function (response) { return response.json().then(function (data) { return { ok: response.ok, data: data }; }); })
-      .then(function (result) {
-        if (!result.ok) throw new Error((result.data && result.data.error) || "Could not load settings.");
-        var data = result.data;
-        var toggles = [];
-        var buttons = document.querySelectorAll("[data-trigger-toggle]");
-        for (var i = 0; i < buttons.length; i++) {
-          var buttonId = buttons[i].getAttribute("data-trigger-toggle");
-          var on = buttons[i].getAttribute("data-enabled") === "true";
-          if (buttonId === id) on = enabled;
-          toggles.push({ id: buttonId, enabled: on });
-        }
-        var body = preservedSettings(data);
-        body.triggers = toggles;
-        return fetch("/api/settings", {
-          method: "PUT",
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "application/json",
-            "X-Kiln-CSRF": document.body.getAttribute("data-csrf") || "",
-          },
-          body: JSON.stringify(body),
-        });
-      })
-      .then(function (response) { return response.json().then(function (data) { return { ok: response.ok, data: data }; }); })
-      .then(function (result) {
-        if (!result.ok) throw new Error((result.data && result.data.error) || "Could not save settings.");
-        location.reload();
-      })
-      .catch(function (err) {
-        button.disabled = false;
-        if (error) {
-          error.hidden = false;
-          error.textContent = err && err.message ? err.message : "Could not update the trigger.";
-        }
-      });
-  }
-
-  function saveSettings() {
-    if (settingsSaving) return;
-    if (!flushEditor()) return;
-    clearSettingsErrors();
-    var payload = settingsPayload();
+  function putDocument(payload) {
     settingsSaving = true;
     fetch("/api/settings", {
       method: "PUT",
@@ -1331,7 +1810,9 @@
           showSettingsError((result.data && result.data.error) || "Could not save settings.");
           return;
         }
+        var tab = currentSettingsTab();
         applySettingsDocument(result.data);
+        setSettingsTab(tab);
         var saved = document.getElementById("settings-saved");
         if (saved) {
           saved.hidden = false;
@@ -1342,6 +1823,36 @@
         settingsSaving = false;
         showSettingsError("Could not save settings.");
       });
+  }
+
+  function saveAdvanced() {
+    var box = document.getElementById("settings-json");
+    var text = box ? box.value : "";
+    var parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (err) {
+      showSlot("file", "Invalid JSON. Nothing was written.");
+      showSettingsError("Invalid JSON. Nothing was written.");
+      return;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      showSlot("file", "Config must be a JSON object.");
+      showSettingsError("Config must be a JSON object.");
+      return;
+    }
+    putDocument({ revision: settingsDoc ? settingsDoc.revision : "", file: parsed });
+  }
+
+  function saveSettings() {
+    if (settingsSaving) return;
+    clearSettingsErrors();
+    if (currentSettingsTab() === "advanced") {
+      saveAdvanced();
+      return;
+    }
+    if (!flushEditor() || !triggerRows.flush() || !routeRows.flush()) return;
+    putDocument(settingsPayload());
   }
 
   function renderRepoListing(data) {
@@ -1411,11 +1922,6 @@
       return;
     }
     if (!target.closest(".combo")) closeCombos();
-    var triggerToggle = target.closest("[data-trigger-toggle]");
-    if (triggerToggle) {
-      toggleTrigger(triggerToggle);
-      return;
-    }
     var settingsControl = target.closest("#open-settings");
     if (settingsControl) {
       if (settingsControl.tagName !== "A") openSettings();
@@ -1447,6 +1953,8 @@
       if (repoBox) {
         repoBox.setAttribute("data-value", pick.getAttribute("data-repo") || "");
         repoBox.setAttribute("data-path", pick.getAttribute("data-path") || "");
+        if (pick.hasAttribute("data-has-test")) repoBox.setAttribute("data-has-test", pick.getAttribute("data-has-test") || "");
+        else repoBox.removeAttribute("data-has-test");
       }
       syncValidity();
       return;
@@ -1456,9 +1964,40 @@
       chooseTheme(themeChoice.getAttribute("data-theme-choice") || "");
       return;
     }
-    var settingsTab = target.closest("#settings-form [data-settings-tab]");
-    if (settingsTab) {
-      setSettingsTab(settingsTab.getAttribute("data-settings-tab") || "repos");
+    var settingsChoice = target.closest("#settings-form [data-choice]");
+    if (settingsChoice) {
+      var choiceHost = settingsChoice.parentElement;
+      if (choiceHost && choiceHost.id) {
+        setPressed("#" + choiceHost.id + " [data-choice]", "data-choice", settingsChoice.getAttribute("data-choice") || "");
+        choiceHost.setAttribute("data-value", settingsChoice.getAttribute("data-choice") || "");
+        markSettingsDirty();
+      }
+      return;
+    }
+    var kindBtn = target.closest("#trigger-kind [data-kind]");
+    if (kindBtn) {
+      var kind = kindBtn.getAttribute("data-kind") || "schedule";
+      setPressed("#trigger-kind [data-kind]", "data-kind", kind);
+      showTriggerKind(kind);
+      markSettingsDirty();
+      return;
+    }
+    var enabledBtn = target.closest("#trigger-enabled [data-enabled]");
+    if (enabledBtn) {
+      setPressed("#trigger-enabled [data-enabled]", "data-enabled", enabledBtn.getAttribute("data-enabled") || "true");
+      markSettingsDirty();
+      return;
+    }
+    var actionBtn = target.closest("#route-action [data-action]");
+    if (actionBtn) {
+      setPressed("#route-action [data-action]", "data-action", actionBtn.getAttribute("data-action") || "create");
+      markSettingsDirty();
+      return;
+    }
+    var adapterBtn = target.closest("#adapter-mode [data-adapter]");
+    if (adapterBtn) {
+      setPressed("#adapter-mode [data-adapter]", "data-adapter", adapterBtn.getAttribute("data-adapter") || "claude-code");
+      markSettingsDirty();
       return;
     }
     var deliverBtn = target.closest("#repo-deliver [data-deliver]");
@@ -1494,6 +2033,37 @@
     var removeBtn = target.closest("[data-repo-remove]");
     if (removeBtn) {
       removeRepo(removeBtn.getAttribute("data-repo-remove") || "");
+      return;
+    }
+    var rowAdd = target.closest("[data-row-add]");
+    if (rowAdd) {
+      var added = rowAdd.getAttribute("data-row-add") === "routes" ? routeRows : triggerRows;
+      added.add(rowAdd.getAttribute("data-row-add") === "routes"
+        ? { id: "", trigger: "", action: "create", workflow: "", repo: "" }
+        : { id: "", kind: "schedule", enabled: true, cron: "" });
+      return;
+    }
+    var rowDone = target.closest("[data-row-done]");
+    if (rowDone) {
+      var done = rowDone.getAttribute("data-row-done") === "routes" ? routeRows : triggerRows;
+      if (done.flush()) done.close();
+      return;
+    }
+    var rowEdit = target.closest("[data-row-edit]");
+    if (rowEdit) {
+      var editParts = (rowEdit.getAttribute("data-row-edit") || "").split(":");
+      (editParts[0] === "routes" ? routeRows : triggerRows).edit(Number(editParts[1]));
+      return;
+    }
+    var rowRemove = target.closest("[data-row-remove]");
+    if (rowRemove) {
+      var removeParts = (rowRemove.getAttribute("data-row-remove") || "").split(":");
+      (removeParts[0] === "routes" ? routeRows : triggerRows).remove(Number(removeParts[1]));
+      return;
+    }
+    var settingsTab = target.closest("#settings-form [data-settings-tab]");
+    if (settingsTab) {
+      setSettingsTab(settingsTab.getAttribute("data-settings-tab") || "repos");
       return;
     }
     var repoFs = target.closest("#repo-browser .fs-item, #repo-browser .fs-up, #repo-browser .fs-use");
@@ -1738,13 +2308,8 @@
   }
   var titleInput = document.getElementById("job-title");
   if (titleInput) titleInput.addEventListener("input", function () { titleDirty = true; });
-  var issueInput = document.getElementById("job-issue");
-  if (issueInput) issueInput.addEventListener("input", function () { issueDirty = true; });
   var jiraKey = document.getElementById("jira-key");
-  if (jiraKey) jiraKey.addEventListener("input", function () {
-    syncIssueDefault();
-    syncValidity();
-  });
+  if (jiraKey) jiraKey.addEventListener("input", function () { syncValidity(); });
   document.addEventListener("input", function (event) {
     var field = event.target;
     if (!field || !field.getAttribute) return;
@@ -1873,4 +2438,190 @@
   paintLiveness();
   poll();
   setInterval(poll, 3000);
+  startLive();
+
+  function startLive() {
+    var root = document.getElementById("live");
+    var feed = document.getElementById("live-feed");
+    if (!root || !feed) return;
+    var jobId = body.getAttribute("data-job") || "";
+    if (!jobId) return;
+    var cursor = root.getAttribute("data-cursor") || "";
+    var running = root.getAttribute("data-running") === "true";
+    var stick = running;
+    var ignoreScroll = true;
+    var timer = 0;
+    var note = document.getElementById("live-note");
+    var raw = document.getElementById("live-raw");
+    var toggle = document.getElementById("live-raw-toggle");
+    var error = document.getElementById("live-error");
+    var phases = {
+      spec: "Spec", build: "Build", verify: "Verify", security: "Security", ux: "UX", ui: "UI",
+      code: "Code", approver: "Approve", approve: "Approve", land: "Land", explore: "Explore",
+      draft: "Draft", fix: "Fix",
+    };
+
+    function phaseLabel(id) {
+      if (phases[id]) return phases[id];
+      return String(id || "Phase").replace(/[-_]/g, " ").replace(/\b\w/g, function (ch) { return ch.toUpperCase(); });
+    }
+
+    function follow() {
+      if (!stick) return;
+      var el = document.scrollingElement || document.documentElement;
+      el.scrollTop = el.scrollHeight;
+    }
+
+    window.addEventListener("scroll", function () {
+      if (ignoreScroll) return;
+      var el = document.scrollingElement || document.documentElement;
+      stick = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+    });
+
+    feed.addEventListener("click", function (event) {
+      var button = event.target && event.target.closest ? event.target.closest("button.live-summary") : null;
+      if (!button) return;
+      var open = button.getAttribute("aria-expanded") === "true";
+      button.setAttribute("aria-expanded", open ? "false" : "true");
+      button.textContent = open ? button.getAttribute("data-summary") || "" : button.getAttribute("data-detail") || "";
+    });
+
+    if (toggle && raw) {
+      toggle.addEventListener("click", function () {
+        var on = toggle.getAttribute("aria-pressed") !== "true";
+        toggle.setAttribute("aria-pressed", on ? "true" : "false");
+        raw.hidden = !on;
+        feed.hidden = on;
+        if (on && stick) follow();
+      });
+    }
+
+    function timeEl(iso, mode) {
+      var node = document.createElement("time");
+      node.setAttribute("datetime", iso);
+      node.setAttribute("data-time", mode);
+      node.textContent = iso;
+      return node;
+    }
+
+    function renderEvent(event) {
+      var li = document.createElement("li");
+      li.className = "live-event " + event.kind;
+      li.setAttribute("data-kind", event.kind);
+      li.setAttribute("data-summary", event.summary);
+      li.appendChild(timeEl(event.at, "clock"));
+      if (event.detail) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "live-summary";
+        button.setAttribute("aria-expanded", "false");
+        button.setAttribute("data-summary", event.summary);
+        button.setAttribute("data-detail", event.detail);
+        button.textContent = event.summary;
+        li.appendChild(button);
+      } else {
+        var span = document.createElement("span");
+        span.className = "live-summary";
+        span.textContent = event.summary;
+        li.appendChild(span);
+      }
+      localizeTimes(li);
+      return li;
+    }
+
+    function place(event) {
+      var empty = feed.querySelector(".empty");
+      if (empty) empty.remove();
+      if (event.kind === "command" || event.kind === "edit") {
+        var items = feed.querySelectorAll(".live-event");
+        for (var i = items.length - 1; i >= 0; i--) {
+          if (items[i].getAttribute("data-kind") !== event.kind) continue;
+          var prev = items[i].getAttribute("data-summary") || "";
+          if (event.summary.indexOf(prev) === 0 && prev) {
+            if (event.summary !== prev) items[i].replaceWith(renderEvent(event));
+            return;
+          }
+          break;
+        }
+      }
+      var blocks = feed.querySelectorAll(".live-phase");
+      var block = blocks.length ? blocks[blocks.length - 1] : null;
+      if (!block || block.getAttribute("data-phase") !== event.phase) {
+        block = document.createElement("section");
+        block.className = "live-phase";
+        block.setAttribute("data-phase", event.phase);
+        var heading = document.createElement("h3");
+        heading.appendChild(document.createTextNode(phaseLabel(event.phase) + " "));
+        heading.appendChild(timeEl(event.at, "date"));
+        var list = document.createElement("ol");
+        list.className = "live-events";
+        block.appendChild(heading);
+        block.appendChild(list);
+        feed.appendChild(block);
+      }
+      var listNode = block.querySelector(".live-events");
+      if (listNode) listNode.appendChild(renderEvent(event));
+    }
+
+    function apply(data) {
+      if (error) error.hidden = true;
+      var events = data && data.events ? data.events : [];
+      var kinds = { message: 1, tool: 1, edit: 1, command: 1, result: 1, error: 1 };
+      for (var i = 0; i < events.length; i++) {
+        var event = events[i];
+        if (!event || !kinds[event.kind] || typeof event.summary !== "string" || typeof event.at !== "string") continue;
+        place(event);
+      }
+      if (typeof data.cursor === "string") {
+        cursor = data.cursor;
+        root.setAttribute("data-cursor", cursor);
+      }
+      if (raw && typeof data.raw === "string") raw.textContent = data.raw;
+      running = data.running === true;
+      root.setAttribute("data-running", running ? "true" : "false");
+      if (note) {
+        if (running && data.phase) note.textContent = "Watching " + phaseLabel(data.phase);
+        else if (running) note.textContent = "Watching this run";
+        else note.textContent = "Last session";
+      }
+      follow();
+      if (!running && timer) {
+        clearInterval(timer);
+        timer = 0;
+      }
+    }
+
+    function pull() {
+      if (document.visibilityState === "hidden") return;
+      var query = cursor ? "?after=" + encodeURIComponent(cursor) : "";
+      fetch("/api/jobs/" + encodeURIComponent(jobId) + "/activity" + query, {
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      })
+        .then(function (response) {
+          if (!response.ok) throw new Error("status");
+          return response.json();
+        })
+        .then(apply)
+        .catch(function () {
+          if (!error) return;
+          error.hidden = false;
+          error.textContent = "Could not refresh activity.";
+        });
+    }
+
+    if (running) {
+      requestAnimationFrame(function () {
+        follow();
+        requestAnimationFrame(function () { ignoreScroll = false; });
+      });
+      pull();
+      timer = setInterval(pull, 2000);
+      document.addEventListener("visibilitychange", function () {
+        if (document.visibilityState === "visible" && running) pull();
+      });
+    } else {
+      ignoreScroll = false;
+    }
+  }
 })();

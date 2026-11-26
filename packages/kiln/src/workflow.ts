@@ -219,6 +219,14 @@ export function workflowNeedsTestCommand(workflowYaml: string): boolean {
   return /\bKILN_TEST\b/.test(workflowYaml) || workflowYaml.includes("KILN_VERIFY_WRAPPER");
 }
 
+/** Shipped and local workflow names whose verify step runs the repo test command. */
+export function workflowNamesNeedingTest(workflowsDir?: string): string[] {
+  return listWorkflowNames(workflowsDir).filter((name) => {
+    const yaml = readFileSync(assertWorkflowName(name, workflowsDir), "utf8");
+    return workflowNeedsTestCommand(yaml);
+  });
+}
+
 function declaredInputProperties(yaml: string): string[] {
   const at = yaml.indexOf("\ninputSchema:");
   const start = at >= 0 ? at : yaml.startsWith("inputSchema:") ? 0 : -1;

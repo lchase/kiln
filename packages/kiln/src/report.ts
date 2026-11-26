@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { newestActivityAt } from "./activity.js";
 import { AUTH_FAILED_LINE } from "./auth.js";
+import { launchBlockLabel, type LaunchBlock } from "./events.js";
 import { readBoardFiles, readReviewRounds, type BoardFile, type BoardReviewRound } from "./board.js";
 import { feedbackRoundText, type FeedbackRound } from "./feedback.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
@@ -27,6 +29,8 @@ export interface LaunchReport {
   retry?: boolean;
   /** A pull-request fix. The line in the tick report says `fix`, not `launch`. */
   kind?: "fix";
+  /** Config refused the launch. The line says `blocked`. Not a failure. */
+  blocked?: boolean;
 }
 
 export interface DeliverReport {
@@ -213,6 +217,8 @@ export interface StatusJobView {
   reviewUrl?: string;
   launchFailed: boolean;
   launchError?: string;
+  /** Set while a config precondition is refusing launch. The state stays `queued`. */
+  launchBlock?: LaunchBlock;
   /** Recorded attempts. `0` when the job has no attempt ledger. */
   attemptCount: number;
   /** Configured budget. The board prints `attempt N/M`. */
@@ -244,9 +250,10 @@ export interface StatusJobView {
   /**
    * Latest activity stall detection uses: the later of the run journal
    * (event time or journal mtime, folded with the log mtime) and the launch
-   * log mtime. ISO. Omitted when neither exists.
+   * log mtime. ISO. Omitted when neither exists. `lastActivityAt` is a
+   * different clock: the newest session activity event.
    */
-  lastActivityAt?: string;
+  stallActivityAt?: string;
   /** Job file `createdAt`. */
   createdAt?: string;
   /** Yak `run.started` time. */
@@ -255,6 +262,8 @@ export interface StatusJobView {
   finishedAt?: string;
   /** Last lines of the launch log. */
   logTail?: string;
+  /** Time of the newest session activity event. Absent until a phase writes output. */
+  lastActivityAt?: string;
   /** Worktree diff stat, or the build summary when the tree is clean. */
   diffSummary?: string;
   /** Latest open step failure, from a `step.failed` event. */
@@ -320,6 +329,7 @@ export function statusDetails(job: StatusJobView): string[] {
   }
   if (job.state === "failed" && job.launchFailed && job.logPath) lines.push(`log ${job.logPath}`);
   if (job.state === "failed" && job.launchError) lines.push(job.launchError);
+  if (job.launchBlock) lines.push(launchBlockLabel(job.launchBlock));
   if (job.sandboxError && (job.state === "failed" || job.state === "dead" || job.state === "needs-human")) {
     lines.push(`sandbox ${job.sandboxError}`);
   }
@@ -369,7 +379,7 @@ function statusHeader(job: StatusJobView): string {
 }
 
 function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView {
-  const activityAt = activityStamp(job);
+  const stallAt = stallStamp(job);
   if (job.error) {
     return {
       jobId: job.jobId,
@@ -399,10 +409,11 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
       canReject: false,
       canRevise: false,
       steps: progressFor(job),
-      ...(activityAt ? { lastActivityAt: activityAt } : {}),
+      ...(stallAt ? { stallActivityAt: stallAt } : {}),
       ...(job.deliver ? { deliver: job.deliver } : {}),
       ...(job.createdAt ? { createdAt: job.createdAt } : {}),
       ...(job.logTail ? { logTail: job.logTail } : {}),
+      ...activityStamp(job),
       ...boardFields(job),
     };
   }
@@ -452,6 +463,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     ...(job.feedbackLedgerError ? { feedbackLedgerError: job.feedbackLedgerError } : {}),
     ...(feedbackReason ? { feedbackReason } : {}),
     ...(job.launchError ? { launchError: job.launchError } : {}),
+    ...(state === "queued" && job.launchBlock ? { launchBlock: job.launchBlock } : {}),
     ...(job.delivery?.error ? { deliveryError: job.delivery.error } : {}),
     ...(job.delivery?.viewError ? { viewError: job.delivery.viewError } : {}),
     prPending: state === "in-review" && !prNumber,
@@ -465,12 +477,13 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     canReject: gates.some((gate) => gate.choices.includes("reject")),
     canRevise: gates.some((gate) => gate.choices.includes("approve") || gate.choices.includes("revise")),
     steps: progressFor(job),
-    ...(activityAt ? { lastActivityAt: activityAt } : {}),
+    ...(stallAt ? { stallActivityAt: stallAt } : {}),
     ...(job.createdAt ? { createdAt: job.createdAt } : {}),
     ...(job.run?.startedAt ? { startedAt: job.run.startedAt } : {}),
     ...(job.run?.finishedAt ? { finishedAt: job.run.finishedAt } : {}),
     ...(job.logTail ? { logTail: job.logTail } : {}),
     ...(job.diffSummary ? { diffSummary: job.diffSummary } : {}),
+    ...activityStamp(job),
     ...(failureDetail ? { failureDetail } : {}),
     ...(job.run?.sandboxError ? { sandboxError: job.run.sandboxError } : {}),
     ...(job.sandboxed ? { sandboxed: true } : {}),
@@ -512,12 +525,19 @@ function boardFields(job: ObservedJob): {
 }
 
 /** Later of the run activity clock and the launch log clock, as ISO. */
-function activityStamp(job: ObservedJob): string | undefined {
+function stallStamp(job: ObservedJob): string | undefined {
   const runAt = job.run?.activityMs;
   const launchAt = job.launchActivityMs;
   const ms = runAt === undefined ? launchAt : launchAt === undefined ? runAt : Math.max(runAt, launchAt);
   if (ms === undefined || !Number.isFinite(ms)) return undefined;
   return new Date(ms).toISOString();
+}
+
+function activityStamp(job: ObservedJob): { lastActivityAt?: string } {
+  const run = job.run;
+  if (!run || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(run.runId)) return {};
+  const at = newestActivityAt(join(run.checkout, ".runs", run.runId));
+  return at ? { lastActivityAt: at } : {};
 }
 
 function progressFor(job: ObservedJob): StepProgress[] {
@@ -620,7 +640,7 @@ export function renderTick(
     if (note.trim()) lines.push(note);
   }
   for (const launch of launches) {
-    const verb = launch.kind === "fix" ? "fix" : launch.retry ? "retry" : "launch";
+    const verb = launch.blocked ? "blocked" : launch.kind === "fix" ? "fix" : launch.retry ? "retry" : "launch";
     lines.push(`${verb} ${launch.jobId}  ${launch.repo}`);
     for (const line of launch.output.split("\n")) {
       if (line.trim()) lines.push(`  ${line}`);

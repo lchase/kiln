@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { packageRoot } from "../src/paths.js";
 import { yakCliPath } from "../src/report.js";
-import { materializeWorkflow, workflowInputs, workflowNeedsTestCommand } from "../src/workflow.js";
+import { materializeWorkflow, workflowInputs, workflowNamesNeedingTest, workflowNeedsTestCommand } from "../src/workflow.js";
 
 const root = packageRoot();
 const keep: string[] = [];
@@ -179,6 +179,10 @@ describe("investigation workflow", () => {
     assert.doesNotMatch(prompt, /<!-- factory:/);
     assert.equal(workflowNeedsTestCommand(readFileSync(join(root, "workflows", "investigation.yaml"), "utf8")), false);
     assert.equal(workflowNeedsTestCommand(readFileSync(join(root, "workflows", "feature.yaml"), "utf8")), true);
+    const needingTest = workflowNamesNeedingTest();
+    assert.equal(needingTest.includes("feature"), true);
+    assert.equal(needingTest.includes("investigation"), false);
+    assert.equal(needingTest.includes("review"), false);
 
     const source = yak(["run", "workflows/investigation.yaml", "--adapter", "mock", "--isolation", "none"], root);
     assert.equal(source.status, 1, source.stderr);
@@ -270,5 +274,69 @@ describe("investigation workflow", () => {
     assert.match(run.stdout, /suspended/);
     assert.match(run.stderr, /run \S+ started/);
     assert.doesNotMatch(`${run.stdout}\n${run.stderr}`, /prompt references/);
+  });
+});
+
+describe("review workflow", () => {
+  function git(cwd: string, args: string[]): string {
+    const result = spawnSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", ...args], {
+      cwd,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  }
+
+  function run(rendered: string, cwd: string, base: string | undefined, nonce: string) {
+    const env = { ...process.env };
+    delete env.KILN_REVIEW_BASE;
+    if (base) env.KILN_REVIEW_BASE = base;
+    const args = ["run", rendered, "--adapter", "mock", "--isolation", "none"];
+    for (const pair of ["title=Review: Add two", "spec=Draft review", `runNonce=${nonce}`, `baseRef=${base ?? "none"}`]) {
+      args.push("--input", pair);
+    }
+    return spawnSync(process.execPath, [yakCliPath(), ...args], { cwd, encoding: "utf8", env });
+  }
+
+  it("gives the agent no shell and hands it a diff computed on the host", () => {
+    const repo = mkdtempSync(join(tmpdir(), "kiln-review-"));
+    keep.push(repo);
+    const rendered = materializeWorkflow(join(repo, "kiln"), "jreview", "review");
+    const renderedText = readFileSync(rendered, "utf8");
+    assert.match(renderedText, /tools: \[Read, Grep, Glob\]/);
+    assert.doesNotMatch(renderedText, /tools: \[[^\]]*\b(Bash|Write|Edit)\b/);
+    const promptFile = renderedText.match(/file: "([^"]+)"/)?.[1];
+    assert.ok(promptFile);
+    assert.match(readFileSync(promptFile, "utf8"), /\{\{diff\.stdout\}\}/);
+
+    git(repo, ["init", "-q", "-b", "main"]);
+    writeFileSync(join(repo, ".gitignore"), "kiln/\n.runs/\n.yak/\ntest/\n");
+    writeFileSync(join(repo, "a.txt"), "one\n");
+    git(repo, ["add", "."]);
+    git(repo, ["commit", "-q", "-m", "base"]);
+    const base = git(repo, ["rev-parse", "HEAD"]);
+    writeFileSync(join(repo, "a.txt"), "one\ntwo\n");
+    git(repo, ["commit", "-q", "-am", "head"]);
+
+    const fixtures = join(repo, "test", "fixtures", "kiln-review");
+    mkdirSync(fixtures, { recursive: true });
+    writeFileSync(
+      join(fixtures, "draft.json"),
+      `${JSON.stringify([{ output: { markdown: "Nothing found.", findings: [] } }])}\n`,
+    );
+
+    const ok = run(rendered, repo, base, "nonce-1");
+    assert.equal(ok.status, 78, `${ok.stdout}\n${ok.stderr}`);
+    const runId = ok.stderr.match(/run (\S+) started/)?.[1];
+    assert.ok(runId);
+    const diff = JSON.parse(readFileSync(join(repo, ".runs", runId, "artifacts", "diff.json"), "utf8")) as {
+      stdout: string;
+    };
+    assert.match(diff.stdout, /a\.txt \| 1 \+/);
+    assert.match(diff.stdout, /\n\+two\n/);
+
+    const missing = run(rendered, repo, undefined, "nonce-2");
+    assert.equal(missing.status, 1, `${missing.stdout}\n${missing.stderr}`);
+    assert.match(`${missing.stdout}\n${missing.stderr}`, /diff: command/);
   });
 });

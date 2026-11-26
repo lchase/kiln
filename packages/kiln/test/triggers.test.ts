@@ -366,7 +366,10 @@ describe("trigger settings", () => {
       {
         revision: loaded.document.revision,
         repos: loaded.document.repos,
-        triggers: [{ id: "review-requests", enabled: false }],
+        triggers: loaded.document.triggers.map((trigger) => {
+          const { builtin: _builtin, ...fields } = trigger;
+          return trigger.id === "review-requests" ? { ...fields, enabled: false } : fields;
+        }),
       },
       dir,
     );

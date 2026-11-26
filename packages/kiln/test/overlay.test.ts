@@ -277,7 +277,7 @@ describe("overlay config", () => {
 });
 
 describe("settings overlay", () => {
-  it("refuses workflow and skill bodies and keeps an overlay already in the file", () => {
+  it("refuses workflow bodies and saves overlay paths", () => {
     const { home, checkout, configPath } = kilnHome();
     const original = {
       adapter: "mock",
@@ -293,28 +293,32 @@ describe("settings overlay", () => {
       {
         revision,
         repos: { web: { path: checkout, test: "npm test" } },
-        overlay: { skills: "name: secret\n" },
         workflows: { spike: "name: spike\nsteps: []\n" },
       },
       home,
     );
     assert.equal(rejected.ok, false);
     if (rejected.ok) return;
-    assert.equal(rejected.body.fields?.overlay, "Unknown field.");
     assert.equal(rejected.body.fields?.workflows, "Unknown field.");
     assert.equal(readFileSync(configPath, "utf8"), contents);
 
     const saved = saveSettings(
       configPath,
-      { revision, repos: { web: { path: checkout, test: "npm test" } }, maxAttempts: 4 },
+      {
+        revision,
+        repos: { web: { path: checkout, test: "npm test" } },
+        overlay: { workflows: "custom/workflows", skillPaths: ["/home/operator/skills"] },
+        maxAttempts: 4,
+      },
       home,
     );
     assert.equal(saved.ok, true);
     const file = JSON.parse(readFileSync(configPath, "utf8")) as {
-      overlay: { skillPaths: string[] };
+      overlay: { workflows?: string; skillPaths: string[] };
       workflows: { feature: { sandbox: { mode: string } } };
       maxAttempts: number;
     };
+    assert.equal(file.overlay.workflows, "custom/workflows");
     assert.deepEqual(file.overlay.skillPaths, ["/home/operator/skills"]);
     assert.equal(file.workflows.feature.sandbox.mode, "off");
     assert.equal(file.maxAttempts, 4);

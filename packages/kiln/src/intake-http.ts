@@ -65,7 +65,7 @@ async function runIntake(config: LoadedKilnConfig, request: IntakeRequest, home:
     ...(request.stack ? { stack: true } : {}),
   };
   if (request.source.kind === "prompt") {
-    if (request.dryRun) throw new HttpError(400, "Dry-run is only supported for a tickets import.");
+    if (request.dryRun) throw new HttpError(400, "Dry-run is only supported for a tickets import or a Jira issue.");
     if (request.source.text === "-") {
       throw new HttpError(400, "Pass the prompt text in source.text. Serve does not read stdin.");
     }
@@ -73,17 +73,17 @@ async function runIntake(config: LoadedKilnConfig, request: IntakeRequest, home:
     return { ids: [written.job.id] };
   }
   if (request.source.kind === "spec") {
-    if (request.dryRun) throw new HttpError(400, "Dry-run is only supported for a tickets import.");
+    if (request.dryRun) throw new HttpError(400, "Dry-run is only supported for a tickets import or a Jira issue.");
     const specPath = absoluteInside(home, request.source.path, "Spec path");
     const written = addFromFile(config, { ...shared, specPath, cwd: process.cwd() });
     return { ids: [written.job.id] };
   }
   if (request.source.kind === "jira") {
-    if (request.dryRun) throw new HttpError(400, "Dry-run is only supported for a tickets import.");
-    const result = await addFromJira(config, { ...shared, key: request.source.key, dryRun: false });
+    const result = await addFromJira(config, { ...shared, key: request.source.key, dryRun: request.dryRun });
     return {
       ids: result.job ? [result.job.id] : [],
       created: result.created,
+      ...(request.dryRun ? { dryRun: true, report: result.report } : {}),
       ...(result.warnings.length > 0 ? { warnings: result.warnings } : {}),
     };
   }

@@ -7,23 +7,25 @@ name: Publish to npm
 on:
   workflow_dispatch:
 
+# No token by default. Each job asks for what it needs.
+permissions: {}
+
 jobs:
-  publish:
+  # Installs dependencies and runs their code, so it must not be able to
+  # mint the npm publish token: no `id-token` here.
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: main
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
 
-      - run: npm install -g npm@latest # trusted publishing (OIDC) needs npm >=11.5.1
       - run: npm ci
       # Kiln tests read the installed @lchase/yak bundle. The workspace
       # links the source package, which has no dist until it is built.
@@ -32,4 +34,37 @@ jobs:
       - run: npm test -w @lchase/kiln
       - run: npm run build -w @lchase/kiln
 
-      - run: npm publish -w @lchase/kiln --provenance --access public
+      - run: npm pack -w @lchase/kiln --pack-destination "$RUNNER_TEMP/pack"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: package
+          path: ${{ runner.temp }}/pack/*.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+  # Holds the publish token and runs no repository or dependency code: it
+  # uploads the tarball the build job made. The `npm-publish` environment is
+  # where a required reviewer and a main-only rule go.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing (OIDC) needs npm >=11.5.1. Pinned, not `latest`.
+      - run: npm install -g npm@12.2.3
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: package
+          path: pack
+
+      # The leading ./ matters: npm reads `pack/name.tgz` as a GitHub repo.
+      - run: npm publish ./pack/*.tgz --provenance --access public --ignore-scripts

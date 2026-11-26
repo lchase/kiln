@@ -6,6 +6,9 @@ dist-test/
 # ~/.kiln/ (or $KILN_HOME). Do not commit either.
 .kiln/
 
+# Local notes and working files.
+.scratch/
+
 # yak journals and cache, if a checkout inside this repo is ever ticked.
 .runs/
 .yak/

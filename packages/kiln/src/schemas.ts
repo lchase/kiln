@@ -75,12 +75,27 @@ export const KilnReposSchema = z.record(
  * `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN` override these.
  * Empty strings are treated as unset. The token is never copied into a job.
  */
+/** Stand-in for a secret in settings JSON. Saving it keeps the value already on disk. */
+export const SECRET_PLACEHOLDER = "<redacted>";
+
 export const JiraConfigSchema = z.object({
   baseUrl: z.string().optional(),
   email: z.string().optional(),
   apiToken: z.string().optional(),
+  /**
+   * Jira custom field id for acceptance criteria, such as `customfield_10001`.
+   * Omitted: Kiln looks up the field named Acceptance criteria.
+   */
+  acceptanceField: z.string().min(1).optional(),
 });
 export type JiraConfig = z.infer<typeof JiraConfigSchema>;
+
+/** Jira fields the settings form writes. The token is never accepted from the board. */
+export const JiraSettingsSchema = JiraConfigSchema.pick({
+  baseUrl: true,
+  email: true,
+  acceptanceField: true,
+}).strict();
 
 /**
  * Opt-in Docker sandbox. Omitted mode means off at that layer.
@@ -152,12 +167,28 @@ const maxFixRounds = z
   .optional();
 
 /**
- * The subset `kiln serve` settings can edit. The file schema below uses these
- * same field validators. Settings does not accept jira, tokens, adapter,
- * workflows, overlay paths, skill file bodies, or sandbox image. Trigger
- * edits are enable/disable only.
+ * Form fields `kiln serve` settings writes. The file schema below uses these
+ * same validators. The form does not accept tokens, workflow YAML, skill
+ * bodies, or a sandbox image. Per-workflow sandbox and `reviewPrompt` are
+ * saved through the raw file, which is checked with `KilnConfigFileSchema`.
  */
 const TRIGGER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+const maxConcurrent = z
+  .number()
+  .int("Max concurrent must be a whole number.")
+  .min(1, "Max concurrent must be at least 1.")
+  .optional();
+const adapter = z.enum(["mock", "claude-code"]).optional();
+
+export const OverlayFileSchema = z
+  .object({
+    workflows: z.string().min(1).optional(),
+    prompts: z.string().min(1).optional(),
+    skills: z.string().min(1).optional(),
+    skillPaths: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
 
 /**
  * One trigger in `kiln.config.json`. `enabled` defaults to true.
@@ -200,15 +231,6 @@ export const RouteConfigSchema = z
   .strict();
 export type RouteConfig = z.infer<typeof RouteConfigSchema>;
 
-/** Settings API body for enable/disable. Other trigger fields stay in the file. */
-export const TriggerToggleSchema = z
-  .object({
-    id: z.string().regex(TRIGGER_ID),
-    enabled: z.boolean(),
-  })
-  .strict();
-export type TriggerToggle = z.infer<typeof TriggerToggleSchema>;
-
 /** Known board theme ids. An unknown id in a write is rejected. */
 export const BoardThemeSchema = z.enum(BOARD_THEME_IDS);
 
@@ -234,8 +256,13 @@ export const EditableKilnSettingsSchema = z.object({
   maxFixRounds,
   maxSameFingerprint,
   dailyDollarCap,
+  maxConcurrent,
+  adapter,
   sandbox: EditableSandboxSchema.optional(),
-  triggers: z.array(TriggerToggleSchema).optional(),
+  triggers: z.array(TriggerConfigSchema).optional(),
+  routes: z.array(RouteConfigSchema).optional(),
+  jira: JiraSettingsSchema.optional(),
+  overlay: OverlayFileSchema.optional(),
   board: BoardWriteSchema.optional(),
 });
 export type EditableKilnSettings = z.infer<typeof EditableKilnSettingsSchema>;
@@ -247,13 +274,13 @@ export const SettingsWriteSchema = EditableKilnSettingsSchema.extend({
 
 export const KilnConfigFileSchema = z.object({
   note: z.string().min(1).optional(),
-  maxConcurrent: z.number().int().min(1).optional(),
+  maxConcurrent,
   stallTimeoutMs,
   maxAttempts,
   maxFixRounds,
   maxSameFingerprint,
   dailyDollarCap,
-  adapter: z.enum(["mock", "claude-code"]).optional(),
+  adapter,
   sandbox: SandboxSettingsSchema.optional(),
   /** Per-workflow sandbox override. A set field replaces the global one; an omitted field inherits. */
   workflows: z.record(z.string().regex(WORKFLOW_KEY), z.object({ sandbox: SandboxSettingsSchema.optional() })).optional(),
@@ -274,15 +301,7 @@ export const KilnConfigFileSchema = z.object({
    * Paths resolve from the config directory, the same way `reviewPrompt` does.
    * `skillPaths` adds skill directories. Missing directories are empty.
    */
-  overlay: z
-    .object({
-      workflows: z.string().min(1).optional(),
-      prompts: z.string().min(1).optional(),
-      skills: z.string().min(1).optional(),
-      skillPaths: z.array(z.string().min(1)).optional(),
-    })
-    .strict()
-    .optional(),
+  overlay: OverlayFileSchema.optional(),
   /** Board appearance. Omitted theme means Kiln. */
   board: BoardFileSchema.optional(),
 });

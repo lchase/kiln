@@ -489,11 +489,13 @@ function jiraFromFile(jira: JiraConfig | undefined): JiraConfig | undefined {
   const baseUrl = jira.baseUrl?.trim();
   const email = jira.email?.trim();
   const apiToken = jira.apiToken?.trim();
-  if (!baseUrl && !email && !apiToken) return undefined;
+  const acceptanceField = jira.acceptanceField?.trim();
+  if (!baseUrl && !email && !apiToken && !acceptanceField) return undefined;
   return {
     ...(baseUrl ? { baseUrl } : {}),
     ...(email ? { email } : {}),
     ...(apiToken ? { apiToken } : {}),
+    ...(acceptanceField ? { acceptanceField } : {}),
   };
 }
 

@@ -11,7 +11,7 @@ import { jobBasename } from "./paths.js";
 import { pausedFrom, spendSnapshot } from "./rails.js";
 import { redact } from "./redact.js";
 import { isPidAlive } from "./reliability.js";
-import { ISSUE_KEY, type Job, type RouteConfig, type TriggerConfig, type TriggerToggle } from "./schemas.js";
+import { ISSUE_KEY, type Job, type RouteConfig, type TriggerConfig } from "./schemas.js";
 import { REVIEW_WORKFLOW } from "./workflow.js";
 
 /**
@@ -174,30 +174,6 @@ export function effectiveRoutes(file: readonly RouteConfig[] | undefined): Route
   for (const route of BUILTIN_ROUTES) byId.set(route.id, { ...route });
   for (const route of file ?? []) byId.set(route.id, { ...route });
   return [...byId.values()];
-}
-
-export function knownTrigger(id: string, file: readonly TriggerConfig[] | undefined): boolean {
-  return effectiveTriggers(file).some((trigger) => trigger.id === id);
-}
-
-/** Enable/disable writes `enabled` and leaves cron, JQL, and repo on the file. */
-export function applyTriggerToggles(
-  file: readonly TriggerConfig[] | undefined,
-  toggles: readonly TriggerToggle[],
-): TriggerConfig[] {
-  const list = (file ?? []).map((trigger) => ({ ...trigger }));
-  for (const toggle of toggles) {
-    const index = list.findIndex((trigger) => trigger.id === toggle.id);
-    if (index >= 0) {
-      const current = list[index];
-      if (current) list[index] = { ...current, enabled: toggle.enabled };
-      continue;
-    }
-    const builtin = BUILTIN_TRIGGERS.find((trigger) => trigger.id === toggle.id);
-    if (!builtin) continue;
-    list.push({ ...builtin, enabled: toggle.enabled });
-  }
-  return list;
 }
 
 /** `label` / `status` compile to JQL. An explicit `jql` wins. */

@@ -1,3 +1,4 @@
+import { parseActivityCursor, readRunActivity, type ActivityFeed } from "./activity.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -32,7 +33,7 @@ import { isPaused, pauseFactory, resumeFactory, spendFor } from "./rails.js";
 import { readSettings, saveSettings } from "./settings.js";
 import { triggerRows } from "./triggers.js";
 import { formatServeStartup } from "./version.js";
-import { listWorkflowNames, overlayLoadCounts } from "./workflow.js";
+import { listWorkflowNames, overlayLoadCounts, workflowNamesNeedingTest } from "./workflow.js";
 
 export interface ServeOptions {
   config: LoadedKilnConfig;
@@ -58,6 +59,7 @@ interface LiveConfig {
 interface ServeRepo {
   name: string;
   path: string;
+  hasTest: boolean;
 }
 
 /**
@@ -312,6 +314,32 @@ async function handle(
     return;
   }
 
+  const apiActivity = /^\/api\/jobs\/([^/]+)\/activity$/.exec(path);
+  if (apiActivity?.[1]) {
+    if (!originAllowed(req, boundPort())) {
+      sendJson(res, 403, { error: "Cross-origin request rejected." }, secrets);
+      return;
+    }
+    const jobId = parseJobId(apiActivity[1]);
+    const job = jobId ? findJob(config, jobId) : undefined;
+    if (!job) {
+      sendJson(res, 404, { error: jobId ? `No job ${jobId}.` : "Not found." }, secrets);
+      return;
+    }
+    const after = url.searchParams.get("after");
+    if (parseActivityCursor(after) === undefined) {
+      sendJson(res, 400, { error: "after must be a phase cursor." }, secrets);
+      return;
+    }
+    const feed = readRunActivity(runDirOf(config, job), {
+      running: job.state === "running" || job.state === "approved",
+      after: after ?? "",
+      ...(job.logTail ? { logText: job.logTail } : {}),
+    });
+    sendJson(res, 200, { jobId: job.jobId, ...feed }, secrets);
+    return;
+  }
+
   const apiDetail = /^\/api\/jobs\/([^/]+)\/detail$/.exec(path);
   if (apiDetail?.[1]) {
     const jobId = parseJobId(apiDetail[1]);
@@ -376,13 +404,19 @@ async function handle(
       sendHtml(res, 404, renderMessagePage(css, "Not found", jobId ? `No job ${jobId}.` : "Not found.", config.boardTheme), secrets);
       return;
     }
+    const detail = detailDocument(state, job);
     const tabRaw = url.searchParams.get("tab");
-    if (tabRaw && tabRaw !== "overview" && tabRaw !== "changes" && tabRaw !== "timeline") {
-      sendHtml(res, 400, renderMessagePage(css, "Job", "tab must be overview, changes, or timeline.", config.boardTheme), secrets);
+    if (tabRaw && tabRaw !== "overview" && tabRaw !== "live" && tabRaw !== "changes" && tabRaw !== "timeline") {
+      sendHtml(res, 400, renderMessagePage(css, "Job", "tab must be overview, live, changes, or timeline.", config.boardTheme), secrets);
       return;
     }
-    const tab = tabRaw === "changes" || tabRaw === "timeline" ? tabRaw : "overview";
-    sendHtml(res, 200, renderShell(state, css, csrf, "job", { detail: detailDocument(state, job), tab }), secrets);
+    const running = detail.job.state === "running" || detail.job.state === "approved";
+    const tab = tabRaw === "overview" || tabRaw === "live" || tabRaw === "changes" || tabRaw === "timeline" ? tabRaw : running ? "live" : "overview";
+    const activity = readRunActivity(runDirOf(config, job), {
+      running,
+      ...(job.logTail ? { logText: job.logTail } : {}),
+    });
+    sendHtml(res, 200, renderShell(state, css, csrf, "job", { detail, tab, activity }), secrets);
     return;
   }
 
@@ -830,7 +864,7 @@ function tokenFromDisk(configPath: string): string | undefined {
 
 function repoList(config: LoadedKilnConfig): ServeRepo[] {
   return Object.entries(config.repos)
-    .map(([name, repo]) => ({ name, path: repo.path }))
+    .map(([name, repo]) => ({ name, path: repo.path, hasTest: Boolean(repo.test?.trim()) }))
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
@@ -840,6 +874,7 @@ function pageOptions(state: LiveConfig, csrf: string): ServePageOptions {
     csrf,
     repos: repoList(state.config),
     workflows: listWorkflowNames(state.config.overlay.workflowsDir),
+    workflowsNeedingTest: workflowNamesNeedingTest(state.config.overlay.workflowsDir),
     paused: isPaused(state.config.kilnDir),
     spend,
     ...(state.configError ? { configError: state.configError } : {}),
@@ -872,12 +907,25 @@ function listSection(path: string): AppSection | undefined {
   return undefined;
 }
 
+function runDirOf(config: LoadedKilnConfig, job: StatusJobView): string | undefined {
+  const runId = job.runId;
+  const checkout = config.repos[job.repo]?.path;
+  if (!runId || !checkout || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId)) return undefined;
+  return join(checkout, ".runs", runId);
+}
+
 function renderShell(
   state: LiveConfig,
   css: string,
   csrf: string,
   section: AppSection,
-  extra: { window?: StatWindow; repo?: string; detail?: ReturnType<typeof detailDocument>; tab?: "overview" | "changes" | "timeline" } = {},
+  extra: {
+    window?: StatWindow;
+    repo?: string;
+    detail?: ReturnType<typeof detailDocument>;
+    tab?: "overview" | "live" | "changes" | "timeline";
+    activity?: ActivityFeed;
+  } = {},
 ): string {
   const status = readStatus(state.config);
   const events = readEvents(state.config.kilnDir, { warn: () => {} });
@@ -892,7 +940,7 @@ function renderShell(
     ...(extra.repo ? { repo: extra.repo } : {}),
     ...(section === "stats" && extra.window ? { stats: statsDocument(state, extra.window) } : {}),
     ...(section === "report" ? { report: reportDocument(state) } : {}),
-    ...(extra.detail ? { detail: extra.detail, tab: extra.tab ?? "overview" } : {}),
+    ...(extra.detail ? { detail: extra.detail, tab: extra.tab ?? "overview", ...(extra.activity ? { activity: extra.activity } : {}) } : {}),
     ...(section === "triggers"
       ? { triggers: triggerRows(state.config, readEvents(state.config.kilnDir, { warn: () => {} })) }
       : {}),
@@ -980,8 +1028,9 @@ function sendHtml(res: ServerResponse, status: number, html: string, secrets: st
     Connection: "close",
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
+    // data: is the inlined SVG favicon. default-src 'none' would block it.
     "Content-Security-Policy":
-      "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'none'; img-src data:; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     "Referrer-Policy": "same-origin",
   });
   res.end(body);

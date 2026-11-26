@@ -256,4 +256,75 @@ describe("board style", () => {
     assert.match(html, /id="prompt-error"[^>]*hidden></);
     assert.doesNotMatch(html, /Prompt is required/);
   });
+
+  it("spaces a repo status list with the shared job cards", () => {
+    const queued = {
+      ...job("j202611150001", "queued", "lumen", "Refresh the status list"),
+      specPath: "/tmp/lumen/spec.md",
+      createdAt: "2026-11-15T20:00:00.000Z",
+    };
+    const running = job("j202611150002", "running", "lumen", "Check the sample build");
+    const other = job("j202611150003", "done", "harbor", "Ship the sample notes");
+    const html = renderConsole(css, buildAttention([queued, running, other]), {
+      csrf: "abc",
+      repos: repos(["lumen", "harbor"]),
+      workflows,
+      section: "repos",
+      repo: "lumen",
+    });
+    const mainStart = html.indexOf('<main class="main">');
+    const mainEnd = html.indexOf("</main>", mainStart);
+    assert.ok(mainStart >= 0 && mainEnd > mainStart);
+    const main = html.slice(mainStart, mainEnd);
+    assert.match(main, /<h2>lumen<\/h2>/);
+    assert.doesNotMatch(main, /Ship the sample notes/);
+    assert.doesNotMatch(main, /j202611150003/);
+    assert.doesNotMatch(main, />harbor</);
+
+    const groups = [...main.matchAll(/<section class="state-group">([\s\S]*?)<\/section>/g)].map((match) => match[1] ?? "");
+    assert.deepEqual(
+      groups.map((group) => group.match(/<h3>([^<]+)/)?.[1]),
+      ["Queued", "Running"],
+    );
+    for (const group of groups) {
+      assert.match(group, /^<div class="jobs"><h3>[^<]+<span class="badge">\d+<\/span><\/h3>/);
+      const heading = group.slice(0, group.indexOf("</h3>"));
+      assert.doesNotMatch(heading, /class="chip/);
+      assert.match(group, /<article class="job"/);
+    }
+
+    const card = main.slice(main.indexOf('id="job-j202611150001"'), main.indexOf("</article>", main.indexOf('id="job-j202611150001"')));
+    const titleAt = card.indexOf('class="job-title"');
+    const metaAt = card.indexOf('class="job-meta"');
+    const reasonAt = card.indexOf('class="reason"');
+    const linksAt = card.indexOf('class="links"');
+    assert.ok(titleAt >= 0 && metaAt > titleAt && reasonAt > metaAt && linksAt > reasonAt);
+    assert.match(card, /Refresh the status list/);
+    assert.match(card, /<span class="num">j202611150001<\/span>/);
+    assert.match(card, /<span class="chip queued">queued<\/span>/);
+    assert.match(card, /<span class="chip">feature<\/span>/);
+    assert.match(card, /data-time="rel"/);
+    assert.match(card, /Queued, ready to launch/);
+    assert.match(card, /<a class="text-btn" href="\/jobs\/j202611150001\/spec">[\s\S]*?<span>Spec<\/span><\/a>/);
+    assert.doesNotMatch(card, /border-left|accent/);
+
+    const block = (selector: string) => {
+      const pattern = new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{[^}]+\\}`, "g");
+      const matches = [...css.matchAll(pattern)].map((match) => match[0]);
+      assert.ok(matches.length > 0, selector);
+      return matches.join("\n");
+    };
+    assert.match(block(".main"), /max-width:\s*var\(--content-max\)/);
+    assert.match(block(".main"), /padding:[^;]*var\(--gutter\)/);
+    assert.match(block(".jobs"), /gap:\s*var\(--space-3\)/);
+    assert.match(block(".jobs"), /max-width:\s*100%/);
+    assert.match(block(".job-main"), /gap:\s*var\(--space-2\)/);
+    assert.match(block(".job .job-meta"), /gap:\s*var\(--space-3\)/);
+    assert.match(block(".state-group h3"), /margin:\s*0/);
+    assert.match(block(".state-group h3"), /text-transform:\s*none/);
+    assert.doesNotMatch(block(".state-group h3"), /uppercase|letter-spacing:\s*\.04em/);
+    assert.match(block(".job, .card, .trigger, .stat-grid .stat"), /border-radius:\s*var\(--radius-lg\)/);
+    assert.doesNotMatch(block(".job"), /border-left/);
+    assert.equal(css.includes(".repo-block h3"), false);
+  });
 });

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { loadKilnConfig, type LoadedKilnConfig } from "../src/config.js";
-import { addFromJira, type AddJiraInput } from "../src/intake/jira.js";
+import { addFromJira, normalizeIssueKey, type AddJiraInput } from "../src/intake/jira.js";
 import { writeJob } from "../src/jobs.js";
 import { packageRoot } from "../src/paths.js";
 
@@ -365,6 +365,42 @@ describe("jira intake", () => {
     );
   });
 
+  it("uses a configured acceptance field and does not list Jira fields", async () => {
+    const { config } = tempKiln({
+      baseUrl: BASE,
+      email: EMAIL,
+      apiToken: TOKEN,
+      acceptanceField: "customfield_10050",
+    });
+    assert.equal(config.jira?.acceptanceField, "customfield_10050");
+    const body = issue("PROJ-1", {
+      summary: "Show the empty state",
+      description: { type: "doc", version: 1, content: [] },
+      issuetype: { name: "Story" },
+      issuelinks: [],
+      status: { name: "To Do" },
+      customfield_10050: {
+        type: "doc",
+        version: 1,
+        content: [{ type: "paragraph", content: [{ type: "text", text: "The page shows the empty sentence." }] }],
+      },
+    });
+    const stub = stubFetch((url) => {
+      if (url.includes("/rest/api/3/field")) return { status: 500, body: {} };
+      if (url.includes("/rest/api/3/issue/")) return { status: 200, body };
+      return { status: 404, body: {} };
+    });
+    const result = await addFromJira(config, addInput("PROJ-1", stub.fetch, {}));
+    assert.equal(result.created, true);
+    const job = readJobs(config)[0];
+    assert.ok(job);
+    assert.match(specText(config, job), /The page shows the empty sentence/);
+    assert.equal(
+      stub.calls.some((call) => call.url.includes("/rest/api/3/field")),
+      false,
+    );
+  });
+
   it("maps an existing blocked-by job into dependsOn and warns when the job is missing", async () => {
     const { cwd, config } = tempKiln();
     const blocker = issue("PROJ-1", {
@@ -647,7 +683,9 @@ describe("jira intake", () => {
     const { cwd, home } = tempKiln();
     const usage = runCli([], cwd, home);
     assert.equal(usage.status, 2);
-    assert.match(usage.stderr, /--jira <KEY>/);
+    assert.match(usage.stderr, /--jira <KEY or URL>/);
+    assert.match(usage.stderr, /--title and --issue are not needed with --jira/);
+    assert.match(usage.stderr, /browse URL/);
     const both = runCli(["add", "feature", "--repo", "web", "--jira", "PROJ-1", "--spec", "a.md"], cwd, home);
     assert.equal(both.status, 2);
     const drySpec = runCli(["add", "feature", "--repo", "web", "--spec", "a.md", "--dry-run"], cwd, home);
@@ -683,5 +721,79 @@ describe("jira intake", () => {
       assert.match(status.stdout, /source jira PROJ-1/);
       assert.match(status.stdout, /queued/);
     });
+  });
+
+  it("reads a key, a lowercase key, or a browse URL", () => {
+    const base = "https://example.atlassian.net";
+    assert.equal(normalizeIssueKey("PROJ-123", base), "PROJ-123");
+    assert.equal(normalizeIssueKey(" proj-123 ", base), "PROJ-123");
+    assert.equal(normalizeIssueKey("https://example.atlassian.net/browse/PROJ-123", base), "PROJ-123");
+    assert.equal(
+      normalizeIssueKey("https://example.atlassian.net/browse/proj-123/extra?focusedCommentId=9", base),
+      "PROJ-123",
+    );
+    assert.equal(
+      normalizeIssueKey(
+        "https://example.atlassian.net/jira/software/projects/PROJ/boards/1?selectedIssue=proj-123",
+        base,
+      ),
+      "PROJ-123",
+    );
+    assert.equal(normalizeIssueKey("https://other.example.net/browse/PROJ-123"), "PROJ-123");
+  });
+
+  it("rejects a browse URL from a different Jira host and rejects garbage", async () => {
+    const { config } = tempKiln({ baseUrl: "https://example.atlassian.net" });
+    const url = "https://other.example.net/browse/PROJ-123";
+    await assert.rejects(
+      () => addFromJira(config, addInput(url, boomFetch(), {})),
+      /Jira URL host "other\.example\.net" does not match the configured Jira host "example\.atlassian\.net"\./,
+    );
+    await assert.rejects(
+      () =>
+        addFromJira(
+          config,
+          addInput(url, boomFetch(), envCreds({ JIRA_BASE_URL: "https://example.atlassian.net" })),
+        ),
+      /does not match the configured Jira host "example\.atlassian\.net"\./,
+    );
+    assert.throws(
+      () => normalizeIssueKey("not a key"),
+      /Jira issue key "not a key" is not a KEY-123 identifier\./,
+    );
+    assert.throws(
+      () => normalizeIssueKey("https://example.atlassian.net/browse/nope"),
+      /not a KEY-123 identifier/,
+    );
+    assert.throws(
+      () => normalizeIssueKey("https://example.atlassian.net/projects/PROJ-123"),
+      /not a KEY-123 identifier/,
+    );
+  });
+
+  it("previews a browse URL with the fetched summary as the title", async () => {
+    const { config } = tempKiln();
+    const body = issue("PROJ-123", {
+      summary: "Show the empty state",
+      description: null,
+      issuetype: { name: "Task" },
+      issuelinks: [],
+      status: { name: "To Do" },
+    });
+    const stub = stubFetch(routes(body));
+    const result = await addFromJira(
+      config,
+      addInput(
+        "https://example.atlassian.net/browse/PROJ-123?foo=1",
+        stub.fetch,
+        envCreds({ JIRA_BASE_URL: "https://example.atlassian.net" }),
+        { dryRun: true },
+      ),
+    );
+    assert.equal(result.created, false);
+    assert.match(result.report, /title Show the empty state/);
+    assert.match(result.report, /issue PROJ-123/);
+    assert.ok(stub.calls.some((call) => call.url.includes("/rest/api/3/issue/PROJ-123")));
+    assert.equal(existsSync(join(config.kilnDir, "jobs")), false);
   });
 });

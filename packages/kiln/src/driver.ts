@@ -37,7 +37,14 @@ import {
   type FeedbackLedger,
   type PullRequestFeedback,
 } from "./feedback.js";
-import { appendEvent, readEvents } from "./events.js";
+import {
+  activeLaunchBlock,
+  activeLaunchBlocks,
+  appendEvent,
+  readEvents,
+  type LaunchBlock,
+  type LaunchFix,
+} from "./events.js";
 import { costFromJournal } from "./failure.js";
 import { ensureFixTrailers } from "./fix-commit.js";
 import {
@@ -61,6 +68,7 @@ import { defaultHost, type AgentStart, type KilnHost, type PullRequestState } fr
 import { markJobCancelled, readJobSpec, resolveJobSpec } from "./jobs.js";
 import { jobBasename, packageRoot } from "./paths.js";
 import {
+  canLaunch,
   decide,
   isLanded,
   jobState,
@@ -571,6 +579,7 @@ function observe(config: LoadedKilnConfig, host: KilnHost, now = new Date()): Wo
       launching,
       launchFailed,
       ...(launchError ? { launchError } : {}),
+      ...(entry.job ? launchBlockField(events, entry.job.id) : {}),
       ...(crumb ? { launchPid: crumb.pid } : {}),
       ...(launchActivityMs !== undefined ? { launchActivityMs } : {}),
       ...(logPath ? { logPath } : {}),
@@ -665,8 +674,16 @@ function apply(
     if (!job) {
       throw new Error(`Tick planned a launch for ${action.jobId}, which is not in the observed jobs.`);
     }
-    const report = launchJob(config, world, job, host, sandboxFacts);
-    launches.push(action.type === "retry" ? { ...report, retry: true } : report);
+    // A config block is not a launch. Keep walking the ready queue so one
+    // missing test command does not hold the only slot for the tick.
+    const retry = action.type === "retry";
+    let opened = false;
+    for (const queued of launchQueue(world, job)) {
+      if (opened) break;
+      const report = launchJob(config, world, queued, host, sandboxFacts);
+      launches.push(retry && queued.id === job.id ? { ...report, retry: true } : report);
+      if (!report.blocked) opened = true;
+    }
   }
   return renderTick(world.observation, actions, launches, delivers, findings, notes, feedbackNotes);
 }
@@ -1208,6 +1225,8 @@ function launchFixRun(
   const refused = claudeCredentialPreflight(process.env, config.adapter);
   if (refused) return { jobId: job.id, repo: job.repo, kind: "fix", output: refused };
   const sourceWorkflow = readFileSync(assertWorkflowName("fix", config.overlay.workflowsDir), "utf8");
+  const held = settleLaunchPrecondition(config, job, sourceWorkflow);
+  if (held) return { ...held, kind: "fix" };
   const workflow = materializeWorkflow(config.kilnDir, job.id, "fix", overlayMaterialize(config));
   const repo = config.repos[job.repo];
   const logPath = join(config.kilnDir, "logs", `${jobBasename(job.id)}.log`);
@@ -1386,6 +1405,95 @@ function spawnAgent(host: KilnHost, spec: AgentStart): { pid: number } {
   return { pid: child.pid ?? 0 };
 }
 
+/** Jobs `decide` would launch, starting at `first`, healthy ones ahead of a launch error. */
+function launchQueue(world: World, first: Job): Job[] {
+  const ready = world.observation.jobs.filter((job) => canLaunch(job, world.observation));
+  const healthy = ready.filter((job) => !job.launchError);
+  const ordered = [...healthy, ...ready.filter((job) => job.launchError)];
+  const start = ordered.findIndex((job) => job.jobId === first.id);
+  const slice = start >= 0 ? ordered.slice(start) : ordered;
+  const jobs: Job[] = [];
+  for (const observed of slice) {
+    const job = world.jobs.get(observed.jobId);
+    if (!job) {
+      throw new Error(`Tick planned a launch for ${observed.jobId}, which is not in the observed jobs.`);
+    }
+    jobs.push(job);
+  }
+  return jobs.length > 0 ? jobs : [first];
+}
+
+function launchBlockField(events: ReturnType<typeof readEvents>, jobId: string): { launchBlock?: LaunchBlock } {
+  const launchBlock = activeLaunchBlock(events, jobId);
+  return launchBlock ? { launchBlock } : {};
+}
+
+interface ConfigBlock {
+  reason: string;
+  log: string;
+  fix: LaunchFix;
+}
+
+/**
+ * Launch-time config preconditions. A miss is `launch.blocked`, not a launch
+ * error: the job stays queued, attempts are untouched, and the next tick
+ * tries again. Add the next check here.
+ */
+function configLaunchBlock(config: LoadedKilnConfig, job: Job, workflowYaml: string): ConfigBlock | undefined {
+  if (!workflowNeedsTestCommand(workflowYaml)) return undefined;
+  if (config.repos[job.repo]?.test?.trim()) return undefined;
+  return {
+    reason: `${job.repo} has no test command`,
+    log: `Repo ${job.repo} has no test command. Set repos.${job.repo}.test. The feature workflow refuses to run an empty KILN_TEST.`,
+    fix: { kind: "repo-setting", repo: job.repo, field: "test" },
+  };
+}
+
+/** Record a new block, or clear blocks once every precondition passes. */
+function settleLaunchPrecondition(
+  config: LoadedKilnConfig,
+  job: Job,
+  workflowYaml: string,
+): LaunchReport | undefined {
+  const block = configLaunchBlock(config, job, workflowYaml);
+  if (block) {
+    recordLaunchBlock(config.kilnDir, job.id, block);
+    return { jobId: job.id, repo: job.repo, output: block.reason, blocked: true };
+  }
+  clearLaunchBlocks(config.kilnDir, job.id);
+  return undefined;
+}
+
+/** Append and log only when this job does not already have the same active block. */
+function recordLaunchBlock(kilnDir: string, jobId: string, block: ConfigBlock): void {
+  const current = activeLaunchBlocks(readEvents(kilnDir, { warn: () => {} }), jobId);
+  const same = current.some(
+    (active) =>
+      active.reason === block.reason &&
+      active.fix.kind === block.fix.kind &&
+      active.fix.repo === block.fix.repo &&
+      active.fix.field === block.fix.field,
+  );
+  if (same) return;
+  appendEvent(kilnDir, {
+    job_id: jobId,
+    event: "launch.blocked",
+    properties: { reason: block.reason, fix: block.fix },
+  });
+  process.stderr.write(`tick: ${block.log}\n`);
+}
+
+function clearLaunchBlocks(kilnDir: string, jobId: string): void {
+  const active = activeLaunchBlocks(readEvents(kilnDir, { warn: () => {} }), jobId);
+  for (const block of active) {
+    appendEvent(kilnDir, {
+      job_id: jobId,
+      event: "launch.cleared",
+      properties: { reason: block.reason },
+    });
+  }
+}
+
 function launchJob(
   config: LoadedKilnConfig,
   world: World,
@@ -1403,12 +1511,9 @@ function launchJob(
   const open = feedback && feedback !== "corrupt" ? openFeedbackRound(feedback) : undefined;
   if (open) return launchOpenFix(config, world, job, host, repo.path, open, sandboxFacts);
   const sourceWorkflow = readFileSync(assertWorkflowName(job.workflow, config.overlay.workflowsDir), "utf8");
+  const held = settleLaunchPrecondition(config, job, sourceWorkflow);
+  if (held) return held;
   const testCommand = repo.test;
-  if (workflowNeedsTestCommand(sourceWorkflow) && !testCommand?.trim()) {
-    throw new Error(
-      `Repo ${job.repo} has no test command. Set repos.${job.repo}.test. The feature workflow refuses to run an empty KILN_TEST.`,
-    );
-  }
   const workflow = materializeWorkflow(config.kilnDir, job.id, job.workflow, overlayMaterialize(config));
   const logPath = join(config.kilnDir, "logs", `${jobBasename(job.id)}.log`);
   mkdirSync(dirname(logPath), { recursive: true });
@@ -1416,6 +1521,8 @@ function launchJob(
 
   let baseSha: string;
   let specText: string;
+  /** Base commit the review workflow's host `diff` step compares the pull request head against. */
+  let reviewBase: string | undefined;
   try {
     clearLaunchError(config.kilnDir, job.id);
     const blocked = commitAgentSandbox(config, job.id, job.workflow, workflow, logPath, sandboxFacts);
@@ -1428,6 +1535,13 @@ function launchJob(
       const number = Number(job.source?.ref.split(":")[2]);
       if (Number.isInteger(number) && number > 0) ensureReviewHead(repo.path, number, pinned);
       baseSha = resolveCommit(host, repo.path, pinned);
+      reviewBase = resolveLaunchBase({
+        checkout: repo.path,
+        deliver: "pr",
+        stack: false,
+        ...(repo.base ? { configuredBase: repo.base } : {}),
+        git: host.git,
+      });
     } else {
       baseSha = resolveLaunchBase({
         checkout: repo.path,
@@ -1458,6 +1572,7 @@ function launchJob(
     KILN_TEST: testCommand,
     KILN_TASK_TITLE: job.title,
     KILN_VERIFY_WRAPPER: join(packageRoot(), "dist", "truncate-output.js"),
+    ...(reviewBase ? { KILN_REVIEW_BASE: reviewBase } : {}),
   };
   return spawnLogged(config, host, { jobId: job.id, repo: job.repo, cwd: repo.path, args, env, logPath });
 }

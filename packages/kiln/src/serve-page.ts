@@ -17,8 +17,11 @@ import {
   activityLiveness,
   formatCost,
   formatDuration,
+  formatClock,
+  formatDay,
   formatLocal,
   formatRelative,
+  phaseLabel,
   shortSha,
   stateTone,
   type ActivityRead,
@@ -29,12 +32,14 @@ import {
   type ReviewDeliverable,
   type StepMark,
 } from "./job-view.js";
+import type { ActivityEvent, ActivityFeed } from "./activity.js";
 import { icon, type IconName } from "./icons.js";
 import { renderMarkdown } from "./markdown.js";
 import { kilnVersion } from "./project.js";
 import type { StatusJobView } from "./report.js";
 import { formatSpend, type SpendSnapshot } from "./rails.js";
 import { DEFAULT_STALL_TIMEOUT_MS } from "./schemas.js";
+import { SECRET_PLACEHOLDER } from "./schemas.js";
 import { BOARD_THEME_CHOICES, DEFAULT_BOARD_THEME, type BoardThemeId } from "./theme.js";
 import type { TriggerRow } from "./triggers.js";
 import { listWorkflowNames } from "./workflow.js";
@@ -42,6 +47,8 @@ import { listWorkflowNames } from "./workflow.js";
 export interface ServeRepoOption {
   name: string;
   path: string;
+  /** False when `repos.<name>.test` is missing or blank. Omit when the page does not know. */
+  hasTest?: boolean;
 }
 
 export type AppSection = "pipeline" | "inbox" | "hand" | "repos" | "history" | "stats" | "report" | "settings" | "job" | "triggers";
@@ -50,6 +57,8 @@ export interface ServePageOptions {
   csrf: string;
   repos: ServeRepoOption[];
   workflows: string[];
+  /** Workflows whose verify step runs the repo test command. */
+  workflowsNeedingTest?: string[];
   configError?: string;
   paused?: boolean;
   spend?: SpendSnapshot;
@@ -78,11 +87,62 @@ export interface AppModel {
   stats?: StatsDocument;
   report?: DayReport;
   detail?: JobDetail;
-  tab?: "overview" | "changes" | "timeline";
+  tab?: "overview" | "live" | "changes" | "timeline";
+  activity?: ActivityFeed;
   triggers?: TriggerRow[];
 }
 
 const LIVE_SCRIPT = readFileSync(join(packageRoot(), "assets", "serve.js"), "utf8");
+
+/** Sidebar `.logo` tile: `--logo` 28px, `--radius-md` 4px, glyph `--icon` 16px. */
+const FAVICON_BADGE = 28;
+const FAVICON_RADIUS = 4;
+const FAVICON_GLYPH = 16;
+
+/** Kiln mark in the sidebar brand. `place` positions that same SVG inside the favicon badge. */
+function kilnMark(stroke: string, place = ""): string {
+  return `<svg ${place}xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="${stroke}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12V6l5-3 5 3v6l-5 3-5-3z"/><path d="M3 6l5 3 5-3M8 9v6"/></svg>`;
+}
+
+function boardStylesheet(): string {
+  return readFileSync(join(packageRoot(), "assets", "serve.css"), "utf8");
+}
+
+function themeBlock(css: string, theme: string): string {
+  const start = css.indexOf(`/* theme:${theme} */`);
+  if (start === -1) return "";
+  const end = css.indexOf("/* theme:end */", start);
+  return end === -1 ? "" : css.slice(start, end);
+}
+
+function declaredColor(block: string, name: string): string | undefined {
+  const match = block.match(new RegExp(`${name}:\\s*(#[0-9a-fA-F]{3,8})\\s*;`));
+  return match?.[1];
+}
+
+/** Accent and glyph colors from the theme block in `serve.css`. No palette of our own. */
+function themeAccent(css: string, theme: BoardThemeId): { fill: string; stroke: string } {
+  const source = css.includes("/* theme:") ? css : boardStylesheet();
+  const block =
+    themeBlock(source, theme) ||
+    themeBlock(source, DEFAULT_BOARD_THEME) ||
+    themeBlock(boardStylesheet(), DEFAULT_BOARD_THEME);
+  const fill = declaredColor(block, "--primary");
+  const stroke = declaredColor(block, "--on-primary");
+  if (!fill || !stroke) throw new Error(`Board theme ${theme} has no accent color.`);
+  return { fill, stroke };
+}
+
+function faviconSvg(fill: string, stroke: string): string {
+  const offset = (FAVICON_BADGE - FAVICON_GLYPH) / 2;
+  const glyph = kilnMark(stroke, `x="${offset}" y="${offset}" width="${FAVICON_GLYPH}" height="${FAVICON_GLYPH}" `);
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${FAVICON_BADGE} ${FAVICON_BADGE}"><rect width="${FAVICON_BADGE}" height="${FAVICON_BADGE}" rx="${FAVICON_RADIUS}" fill="${fill}"/>${glyph}</svg>`;
+}
+
+function faviconLink(css: string, theme: BoardThemeId): string {
+  const accent = themeAccent(css, theme);
+  return `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,${encodeURIComponent(faviconSvg(accent.fill, accent.stroke))}">`;
+}
 
 export function renderConsole(css: string, attention: AttentionView, page?: ServePageOptions): string {
   const jobs = [...attention.needsYou, ...attention.inFlight, ...attention.doneRecently].map((item) => item.job);
@@ -100,7 +160,7 @@ export function renderApp(model: AppModel): string {
   const capNote = page.spend?.blocked ? `<span class="cap" id="cap-note">cap hit</span>` : `<span class="cap" id="cap-note" hidden>cap hit</span>`;
   const body = `<div class="shell">
 <aside class="nav" aria-label="Kiln">
-<div class="brand"><span class="logo" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12V6l5-3 5 3v6l-5 3-5-3z"/><path d="M3 6l5 3 5-3M8 9v6"/></svg></span><div><h1>Kiln</h1>${version}</div></div>
+<div class="brand"><span class="logo" aria-hidden="true">${kilnMark("currentColor")}</span><div><h1>Kiln</h1>${version}</div></div>
 <div class="nav-scroll">
 ${navHtml(model)}
 <button class="add" type="button" id="add-job">Add job</button>
@@ -218,7 +278,7 @@ function mainHtml(model: AppModel, page: ServePageOptions): string {
     return `${error}<main class="main">${reportHtml(model.report)}</main>`;
   }
   if (model.section === "job" && model.detail) {
-    return `${error}<main class="main detail">${detailHtml(model.detail, model.tab ?? "overview", page.csrf, clockOf(page))}</main>`;
+    return `${error}<main class="main detail">${detailHtml(model.detail, model.tab ?? "overview", page.csrf, clockOf(page), model.activity)}</main>`;
   }
   if (model.section === "triggers") {
     return `${error}<main class="main">${triggersHtml(model.triggers ?? [])}</main>`;
@@ -241,7 +301,7 @@ function triggersHtml(rows: readonly TriggerRow[]): string {
     rows.length === 0
       ? `<p class="empty">No triggers.</p>`
       : rows.map((row) => triggerCard(row)).join("\n");
-  return `<header class="list-head"><h2>Triggers</h2><p class="meta">The clock, Jira, and pull request activity can start work. A review is posted only after you approve it. Kiln does not approve or merge.</p><p class="form-error" id="trigger-error" role="alert" hidden></p></header>${body}`;
+  return `<header class="list-head"><h2>Triggers</h2><p class="meta">The clock, Jira, and pull request activity can start work. A review is posted only after you approve it. Kiln does not approve or merge. <a href="/settings">Edit triggers in Settings.</a></p></header>${body}`;
 }
 
 function triggerCard(row: TriggerRow): string {
@@ -271,7 +331,6 @@ function triggerCard(row: TriggerRow): string {
 <h3>${escapeHtml(row.id)}</h3>
 <p class="meta">${escapeHtml(bits.join(" · "))}</p>
 ${next}${last}${error}
-<button type="button" data-trigger-toggle="${escapeHtml(row.id)}" data-enabled="${on ? "true" : "false"}">${on ? "Disable" : "Enable"}</button>
 ${recent}
 </article>`;
 }
@@ -286,7 +345,7 @@ function listHtml(model: AppModel, csrf: string, clock: BoardClock): string {
     return `<header class="list-head"><h2>Inbox</h2><p class="meta">Approve, reject, or revise. Approving a review posts the draft as a comment. Kiln does not approve or merge.</p></header>${jobList(board.inbox, "inbox", "Nothing is waiting on a gate.", csrf, clock)}`;
   }
   if (model.section === "hand") {
-    return `<header class="list-head"><h2>Needs a hand</h2><p class="meta">A breaker tripped, a cap was hit, a review could not be posted, or a run failed with no retry left.</p></header>${jobList(board.hand, "hand", "Nothing needs a person.", csrf, clock)}`;
+    return `<header class="list-head"><h2>Needs a hand</h2><p class="meta">A breaker tripped, a cap was hit, a review could not be posted, a launch is blocked on a repo setting, or a run failed with no retry left.</p></header>${jobList(board.hand, "hand", "Nothing needs a person.", csrf, clock)}`;
   }
   if (model.section === "history") {
     return `<header class="list-head"><h2>History</h2></header>${jobList(board.history, "history", "No finished jobs.", csrf, clock)}`;
@@ -345,10 +404,11 @@ function pipeCard(job: JobView, clock: BoardClock): string {
   const id = encodeURIComponent(job.jobId);
   const cost = formatCost(job.costUsd);
   const age = job.since ? timeHtml(job.since, "rel") : "";
+  const blocked = job.launchBlock ? `<p class="reason">${escapeHtml(job.reason)}</p>${launchFixHtml(job)}` : "";
   return `<article class="card" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}"${activityAttrs(job)}${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
 <a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a>
 <div class="job-meta"><span class="meta">${escapeHtml(job.repo)}</span><span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}</div>
-${progressHtml(job, clock, false)}
+${progressHtml(job, clock, false)}${blocked}
 </article>`;
 }
 
@@ -356,8 +416,9 @@ function groupedJobs(jobs: readonly JobView[], section: "repos" | "history", csr
   const blocks = PIPELINE_COLUMNS.flatMap((column) => {
     const rows = jobs.filter((job) => job.column === column);
     if (rows.length === 0) return [];
+    const cards = rows.map((job) => jobRow(job, section, csrf, clock)).join("\n");
     return [
-      `<section class="state-group"><h3><span class="chip ${column}">${escapeHtml(COLUMN_LABEL[column])}</span><span class="badge">${rows.length}</span></h3><div class="jobs">${rows.map((job) => jobRow(job, section, csrf, clock)).join("\n")}</div></section>`,
+      `<section class="state-group"><div class="jobs"><h3>${escapeHtml(COLUMN_LABEL[column])}<span class="badge">${rows.length}</span></h3>\n${cards}</div></section>`,
     ];
   });
   return blocks.length === 0 ? `<p class="empty">No jobs.</p>` : blocks.join("");
@@ -379,7 +440,7 @@ function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", 
   const classes = ["job"];
   if (section === "inbox") classes.push("decision");
   if (job.scheduledRetry) classes.push("retrying");
-  if (section === "inbox" || (section === "hand" && !job.scheduledRetry)) classes.push("human");
+  if (section === "inbox" || (section === "hand" && !job.scheduledRetry && !job.launchBlock)) classes.push("human");
   const flag = classes.includes("human") ? `<span class="flag">Needs a decision</span>` : "";
   const repo = section === "repos" ? "" : `<span class="meta">${escapeHtml(job.repo)}</span>`;
   const sandbox = job.sandboxed ? `<span class="meta">sandbox · docker</span>` : "";
@@ -394,6 +455,7 @@ function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", 
   const deps = dependsHtml(job);
   const body = section === "inbox" ? decisionBody(job) : "";
   const reason = section === "inbox" && !showReason(job) ? "" : `<p class="reason">${escapeHtml(job.reason)}</p>`;
+  const fix = launchFixHtml(job);
   const feedback = feedbackHtml(job);
   const tail = section !== "inbox" && job.logTail ? logDisclosure(job.logTail) : "";
   const notes = visibleNotes(job, section);
@@ -405,7 +467,7 @@ function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", 
 <div class="job-main">
 <div class="job-top">${flag}<a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a></div>
 <div class="job-meta"><span class="num">${escapeHtml(job.jobId)}</span>${repo}<span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span><span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}${sandbox}${pr}</div>
-${progressHtml(job, clock, false)}${reason}${section === "inbox" ? ranHtml(job) : ""}${history}${unsafe}${retrying}${attempt}${deps}${feedback}${body}${notes}${tail}${unseen}${links}
+${progressHtml(job, clock, false)}${reason}${fix}${section === "inbox" ? ranHtml(job) : ""}${history}${unsafe}${retrying}${attempt}${deps}${feedback}${body}${notes}${tail}${unseen}${links}
 </div>
 ${actionsHtml(job, section, csrf)}
 </article>`;
@@ -446,7 +508,7 @@ function ranHtml(job: JobView): string {
 }
 
 function activityAttrs(job: JobView): string {
-  const activity = job.lastActivityAt ? ` data-activity="${escapeHtml(job.lastActivityAt)}"` : "";
+  const activity = job.stallActivityAt ? ` data-activity="${escapeHtml(job.stallActivityAt)}"` : "";
   return ` data-column="${escapeHtml(job.column)}"${activity}`;
 }
 
@@ -454,7 +516,7 @@ function progressHtml(job: JobView, clock: BoardClock, full: boolean): string {
   if (job.steps.length === 0) return "";
   const live = activityLiveness({
     column: job.column,
-    ...(job.lastActivityAt ? { lastActivityAt: job.lastActivityAt } : {}),
+    ...(job.stallActivityAt ? { lastActivityAt: job.stallActivityAt } : {}),
     ...(clock.now !== undefined ? { now: clock.now } : {}),
     stallTimeoutMs: clock.stallTimeoutMs,
   });
@@ -558,8 +620,9 @@ function looksLikeLog(text: string): boolean {
   return /yak resume|worktree branch|suspended —/.test(text) || text.split("\n").length > 8;
 }
 
-function timeHtml(iso: string, mode: "rel" | "local" | "clock"): string {
-  const text = mode === "rel" ? formatRelative(iso) : mode === "clock" ? formatLocal(iso) : formatLocal(iso);
+function timeHtml(iso: string, mode: "rel" | "local" | "clock" | "date"): string {
+  const text =
+    mode === "rel" ? formatRelative(iso) : mode === "date" ? formatDay(iso) : mode === "clock" ? formatClock(iso) : formatLocal(iso);
   return `<time datetime="${escapeHtml(iso)}" data-time="${mode}">${escapeHtml(text)}</time>`;
 }
 
@@ -567,6 +630,13 @@ function clipTail(text: string): string {
   const lines = text.split("\n").filter((line) => line.trim().length > 0);
   const tail = lines.slice(-8);
   return tail.join("\n");
+}
+
+function launchFixHtml(job: JobView): string {
+  const fix = job.launchBlock?.fix;
+  if (!fix) return "";
+  const href = `/settings?${new URLSearchParams({ repo: fix.repo, field: fix.field }).toString()}`;
+  return `<p class="links"><a href="${escapeHtml(href)}">Edit ${escapeHtml(fix.repo)} in Settings</a></p>`;
 }
 
 function fileLinks(job: BoardJob): string {
@@ -629,18 +699,26 @@ function postForm(action: string, kind: string, label: string, csrf: string): st
   return `<form method="post" action="${action}" class="act ${kind}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button type="submit">${label}</button></form>`;
 }
 
-function detailHtml(detail: JobDetail, tab: "overview" | "changes" | "timeline", _csrf: string, clock: BoardClock): string {
+function detailHtml(
+  detail: JobDetail,
+  tab: "overview" | "live" | "changes" | "timeline",
+  _csrf: string,
+  clock: BoardClock,
+  activity?: ActivityFeed,
+): string {
   const job = detail.job;
   const id = encodeURIComponent(job.jobId);
-  const tabs = (["overview", "changes", "timeline"] as const)
+  const liveDefault = job.column === "running";
+  const tabs = (["overview", "live", "changes", "timeline"] as const)
     .map((name) => {
-      const href = name === "overview" ? `/jobs/${id}` : `/jobs/${id}?tab=${name}`;
+      const href = name === "overview" && !liveDefault ? `/jobs/${id}` : `/jobs/${id}?tab=${name}`;
       const current = name === tab ? ` aria-current="page"` : "";
       const label = name[0]?.toUpperCase() + name.slice(1);
       return `<a href="${href}"${current}>${label}</a>`;
     })
     .join("");
-  const panel = tab === "changes" ? changesHtml(detail) : tab === "timeline" ? timelineHtml(detail) : overviewHtml(detail);
+  const panel =
+    tab === "changes" ? changesHtml(detail) : tab === "timeline" ? timelineHtml(detail) : tab === "live" ? liveHtml(job, activity) : overviewHtml(detail);
   const back = job.inbox ? "/inbox" : "/";
   const backLabel = job.inbox ? "Inbox" : "Pipeline";
   return `<div class="detail-main"${activityAttrs(job)}>
@@ -653,6 +731,7 @@ ${fileLinks(job)}
 ${job.ask ? `<p class="ask">${escapeHtml(job.ask)}</p>` : ""}
 ${job.workflow === "review" && job.canApprove ? `<p class="meta">Approving posts this draft as a pull request comment. Kiln does not approve the pull request or merge it.</p>` : ""}
 ${showReason(job) ? `<p class="reason">${escapeHtml(job.reason)}</p>` : ""}
+${launchFixHtml(job)}
 <p class="unseen" data-unseen-for="${escapeHtml(job.jobId)}" hidden></p>
 </header>
 <nav class="tabs" aria-label="Job">${tabs}</nav>
@@ -660,6 +739,51 @@ ${actionsHtml(job, "job", _csrf)}
 ${panel}
 </div>
 ${railHtml(detail)}`;
+}
+
+function liveHtml(job: BoardJob, activity: ActivityFeed | undefined): string {
+  const feed = activity ?? { running: job.column === "running", cursor: "", events: [], raw: "" };
+  const note = feed.running ? (feed.phase ? `Watching ${phaseLabel(feed.phase)}` : "Watching this run") : "Last session";
+  const phase = feed.phase ? ` data-phase="${escapeHtml(feed.phase)}"` : "";
+  return `<section class="live" id="live" data-running="${feed.running ? "true" : "false"}" data-cursor="${escapeHtml(feed.cursor)}"${phase}>
+<div class="live-bar"><p class="meta live-note" id="live-note">${escapeHtml(note)}</p><button type="button" class="btn" id="live-raw-toggle" aria-pressed="false" aria-controls="live-raw">Raw log</button></div>
+<p class="field-error" id="live-error" role="alert" hidden></p>
+<div class="live-feed" id="live-feed">${feedHtml(feed.events)}</div>
+<pre class="text live-raw" id="live-raw" hidden>${escapeHtml(feed.raw)}</pre>
+</section>`;
+}
+
+function feedHtml(events: readonly ActivityEvent[]): string {
+  if (events.length === 0) return `<p class="empty">No session output yet.</p>`;
+  const blocks: string[] = [];
+  let phase = "";
+  let started = "";
+  let items: string[] = [];
+  const flush = (): void => {
+    if (!phase) return;
+    blocks.push(
+      `<section class="live-phase" data-phase="${escapeHtml(phase)}"><h3>${escapeHtml(phaseLabel(phase))} ${timeHtml(started, "date")}</h3><ol class="live-events">${items.join("")}</ol></section>`,
+    );
+  };
+  for (const event of events) {
+    if (event.phase !== phase) {
+      flush();
+      phase = event.phase;
+      started = event.at;
+      items = [];
+    }
+    items.push(eventHtml(event));
+  }
+  flush();
+  return blocks.join("");
+}
+
+function eventHtml(event: ActivityEvent): string {
+  const summary = escapeHtml(event.summary);
+  const body = event.detail
+    ? `<button type="button" class="live-summary" aria-expanded="false" data-summary="${summary}" data-detail="${escapeHtml(event.detail)}">${summary}</button>`
+    : `<span class="live-summary">${summary}</span>`;
+  return `<li class="live-event ${escapeHtml(event.kind)}" data-kind="${escapeHtml(event.kind)}" data-summary="${summary}">${timeHtml(event.at, "clock")}${body}</li>`;
 }
 
 function overviewHtml(detail: JobDetail): string {
@@ -850,8 +974,9 @@ function intakeSheet(intake: ServePageOptions, attention: AttentionView): string
 <div class="intake-body">
 <div class="field" id="repo-field"><span class="k" id="repo-label">Repo</span>${repoPicker(intake.repos)}
 <p class="field-error" id="repo-error" role="alert" hidden></p></div>
-<div class="field" id="workflow-field"><span class="k" id="workflow-label">Workflow</span>${workflowPicker(intake.workflows)}
-<p class="field-error" id="workflow-error" role="alert" hidden></p></div>
+<div class="field" id="workflow-field"><span class="k" id="workflow-label">Workflow</span>${workflowPicker(intake.workflows, new Set(intake.workflowsNeedingTest ?? []))}
+<p class="field-error" id="workflow-error" role="alert" hidden></p>
+<p class="form-warn" id="intake-warn" role="status" hidden></p></div>
 <div class="field"><span class="k" id="source-label">Source</span>
 <div class="seg" role="group" aria-labelledby="source-label">
 <button type="button" data-source="prompt" aria-pressed="true">Prompt</button>
@@ -867,7 +992,7 @@ function intakeSheet(intake: ServePageOptions, attention: AttentionView): string
 <p class="meta" id="picked"></p>
 <p class="field-error" id="source-error" role="alert" hidden></p>
 </div>
-<div data-pane="jira" hidden><label class="field"><span class="k">Jira key</span><input id="jira-key" type="text" placeholder="PROJ-123" autocomplete="off" spellcheck="false" aria-describedby="jira-error">
+<div data-pane="jira" hidden><label class="field"><span class="k">Jira issue</span><input id="jira-key" type="text" placeholder="PROJ-123 or issue URL" autocomplete="off" spellcheck="false" aria-describedby="jira-error">
 <p class="field-error" id="jira-error" role="alert" hidden></p></label></div>
 <label class="field" id="issue-field"><span class="k">Issue</span><input id="job-issue" type="text" placeholder="ABC-123" autocomplete="off" spellcheck="false"></label>
 <label class="field" id="title-field"><span class="k">Title</span><input id="job-title" type="text" autocomplete="off"></label>
@@ -892,16 +1017,32 @@ function themePicker(selected: BoardThemeId): string {
   return `<div class="themes" id="theme-pick" role="group" aria-label="Theme">${buttons}</div>`;
 }
 
+function settingsTabs(): string {
+  const sections = [
+    ["repos", "Repos"],
+    ["global", "Global"],
+    ["triggers", "Triggers"],
+    ["routes", "Routes"],
+    ["jira", "Jira"],
+    ["overlay", "Overlay"],
+    ["appearance", "Appearance"],
+    ["advanced", "Advanced"],
+  ];
+  const buttons = sections
+    .map(
+      ([id, label], index) =>
+        `<button type="button" data-settings-tab="${id}" aria-pressed="${index === 0 ? "true" : "false"}">${label}</button>`,
+    )
+    .join("");
+  return `<div class="seg" role="tablist" aria-label="Settings sections">${buttons}</div>`;
+}
+
 function settingsForm(theme: BoardThemeId): string {
   return `<form id="settings-form" class="intake-form">
 <p class="meta" id="settings-path"></p>
 <p class="saved" id="settings-saved" role="status" hidden>Saved</p>
 <p class="form-error" id="settings-error" role="alert" hidden></p>
-<div class="seg" role="tablist" aria-label="Settings sections">
-<button type="button" data-settings-tab="repos" aria-pressed="true">Repos</button>
-<button type="button" data-settings-tab="global" aria-pressed="false">Global</button>
-<button type="button" data-settings-tab="appearance" aria-pressed="false">Appearance</button>
-</div>
+${settingsTabs()}
 <div id="settings-repos">
 <div id="repo-editor" hidden>
 <label class="field"><span class="k">Name</span><input id="repo-name" type="text" autocomplete="off" spellcheck="false"></label>
@@ -960,18 +1101,127 @@ function settingsForm(theme: BoardThemeId): string {
 <label class="field"><span class="k">Daily dollar cap</span><input id="daily-dollar-cap" type="number" min="0" step="0.01"></label>
 <p class="hint" id="hint-cap"></p>
 <p class="field-error" data-error="dailyDollarCap" hidden></p>
+<label class="field"><span class="k">Max concurrent</span><input id="max-concurrent" type="number" min="1" step="1"></label>
+<p class="hint" id="hint-concurrent"></p>
+<p class="field-error" data-error="maxConcurrent" hidden></p>
+<div class="field"><span class="k">Adapter</span><div class="seg" id="adapter-mode" role="group" aria-label="Adapter">
+<button type="button" data-adapter="claude-code" aria-pressed="true">claude-code</button>
+<button type="button" data-adapter="mock" aria-pressed="false">mock</button>
+</div>
+<p class="hint" id="hint-adapter"></p>
+<p class="field-error" data-error="adapter" hidden></p></div>
+</div>
+<div id="settings-triggers" hidden>
+<div id="trigger-editor" hidden>
+<label class="field"><span class="k">Id</span><input id="trigger-id" type="text" autocomplete="off" spellcheck="false"></label>
+<p class="field-error" data-error="trigger.id" hidden></p>
+<div class="field"><span class="k">Enabled</span><div class="seg" id="trigger-enabled" role="group" aria-label="Enabled">
+<button type="button" data-enabled="true" aria-pressed="true">On</button>
+<button type="button" data-enabled="false" aria-pressed="false">Off</button>
+</div></div>
+<div class="field"><span class="k">Kind</span><div class="seg" id="trigger-kind" role="group" aria-label="Trigger kind">
+<button type="button" data-kind="schedule" aria-pressed="true">schedule</button>
+<button type="button" data-kind="jira" aria-pressed="false">jira</button>
+<button type="button" data-kind="pr" aria-pressed="false">pr</button>
+</div></div>
+<div data-for-kind="schedule">
+<label class="field"><span class="k">Cron</span><input id="trigger-cron" type="text" autocomplete="off" spellcheck="false" placeholder="0 * * * *"></label>
+<p class="hint">Five fields, local time. review-requests defaults to 0 * * * *.</p>
+<label class="field"><span class="k">Label</span><input id="trigger-label" type="text" autocomplete="off" spellcheck="false" placeholder="kiln-review"></label>
+<label class="field"><span class="k">Max new</span><input id="trigger-max-new" type="number" min="1" step="1" placeholder="3"></label>
+<p class="hint">New review jobs one fire may create.</p>
+<label class="field"><span class="k">Max queued</span><input id="trigger-max-queued" type="number" min="1" step="1" placeholder="5"></label>
+<p class="hint">Queued or running review jobs at once.</p>
+</div>
+<div data-for-kind="jira" hidden>
+<label class="field"><span class="k">Every</span><input id="trigger-every" type="text" autocomplete="off" spellcheck="false" placeholder="5m"></label>
+<p class="hint">30s, 5m, or 1h. Default 5m.</p>
+<label class="field"><span class="k">JQL</span><input id="trigger-jql" type="text" autocomplete="off" spellcheck="false"></label>
+<p class="hint">When set, this replaces label and status.</p>
+<label class="field"><span class="k">Label</span><input id="trigger-jira-label" type="text" autocomplete="off" spellcheck="false"></label>
+<label class="field"><span class="k">Status</span><input id="trigger-status" type="text" autocomplete="off" spellcheck="false"></label>
+<div class="field"><span class="k">Repo</span><div id="trigger-repo"></div></div>
+</div>
+<div data-for-kind="pr" hidden>
+<p class="hint">Pull request activity on Kiln-owned pull requests. No extra fields.</p>
+</div>
+<p class="field-error" data-error="trigger.form" hidden></p>
+<div class="d-actions"><button type="button" data-row-done="triggers">Done</button></div>
+</div>
+<div id="trigger-list"></div>
+<div class="d-actions"><button type="button" data-row-add="triggers">Add trigger</button></div>
+</div>
+<div id="settings-routes" hidden>
+<div id="route-editor" hidden>
+<label class="field"><span class="k">Id</span><input id="route-id" type="text" autocomplete="off" spellcheck="false"></label>
+<p class="field-error" data-error="route.id" hidden></p>
+<div class="field"><span class="k">Trigger</span><div id="route-trigger"></div></div>
+<div class="field"><span class="k">Action</span><div class="seg" id="route-action" role="group" aria-label="Route action">
+<button type="button" data-action="create" aria-pressed="true">create</button>
+<button type="button" data-action="attach" aria-pressed="false">attach</button>
+</div></div>
+<div class="field"><span class="k">Workflow</span><div id="route-workflow"></div></div>
+<p class="hint">Used when the action is create.</p>
+<div class="field"><span class="k">Repo</span><div id="route-repo"></div></div>
+<p class="field-error" data-error="route.form" hidden></p>
+<div class="d-actions"><button type="button" data-row-done="routes">Done</button></div>
+</div>
+<div id="route-list"></div>
+<div class="d-actions"><button type="button" data-row-add="routes">Add route</button></div>
+</div>
+<div id="settings-jira" class="stack" hidden>
+<div class="field"><label class="k" for="jira-base">Base URL</label><input id="jira-base" type="text" autocomplete="off" spellcheck="false" placeholder="https://example.atlassian.net">
+<p class="field-error" data-error="jira.baseUrl" hidden></p></div>
+<div class="field"><label class="k" for="jira-email">Email</label><input id="jira-email" type="text" autocomplete="off" spellcheck="false" placeholder="dev@example.com">
+<p class="field-error" data-error="jira.email" hidden></p></div>
+<div class="field"><label class="k" for="jira-acceptance">Acceptance field</label><input id="jira-acceptance" type="text" autocomplete="off" spellcheck="false" placeholder="customfield_10001">
+<p class="hint">Optional. When set, Kiln reads acceptance criteria from this field. Empty uses the Jira field named Acceptance criteria.</p>
+<p class="field-error" data-error="jira.acceptanceField" hidden></p></div>
+<div class="field"><span class="k">API token</span><p class="meta" id="jira-token">not set</p>
+<p class="hint">Set JIRA_API_TOKEN in the environment. This page does not store a token.</p>
+<p class="field-error" data-error="jira.apiToken" hidden></p></div>
+</div>
+<div id="settings-overlay" hidden>
+<label class="field"><span class="k">Workflows</span><input id="overlay-workflows" type="text" autocomplete="off" spellcheck="false" placeholder="workflows"></label>
+<p class="hint">Directory of local workflow files. Empty uses the kiln home workflows directory.</p>
+<p class="field-error" data-error="overlay.workflows" hidden></p>
+<label class="field"><span class="k">Prompts</span><input id="overlay-prompts" type="text" autocomplete="off" spellcheck="false" placeholder="prompts"></label>
+<p class="hint">Directory of prompt overrides. Empty uses the kiln home prompts directory.</p>
+<p class="field-error" data-error="overlay.prompts" hidden></p>
+<label class="field"><span class="k">Skills</span><input id="overlay-skills" type="text" autocomplete="off" spellcheck="false" placeholder="skills"></label>
+<p class="hint">Directory of skills. Empty uses the kiln home skills directory.</p>
+<p class="field-error" data-error="overlay.skills" hidden></p>
+<label class="field"><span class="k">Skill paths</span><textarea id="overlay-skill-paths" rows="3" spellcheck="false" placeholder="/home/dev/skills"></textarea></label>
+<p class="hint">One extra skill directory per line.</p>
+<p class="field-error" data-error="overlay.skillPaths" hidden></p>
 </div>
 <div id="settings-appearance" hidden>
 <p class="hint">Color palette for this board. The choice applies immediately and is saved here.</p>
 ${themePicker(theme)}
 <p class="field-error" data-error="board.theme" hidden></p>
 </div>
+<div id="settings-advanced" hidden>
+<label class="field"><span class="k">kiln.config.json</span><textarea id="settings-json" rows="18" spellcheck="false" aria-describedby="advanced-hint advanced-errors"></textarea></label>
+<p class="hint" id="advanced-hint">Saving this section writes the JSON below. A secret is shown as ${escapeHtml(SECRET_PLACEHOLDER)}. Saving that placeholder keeps the current value. Set JIRA_API_TOKEN in the environment. Invalid JSON is not written.</p>
+<p class="field-error" id="advanced-errors" data-error="file" hidden></p>
+</div>
 <div class="form-footer"><button type="submit" class="btn primary">Save</button></div>
 </form>`;
 }
 
 function repoListKey(repos: readonly ServeRepoOption[]): string {
-  return repos.map((repo) => `${repo.name}\t${repo.path}`).join("\n");
+  return repos.map((repo) => `${repo.name}\t${repo.path}\t${testFlag(repo)}`).join("\n");
+}
+
+/** Matches the flag `serve.js` rebuilds the picker from. Blank when unknown. */
+function testFlag(repo: ServeRepoOption): string {
+  if (repo.hasTest === undefined) return "";
+  return repo.hasTest ? "1" : "0";
+}
+
+function hasTestAttr(repo: ServeRepoOption): string {
+  if (repo.hasTest === undefined) return "";
+  return ` data-has-test="${repo.hasTest ? "true" : "false"}"`;
 }
 
 function repoPicker(repos: ServeRepoOption[]): string {
@@ -987,35 +1237,35 @@ function repoPicker(repos: ServeRepoOption[]): string {
     const options = repos
       .map((repo, index) => {
         const on = repo.name === selected.name;
-        return `<li role="option" id="repo-opt-${index}" data-value="${escapeHtml(repo.name)}" data-path="${escapeHtml(repo.path)}" aria-selected="${on ? "true" : "false"}">${escapeHtml(repo.name)}</li>`;
+        return `<li role="option" id="repo-opt-${index}" data-value="${escapeHtml(repo.name)}" data-path="${escapeHtml(repo.path)}"${hasTestAttr(repo)} aria-selected="${on ? "true" : "false"}">${escapeHtml(repo.name)}</li>`;
       })
       .join("");
-    return `<div class="combo" id="repo-pick" data-mode="select" data-value="${escapeHtml(selected.name)}" data-path="${escapeHtml(selected.path)}" data-list="${list}"><input id="repo-pick-query" class="combo-input" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="repo-pick-list" aria-labelledby="repo-label" placeholder="Search repos" value="${escapeHtml(selected.name)}" autocomplete="off" spellcheck="false"><ul class="combo-list" id="repo-pick-list" role="listbox" hidden>${options}<li class="empty" role="presentation" hidden>No matching repos.</li></ul></div>`;
+    return `<div class="combo" id="repo-pick" data-mode="select" data-value="${escapeHtml(selected.name)}" data-path="${escapeHtml(selected.path)}"${hasTestAttr(selected)} data-list="${list}"><input id="repo-pick-query" class="combo-input" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="repo-pick-list" aria-labelledby="repo-label" placeholder="Search repos" value="${escapeHtml(selected.name)}" autocomplete="off" spellcheck="false"><ul class="combo-list" id="repo-pick-list" role="listbox" hidden>${options}<li class="empty" role="presentation" hidden>No matching repos.</li></ul></div>`;
   }
   const buttons = repos
     .map((repo, index) => {
       const on = index === 0;
-      return `<button type="button" class="pick" data-repo="${escapeHtml(repo.name)}" data-path="${escapeHtml(repo.path)}" aria-pressed="${on ? "true" : "false"}">${escapeHtml(repo.name)}</button>`;
+      return `<button type="button" class="pick" data-repo="${escapeHtml(repo.name)}" data-path="${escapeHtml(repo.path)}"${hasTestAttr(repo)} aria-pressed="${on ? "true" : "false"}">${escapeHtml(repo.name)}</button>`;
     })
     .join("");
-  return `<div class="picks" id="repo-pick" data-mode="chips" data-value="${escapeHtml(selected.name)}" data-path="${escapeHtml(selected.path)}" data-list="${list}" role="group" aria-labelledby="repo-label">${buttons}</div>`;
+  return `<div class="picks" id="repo-pick" data-mode="chips" data-value="${escapeHtml(selected.name)}" data-path="${escapeHtml(selected.path)}"${hasTestAttr(selected)} data-list="${list}" role="group" aria-labelledby="repo-label">${buttons}</div>`;
 }
 
-function workflowPicker(names: string[]): string {
+function workflowPicker(names: string[], needsTest: ReadonlySet<string>): string {
   const selected = names.includes("feature") ? "feature" : (names[0] ?? "");
   if (names.length === 0 || names.length > PICK_CHIP_MAX) {
     const options =
       names.length === 0
         ? `<option value="">none</option>`
         : names
-            .map((name) => `<option value="${escapeHtml(name)}"${name === selected ? " selected" : ""}>${escapeHtml(name)}</option>`)
+            .map((name) => `<option value="${escapeHtml(name)}" data-needs-test="${needsTest.has(name) ? "true" : "false"}"${name === selected ? " selected" : ""}>${escapeHtml(name)}</option>`)
             .join("");
     return `<select id="workflow" name="workflow" aria-labelledby="workflow-label">${options}</select>`;
   }
   const buttons = names
     .map(
       (name) =>
-        `<button type="button" data-workflow="${escapeHtml(name)}" aria-pressed="${name === selected ? "true" : "false"}">${escapeHtml(name)}</button>`,
+        `<button type="button" data-workflow="${escapeHtml(name)}" aria-pressed="${name === selected ? "true" : "false"}" data-needs-test="${needsTest.has(name) ? "true" : "false"}">${escapeHtml(name)}</button>`,
     )
     .join("");
   return `<div class="seg" id="workflow-pick" data-mode="chips" data-workflow="${escapeHtml(selected)}" role="group" aria-labelledby="workflow-label">${buttons}</div>`;
@@ -1073,6 +1323,7 @@ function document(options: {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(options.title)}</title>
+${faviconLink(options.css, theme)}
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&family=Roboto+Mono:wght@400;500&display=swap">
 <style>
 ${options.css}

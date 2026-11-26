@@ -45,7 +45,7 @@ function observation(jobs: ObservedJob[]): Observation {
 }
 
 describe("statusView", () => {
-  it("exposes the stall activity clock as lastActivityAt", () => {
+  it("exposes the stall activity clock as stallActivityAt", () => {
     const at = Date.parse("2026-11-15T12:00:00.000Z");
     const later = statusView(
       observation([
@@ -57,7 +57,7 @@ describe("statusView", () => {
         }),
       ]),
     );
-    assert.equal(later.jobs[0]?.lastActivityAt, "2026-11-15T12:00:00.000Z");
+    assert.equal(later.jobs[0]?.stallActivityAt, "2026-11-15T12:00:00.000Z");
     assert.doesNotMatch(renderStatus(later), /lastActivity/);
 
     const launch = statusView(
@@ -71,7 +71,7 @@ describe("statusView", () => {
         }),
       ]),
     );
-    assert.equal(launch.jobs[0]?.lastActivityAt, "2026-11-15T12:00:10.000Z");
+    assert.equal(launch.jobs[0]?.stallActivityAt, "2026-11-15T12:00:10.000Z");
   });
 
   it("returns the derived state kiln status prints, including approved", () => {
@@ -101,7 +101,7 @@ describe("statusView", () => {
     assert.match(text, /job-a {2}api {2}feature {2}approved {2}run run-1/);
     assert.match(text, /job-b {2}web {2}feature {2}blocked/);
     assert.match(text, /waiting for job-a to land/);
-    assert.equal(view.jobs[0]?.lastActivityAt, undefined);
+    assert.equal(view.jobs[0]?.stallActivityAt, undefined);
     assert.doesNotMatch(text, /Wire the summary/);
   });
 
