@@ -298,7 +298,8 @@ describe("run reliability", () => {
     const id = add(config, "Busy agent");
     const tree = await spawnTree();
     const runId = "2000-01-01T00-00-00Z-session";
-    const now = new Date();
+    // Whole seconds, so mtimes round-trip through utimes without sub-millisecond drift.
+    const now = new Date(Math.floor(Date.now() / 1000) * 1000);
     const stale = new Date(now.getTime() - 60 * 60_000);
     journal(checkout, runId, [
       { t: "run.started", at: stale.toISOString(), runId, tag: `kiln:${id}`, pid: tree.parentPid },
