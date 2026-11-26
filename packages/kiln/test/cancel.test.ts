@@ -584,6 +584,30 @@ describe("kiln remove <jobId>", () => {
       await stop(server.child);
     }
   });
+  it("refuses a cancelled job that still has a live process and only deletes Kiln's own spec copy", () => {
+    const box = stopBox();
+    const k = box.config.kilnDir;
+    const stuck = add(box.config, "SAMPLE-STUCK");
+    assert.equal(cancelJob(box.config, stuck).outcome, "cancelled");
+    // ponytail: our own pid as the breadcrumb; remove only reads it, nothing signals it.
+    mkdirSync(join(k, "launching"), { recursive: true });
+    const crumb = join(k, "launching", `${stuck}.json`);
+    writeFileSync(crumb, `${JSON.stringify({ jobId: stuck, pid: process.pid, logPath: "" })}\n`);
+    assert.throws(() => removeJob(box.config, stuck), new RegExp(`Job ${stuck} still has a live process\\. Run kiln cancel ${stuck} first\\.`));
+    assert.ok(existsSync(join(box.config.jobsDir, `${stuck}.json`)));
+    rmSync(crumb);
+    removeJob(box.config, stuck);
+    assert.equal(existsSync(join(box.config.jobsDir, `${stuck}.json`)), false);
+
+    const edited = add(box.config, "SAMPLE-EDITED");
+    const jobFile = join(box.config.jobsDir, `${edited}.json`);
+    const record = join(k, "keep-me.md");
+    writeFileSync(record, "keep\n");
+    writeFileSync(jobFile, JSON.stringify({ ...JSON.parse(readFileSync(jobFile, "utf8")), spec: "keep-me.md" }));
+    removeJob(box.config, edited);
+    assert.equal(existsSync(jobFile), false);
+    assert.ok(existsSync(record));
+  });
 });
 
 describe("job id validation and board routes", () => {
