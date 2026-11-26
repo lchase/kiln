@@ -75,7 +75,7 @@ There is no separate `agents/` directory. In this stack, factory agents are prom
 
 ## Prerequisites
 
-- Node.js >= 22 (the `engines` field in `package.json`)
+- Node.js >= 22.12 (the `engines` field in `package.json`)
 - git
 - Claude Code, installed and logged in, for a real run. `adapter: "mock"` does not call a model.
 - `gh`, installed and logged in, only when a repo uses `deliver: "pr"`.

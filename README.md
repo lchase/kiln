@@ -10,4 +10,4 @@ npm install
 npm test
 ```
 
-Node.js >= 22. `npm i -g @lchase/kiln` still installs the published CLI. Contributing: [packages/kiln/CONTRIBUTING.md](packages/kiln/CONTRIBUTING.md).
+Node.js >= 22.12. `npm i -g @lchase/kiln` still installs the published CLI. Contributing: [packages/kiln/CONTRIBUTING.md](packages/kiln/CONTRIBUTING.md).
