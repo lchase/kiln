@@ -7,7 +7,7 @@ const h = React.createElement
 
 /** No JSX — this repo builds `.ts` only, and a single small component isn't
  * worth a `.tsx`/jsx-tsconfig detour. `React.createElement` directly. */
-export function WatchApp({ snapshot }: { snapshot: WatchSnapshot }) {
+export function WatchApp({ snapshot }: { snapshot: WatchSnapshot }): React.ReactElement {
   const openGates = new Set(snapshot.openGateIds)
 
   const stepRows = snapshot.stepStatuses.map((s) =>
