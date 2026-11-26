@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { newestActivityAt } from "./activity.js";
+import { newestActivity } from "./activity.js";
 import { AUTH_FAILED_LINE } from "./auth.js";
 import { launchBlockLabel, type LaunchBlock } from "./events.js";
 import { readBoardFiles, readReviewRounds, type BoardFile, type BoardReviewRound } from "./board.js";
@@ -264,6 +264,9 @@ export interface StatusJobView {
   logTail?: string;
   /** Time of the newest session activity event. Absent until a phase writes output. */
   lastActivityAt?: string;
+  /** Newest agent note (redacted, one line) and its time. Absent until the agent writes one. */
+  latestNote?: string;
+  latestNoteAt?: string;
   /** Worktree diff stat, or the build summary when the tree is clean. */
   diffSummary?: string;
   /** Latest open step failure, from a `step.failed` event. */
@@ -533,11 +536,11 @@ function stallStamp(job: ObservedJob): string | undefined {
   return new Date(ms).toISOString();
 }
 
-function activityStamp(job: ObservedJob): { lastActivityAt?: string } {
+function activityStamp(job: ObservedJob): { lastActivityAt?: string; latestNote?: string; latestNoteAt?: string } {
   const run = job.run;
   if (!run || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(run.runId)) return {};
-  const at = newestActivityAt(join(run.checkout, ".runs", run.runId));
-  return at ? { lastActivityAt: at } : {};
+  const { at, note } = newestActivity(join(run.checkout, ".runs", run.runId));
+  return { ...(at ? { lastActivityAt: at } : {}), ...(note ? { latestNote: note.text, latestNoteAt: note.at } : {}) };
 }
 
 function progressFor(job: ObservedJob): StepProgress[] {

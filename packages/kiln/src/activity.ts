@@ -10,10 +10,14 @@ import { truncateCaptured } from "./truncate-output.js";
 
 export type ActivityKind = "message" | "tool" | "edit" | "command" | "result" | "error";
 
+/** `note` is the agent speaking (a `message`). Everything else is an `action`. */
+export type ActivityRole = "note" | "action";
+
 export interface ActivityEvent {
   at: string;
   phase: string;
   kind: ActivityKind;
+  role: ActivityRole;
   summary: string;
   detail?: string;
 }
@@ -27,11 +31,15 @@ export interface ActivityFeed {
   lastActivityAt?: string;
 }
 
-interface Sourced extends ActivityEvent {
+interface Sourced extends Omit<ActivityEvent, "role"> {
   source: string;
   line: number;
   command?: string;
+  /** `$ <full original command>`, the head of a command event's detail. */
+  shell?: string;
 }
+
+type ToolView = { kind: ActivityKind; summary: string; command?: string; shell?: string };
 
 interface SourceFile {
   source: string;
@@ -47,18 +55,23 @@ const CURSOR_PART = /^([A-Za-z0-9][A-Za-z0-9._-]*):(\d+)$/;
 const SESSION_FILE = /^([A-Za-z0-9][A-Za-z0-9._-]*)\.jsonl$/;
 const ARTIFACT_FILE = /^([A-Za-z0-9][A-Za-z0-9_-]*)(?:\.(\d+))?\.json$/;
 
-/** Known tools. Anything else is the tool name, plus a path when the input has one. */
-const TOOLS: Record<string, (input: ToolInput) => { kind: ActivityKind; summary: string; command?: string }> = {
-  Read: (input) => ({ kind: "tool", summary: `Read ${pathOf(input)}` }),
-  Edit: (input) => ({ kind: "edit", summary: `Edit ${pathOf(input)}${statOf(str(input, "old_string"), str(input, "new_string"))}` }),
-  Write: (input) => ({ kind: "edit", summary: `Write ${pathOf(input)}${statOf("", str(input, "content"))}` }),
-  Bash: (input) => {
-    const command = clip(str(input, "command")?.split("\n")[0] ?? "command");
-    return { kind: "command", summary: `Ran ${command}`, command };
+/**
+ * Known tools. Anything else is the tool name, plus a path when the input has one.
+ * `root` is the run's worktree, from the session's init `cwd`, when known.
+ */
+const TOOLS: Record<string, (input: ToolInput, root: string | undefined) => ToolView> = {
+  Read: (input, root) => ({ kind: "tool", summary: `Read ${pathOf(input, root)}` }),
+  Edit: (input, root) => ({ kind: "edit", summary: `Edit ${pathOf(input, root)}${statOf(str(input, "old_string"), str(input, "new_string"))}` }),
+  Write: (input, root) => ({ kind: "edit", summary: `Write ${pathOf(input, root)}${statOf("", str(input, "content"))}` }),
+  Bash: (input, root) => {
+    const full = str(input, "command");
+    const command = clip(full ? tidyCommand(full.split("\n")[0] ?? full, root) : "command");
+    return { kind: "command", summary: `Ran ${command}`, command, ...(full ? { shell: `$ ${full.trim()}` } : {}) };
   },
-  Grep: (input) => ({ kind: "tool", summary: where("Grep", str(input, "pattern"), str(input, "path")) }),
+  Grep: (input, root) => ({ kind: "tool", summary: where("Grep", str(input, "pattern"), str(input, "path"), root) }),
   Glob: (input) => ({ kind: "tool", summary: `Glob ${str(input, "pattern") ?? ""}`.trim() }),
   Skill: (input) => ({ kind: "tool", summary: `Skill ${str(input, "skill") ?? ""}`.trim() }),
+  StructuredOutput: () => ({ kind: "tool", summary: "Returned its result" }),
 };
 
 export function parseActivityCursor(raw: string | null | undefined): Map<string, number> | undefined {
@@ -79,10 +92,21 @@ export function parseActivityStream(text: string, phase: string, fallbackAt: str
 }
 
 export function newestActivityAt(runDir: string): string | undefined {
+  return newestActivity(runDir).at;
+}
+
+/** Newest activity time and newest note (published: redacted and clipped), from one read of the run. */
+export function newestActivity(runDir: string): { at?: string; note?: { text: string; at: string } } {
   try {
-    return existsSync(runDir) ? readRunActivity(runDir, { running: false }).lastActivityAt : undefined;
+    if (!existsSync(runDir)) return {};
+    const feed = readRunActivity(runDir, { running: false });
+    const note = feed.events.reduce<ActivityEvent | undefined>(
+      (latest, event) => (event.role === "note" && (!latest || event.at >= latest.at) ? event : latest),
+      undefined,
+    );
+    return { ...(feed.lastActivityAt ? { at: feed.lastActivityAt } : {}), ...(note ? { note: { text: note.summary, at: note.at } } : {}) };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -139,6 +163,7 @@ function parseSession(text: string, phase: string, source: string, fallbackAt: s
   const events: Sourced[] = [];
   const pending = new Map<string, Sourced>();
   const raw: string[] = [];
+  let root: string | undefined;
   const push = (line: number, at: string, event: Omit<Sourced, "source" | "line" | "at" | "phase">): Sourced => {
     const full = { ...event, source, line, at, phase };
     events.push(full);
@@ -153,14 +178,22 @@ function parseSession(text: string, phase: string, source: string, fallbackAt: s
     }
     const at = stamp(record, fallbackAt);
     const lineNo = index + 1;
-    if (record.type === "assistant") {
+    if (record.type === "system" && record.subtype === "init" && typeof record.cwd === "string" && record.cwd.trim()) {
+      // A resumed session appends a second init; the latest cwd wins from here on.
+      root = record.cwd.trim().replaceAll("\\", "/").replace(/\/+$/, "") || undefined;
+    } else if (record.type === "assistant") {
       for (const block of blocks(record.message)) {
         if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
           push(lineNo, at, { kind: "message", ...said(block.text) });
           raw.push(block.text.trim());
         } else if (block.type === "tool_use" && typeof block.name === "string") {
-          const view = toolOf(block.name, inputOf(block.input));
-          const event = push(lineNo, at, { kind: view.kind, summary: view.summary, ...(view.command ? { command: view.command } : {}) });
+          const view = toolOf(block.name, inputOf(block.input), root);
+          const event = push(lineNo, at, {
+            kind: view.kind,
+            summary: view.summary,
+            ...(view.command ? { command: view.command } : {}),
+            ...(view.shell ? { shell: view.shell, detail: view.shell } : {}),
+          });
           pending.set(typeof block.id === "string" ? block.id : `${lineNo}:${block.name}`, event);
           raw.push(view.summary);
         }
@@ -173,7 +206,8 @@ function parseSession(text: string, phase: string, source: string, fallbackAt: s
         const output = toolText(block.content);
         const failed = failureOf(output);
         event.summary = failed ? `Ran ${event.command} - ${failed}` : block.is_error === true ? `Ran ${event.command} - failed` : event.summary;
-        if (output && output !== event.summary) event.detail = output.split("\n").slice(-40).join("\n");
+        const tail = output.split("\n").slice(-40).join("\n");
+        if (output) event.detail = event.shell ? `${event.shell}\n\n${tail}` : tail;
         event.line = lineNo;
         event.at = at;
         if (output) raw.push(output);
@@ -182,7 +216,7 @@ function parseSession(text: string, phase: string, source: string, fallbackAt: s
       const errors = Array.isArray(record.errors) ? record.errors.filter((item): item is string => typeof item === "string").join("\n").trim() : "";
       const failed = record.subtype !== "success" || record.is_error === true;
       const body = failed ? errors : typeof record.result === "string" ? record.result.trim() : "";
-      const shown = body && !body.startsWith("{") && !body.startsWith("[") ? said(body) : { summary: failed ? "The step failed" : "Finished" };
+      const shown = body && !body.startsWith("{") && !body.startsWith("[") ? said(body) : { summary: failed ? "The step failed" : "Step finished" };
       push(lineNo, at, { kind: failed ? "error" : "result", ...shown });
       raw.push(shown.detail ?? shown.summary);
     }
@@ -215,17 +249,34 @@ function parseCommand(text: string, phase: string, source: string, at: string): 
   };
 }
 
-function toolOf(name: string, input: ToolInput): { kind: ActivityKind; summary: string; command?: string } {
-  return TOOLS[name]?.(input) ?? { kind: "tool", summary: str(input, "file_path") ? `${name} ${shortPath(str(input, "file_path") ?? "")}` : name || "Tool" };
+function toolOf(name: string, input: ToolInput, root: string | undefined): ToolView {
+  return TOOLS[name]?.(input, root) ?? { kind: "tool", summary: str(input, "file_path") ? `${name} ${shortPath(str(input, "file_path") ?? "", root)}` : name || "Tool" };
 }
 
-function pathOf(input: ToolInput): string {
+/**
+ * Drops a leading `cd` into the worktree and shows worktree paths relative to it.
+ * `cd <root>/<sub> && rest` reads `in <sub>: rest`. Only `<root>` on a path boundary
+ * matches, so `<root>-other` and paths outside the worktree stay as written.
+ */
+function tidyCommand(command: string, root: string | undefined): string {
+  if (!root) return command;
+  const at = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const lead = new RegExp(`^\\s*cd\\s+(["']?)${at}(/[^"'\\s;&|]*)?\\1\\s*(?:&&|;)\\s*`).exec(command);
+  const sub = lead?.[2]?.replace(/^\/+|\/+$/g, "");
+  const rest = (lead ? command.slice(lead[0].length) : command).replace(
+    new RegExp(`${at}(?:/|(?=[\\s"';&)]|$))`, "g"),
+    (match) => (match.endsWith("/") ? "" : "."),
+  );
+  return sub ? `in ${sub}: ${rest}` : rest;
+}
+
+function pathOf(input: ToolInput, root: string | undefined): string {
   const file = str(input, "file_path");
-  return file ? shortPath(file) : "file";
+  return file ? shortPath(file, root) : "file";
 }
 
-function where(verb: string, pattern: string | undefined, path: string | undefined): string {
-  if (pattern && path) return `${verb} ${pattern} in ${shortPath(path)}`;
+function where(verb: string, pattern: string | undefined, path: string | undefined, root: string | undefined): string {
+  if (pattern && path) return `${verb} ${pattern} in ${shortPath(path, root)}`;
   return `${verb} ${pattern ?? ""}`.trim();
 }
 
@@ -269,8 +320,10 @@ function clip(text: string): string {
   return flat.length <= 160 ? flat : `${flat.slice(0, 159).trimEnd()}…`;
 }
 
-function shortPath(file: string): string {
+function shortPath(file: string, root?: string): string {
   const normalized = file.replaceAll("\\", "/");
+  if (root && normalized === root) return ".";
+  if (root && normalized.startsWith(`${root}/`)) return normalized.slice(root.length + 1);
   const workspace = normalized.lastIndexOf("/workspace/");
   if (workspace !== -1) return normalized.slice(workspace + "/workspace/".length);
   const src = normalized.lastIndexOf("/src/");
@@ -301,7 +354,8 @@ function inputOf(value: unknown): ToolInput {
 function publish(event: Sourced): ActivityEvent {
   const summary = redact(event.summary).trim() || "Activity";
   const detail = event.detail ? redact(event.detail).trim() : "";
-  return { at: event.at, phase: event.phase, kind: event.kind, summary, ...(detail && detail !== summary ? { detail } : {}) };
+  const role: ActivityRole = event.kind === "message" ? "note" : "action";
+  return { at: event.at, phase: event.phase, kind: event.kind, role, summary, ...(detail && detail !== summary ? { detail } : {}) };
 }
 
 function completeLines(text: string): string[] {
