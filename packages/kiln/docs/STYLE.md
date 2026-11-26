@@ -86,6 +86,10 @@ State colors (say the word as well as the color):
 - A job shows the workflow's step list. The card does not show the current step as plain text.
 - Done steps are `--muted` with a check. The current step is `--primary` and weight 500. Upcoming steps are `--faint`. A failed step uses `--state-failed`.
 - Names are separated by `›`.
+- Each step is named once. The approver agent step (`approver`) is "Approver". The human gate (`approve`) is
+  "Your decision".
+- A loop (or map) container is not a step. Its body steps appear in the list and the container does not. In
+  `feature`, the `revise` loop is not shown; Build, Verify, and the reviews are.
 - A pipeline card is narrow. It uses a segmented bar (one segment per step) plus the current step name. Done segments are `--muted`. The current segment is `--primary`. Upcoming segments are `--line`.
 - Inbox, repo, and history rows use the same stepper. Wide rows show the names. The job page always shows the full stepper. The phase list under it keeps durations and notes.
 

@@ -23,8 +23,8 @@ const PHASE_LABEL: Record<string, string> = {
   ux: "UX",
   ui: "UI",
   code: "Code",
-  approver: "Approve",
-  approve: "Approve",
+  approver: "Approver",
+  approve: "Your decision",
   land: "Land",
   explore: "Explore",
   draft: "Draft",
@@ -423,6 +423,8 @@ function phasesOf(job: StatusJobView, events: readonly KilnEvent[]): PhaseView[]
   }
   for (const event of events) {
     if (event.event === "phase.started" && event.step) {
+      // A loop or map container (e.g. `revise`) is not in the leaf plan: skip it.
+      if (planned.size > 0 && !planned.has(event.step)) continue;
       const phase = ensure(event.step);
       phase.startedAt = event.ts;
       if (!planned.has(event.step) && phase.status === "pending") phase.status = "running";
@@ -430,6 +432,8 @@ function phasesOf(job: StatusJobView, events: readonly KilnEvent[]): PhaseView[]
       continue;
     }
     if (event.event === "phase.finished" && event.step) {
+      // A loop or map container (e.g. `revise`) is not in the leaf plan: skip it.
+      if (planned.size > 0 && !planned.has(event.step)) continue;
       const phase = ensure(event.step);
       phase.finishedAt = event.ts;
       if (!planned.has(event.step)) {
