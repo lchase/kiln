@@ -521,7 +521,7 @@ async function answer(
   choice: "approve" | "reject",
 ): Promise<void> {
   try {
-    answerJob(config, jobId, choice);
+    answerJob(config, jobId, choice, pageHost());
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const status = message.startsWith("No job ") ? 404 : 409;
@@ -554,7 +554,7 @@ async function revise(
     return;
   }
   try {
-    reviseJob(config, jobId, note);
+    reviseJob(config, jobId, note, pageHost());
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const status = message.startsWith("No job ") ? 404 : 409;
@@ -592,7 +592,7 @@ async function retry(
   jobId: string,
 ): Promise<void> {
   try {
-    retryJob(config, jobId);
+    retryJob(config, jobId, pageHost());
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const status = message.startsWith("No job ") ? 404 : 409;
