@@ -205,7 +205,7 @@ export interface ObservedJob {
   feedbackPlan?: FeedbackPlan;
   /** Agent steps for this job run inside yak's Docker sandbox. */
   sandboxed?: boolean;
-  /** The job file has `cancelledAt`. A not-yet-started job stays cancelled. */
+  /** The job file has `cancelledAt`. The job stays cancelled whatever its run did. */
   cancelled?: boolean;
   /** Attempt cap that applies to this job (repo override or global). */
   attemptCap?: number;
@@ -254,6 +254,7 @@ function inFlight(job: ObservedJob, observation: Observation): boolean {
  * The only job-state transition. First match wins.
  *
  * | when | state |
+ * | cancelled (`kiln cancel`, any non-terminal job) | cancelled |
  * | fix awaiting publish | in-review |
  * | launching, and the selected run is absent, retired, or a fix | running |
  * | feedback exhausted or ambiguous, landed, pull request merged | done |
@@ -268,7 +269,6 @@ function inFlight(job: ObservedJob, observation: Observation): boolean {
  * | launching breadcrumb | running |
  * | dependencies unmet | blocked |
  * | launch error | failed |
- * | cancelled before start | cancelled |
  * | otherwise | queued |
  *
  * A launch block (missing repo test command, and the same kind of config
@@ -284,9 +284,10 @@ function inFlight(job: ObservedJob, observation: Observation): boolean {
  * A cap or fingerprint stop is `needs-human` and does not hold a slot.
  */
 export function jobState(job: ObservedJob, observation: Observation): JobState {
+  // Cancel only stamps a job that is not done or rejected, so this rule cannot hide a finished job.
+  if (job.cancelled) return "cancelled";
   if (job.fixAwaitingPublish) return "in-review";
   if (job.launching && (!job.run || job.runRetired || job.fixInProgress)) return "running";
-  if (job.cancelled && !job.run && !job.launching) return "cancelled";
   if ((job.feedbackExhausted || job.feedbackAmbiguous) && isLanded(job) && !job.fixInProgress) {
     if (job.delivery?.merged || job.delivery?.prState === "MERGED") return "done";
     if (job.delivery?.prState === "CLOSED") return "failed";
@@ -321,11 +322,12 @@ function activeRunState(job: ObservedJob): JobState {
  * After-merged (the default) needs every upstream `done`.
  * Stacked needs its one upstream landed (approved and the run finished ok),
  * which is true for `in-review` as well as `done`.
+ * A cancelled upstream is never met, stacked or not.
  */
 export function dependenciesMet(job: ObservedJob, observation: Observation): boolean {
   return job.dependsOn.every((dep) => {
     const upstream = observation.jobs.find((candidate) => candidate.jobId === dep);
-    if (!upstream) return false;
+    if (!upstream || upstream.cancelled) return false;
     return job.stack ? isLanded(upstream) : isDone(upstream);
   });
 }
@@ -362,7 +364,7 @@ function landedState(job: ObservedJob): JobState {
 }
 
 function needsDelivery(job: ObservedJob): boolean {
-  if (job.error) return false;
+  if (job.error || job.cancelled) return false;
   if (noPullRequest(job.workflow)) return false;
   if ((job.deliver ?? "local") !== "pr") return false;
   if (!isLanded(job)) return false;
@@ -379,7 +381,7 @@ export function canLaunch(job: ObservedJob, observation: Observation): boolean {
 
 /** An in-review job with new pull request feedback and room under `maxFixRounds`. */
 function canStartFix(job: ObservedJob): boolean {
-  if (job.error || job.launching || job.fixInProgress || job.fixAwaitingPublish) return false;
+  if (job.cancelled || job.error || job.launching || job.fixInProgress || job.fixAwaitingPublish) return false;
   return job.feedbackPlan?.action === "fix";
 }
 

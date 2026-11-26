@@ -6,10 +6,13 @@ import { formatSpend, spendSnapshot, type SpendSnapshot } from "./rails.js";
 /**
  * Interventions are derived from the event log. Nothing is stored beside it.
  * A human had to act when a gate was rejected, a job was retried by hand,
- * a gate carried a manual edit note, or the job stopped as needs-human.
+ * a gate carried a manual edit note, the job stopped as needs-human, or a
+ * person stopped a running, approved, or gated job.
  */
 
 const SINCE = /^(\d+)([dhms])$/;
+/** A cancel of work already under way. A queued cancel is not an intervention. */
+const STOPPED = new Set(["running", "approved", "needs-human"]);
 const REASON_RANK = ["gate rejected", "manual edit", "re-queued or retried by hand"];
 
 export interface LedgerOptions {
@@ -130,6 +133,7 @@ function reasonsFor(event: KilnEvent): string[] {
     reasons.push("manual edit");
   }
   if (event.event === "job.retried") reasons.push("re-queued or retried by hand");
+  if (event.event === "job.cancelled" && STOPPED.has(event.properties.was ?? "")) reasons.push("stopped by hand");
   if (event.event === "needs-human") reasons.push(`needs-human (${event.properties.reason})`);
   return reasons;
 }

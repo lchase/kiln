@@ -367,8 +367,8 @@ export type Job = z.infer<typeof JobSchema>;
  * after-merged dependent. A stacked job unblocks when its one upstream has
  * landed, which includes `in-review`. A job that has used its attempt cap,
  * fix-round cap, or fingerprint breaker is `needs-human`. `dead` is a run
- * whose process died and has not been recorded yet. `cancelled` is a job
- * cancelled before it started. Attempts live under
+ * whose process died and has not been recorded yet. `cancelled` is any
+ * non-terminal job stopped by `kiln cancel`. Attempts live under
  * the kiln directory, not in this file.
  */
 export const JOB_STATES = [

@@ -1067,6 +1067,21 @@ body.open .drawer { transform: none; }
 .d-actions form, .form-footer { margin: 0; }
 .d-actions .revise { display: flex; gap: var(--space-2); align-items: center; }
 .d-actions .revise input { min-width: 16rem; background: var(--bg); }
+.d-actions .confirm { display: flex; gap: var(--space-2); align-items: center; }
+.d-actions .confirm summary {
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  height: var(--control-h);
+  padding: 0 var(--space-3);
+  border: var(--hairline) solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--ink);
+  cursor: pointer;
+}
+.d-actions .confirm summary::-webkit-details-marker { display: none; }
+.d-actions .confirm[open] summary { color: var(--muted); }
 
 .sheet.intake { flex: 1; min-height: 0; height: auto; overflow: hidden; display: flex; flex-direction: column; }
 .intake-form {
