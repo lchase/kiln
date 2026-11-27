@@ -1000,3 +1000,100 @@ describe("reap launches", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe("queue routes and board", () => {
+  it("guards next, hold, and release, and draws Queued in launch order with Held in words", { timeout: 60_000 }, async () => {
+    const { cwd, home } = workDir("kiln-serve-queue-");
+    const web = join(cwd, "repos", "web");
+    initCheckout(web);
+    const added = runCli(["repo", "add", "web", web, "--test", testCommand], { cwd, home });
+    assert.equal(added.status, 0, added.stderr);
+    const ids: string[] = [];
+    for (const title of ["SAMPLE-A", "SAMPLE-B", "SAMPLE-C"]) {
+      const created = runCli(["add", "feature", "--repo", "web", "--prompt", `Do ${title}.`, "--title", title], { cwd, home });
+      assert.equal(created.status, 0, created.stderr);
+      const id = created.stdout.match(/^added (\S+)/m)?.[1];
+      assert.ok(id);
+      ids.push(id);
+      spawnSync("sleep", ["0.01"]);
+    }
+    const [a, b, c] = ids as [string, string, string];
+    const moved = runCli(["next", c], { cwd, home });
+    assert.equal(moved.status, 0, moved.stderr);
+    assert.match(moved.stdout, new RegExp(`moved ${c} to the front`));
+    const badCli = runCli(["hold", "a..b"], { cwd, home });
+    assert.equal(badCli.status, 1);
+    const queue = runCli(["queue"], { cwd, home });
+    assert.equal(queue.status, 0, queue.stderr);
+    assert.match(queue.stdout, new RegExp(`^1  ${c}  web  SAMPLE-C  moved to front\\n2  ${a}  web  SAMPLE-A  ready\\n3  ${b}  web  SAMPLE-B  ready\\n$`));
+
+    const events = () => readFileSync(join(home, ".kiln", "events.jsonl"), "utf8").split("\n").filter(Boolean).length;
+    const server = await startServe(["--port", "0", "--no-tick"], { cwd, home });
+    try {
+      const repos = await text(`${server.url}/repos`);
+      const csrf = csrfFrom(repos.body);
+      for (const id of ids) {
+        assert.match(repos.body, new RegExp(`action="/api/jobs/${id}/next" class="act next">.*?<button type="submit">Run next</button>`));
+        assert.match(repos.body, new RegExp(`action="/api/jobs/${id}/hold" class="act hold">.*?<button type="submit">Hold</button>`));
+      }
+      assert.doesNotMatch(repos.body, /Release/);
+
+      const before = events();
+      for (const action of ["next", "hold", "release"]) {
+        const noToken = await text(`${server.url}/api/jobs/${b}/${action}`, {
+          method: "POST",
+          headers: { Origin: server.url, Accept: "application/json" },
+        });
+        assert.equal(noToken.status, 403);
+        for (const bad of ["a%2Fb", "..", "a..b", "%2e%2e"]) {
+          const res = await text(`${server.url}/api/jobs/${bad}/${action}`, {
+            method: "POST",
+            headers: { Origin: server.url, Accept: "application/json", "X-Kiln-CSRF": csrf },
+          });
+          assert.equal(res.status, 404, `${bad}/${action}`);
+        }
+      }
+      assert.equal(events(), before);
+
+      const held = await text(`${server.url}/api/jobs/${b}/hold`, {
+        method: "POST",
+        headers: { Origin: server.url, Accept: "application/json", "X-Kiln-CSRF": csrf },
+      });
+      assert.equal(held.status, 200, held.body);
+      const body = JSON.parse(held.body) as { ok: boolean; changed: boolean; job?: { held?: boolean } };
+      assert.equal(body.changed, true);
+      assert.equal(body.job?.held, true);
+      assert.equal(events(), before + 1);
+      const again = await text(`${server.url}/api/jobs/${b}/hold`, {
+        method: "POST",
+        headers: { Origin: server.url, Accept: "application/json", "X-Kiln-CSRF": csrf },
+      });
+      assert.equal((JSON.parse(again.body) as { changed: boolean }).changed, false);
+      assert.equal(events(), before + 1);
+
+      const after = await text(`${server.url}/repos`);
+      assert.match(after.body, new RegExp(`action="/api/jobs/${b}/release" class="act release">.*?<button type="submit">Release</button>`));
+      assert.doesNotMatch(after.body, new RegExp(`/api/jobs/${b}/hold"`));
+      assert.match(after.body, /<span class="chip">Held<\/span>/);
+
+      const pipeline = await text(`${server.url}/`);
+      const order = [...pipeline.body.matchAll(/<article class="card" id="job-([^"]+)"/g)].map((match) => match[1]);
+      assert.deepEqual(order, [c, a, b]);
+      assert.match(pipeline.body, new RegExp(`id="job-${b}"[^]*?<span class="chip">Held</span>`));
+
+      const released = await text(`${server.url}/api/jobs/${b}/release`, {
+        method: "POST",
+        headers: { Origin: server.url, Accept: "application/json", "X-Kiln-CSRF": csrf },
+      });
+      assert.equal(released.status, 200, released.body);
+      assert.equal(events(), before + 2);
+      const missing = await text(`${server.url}/api/jobs/SAMPLE-NONE/next`, {
+        method: "POST",
+        headers: { Origin: server.url, Accept: "application/json", "X-Kiln-CSRF": csrf },
+      });
+      assert.equal(missing.status, 404);
+    } finally {
+      await stop(server.child);
+    }
+  });
+});

@@ -1,7 +1,21 @@
 #!/usr/bin/env node
 import { addRepo, renderRepoList, resolveKilnConfig } from "./config.js";
 import { renderSandboxStatus, runSandboxBuild } from "./sandbox.js";
-import { answerJob, cancelJob, cancelQueuedJobs, cleanWorktrees, removeJob, retryJob, reviseJob, runStatus, runTick } from "./driver.js";
+import {
+  answerJob,
+  cancelJob,
+  cancelQueuedJobs,
+  cleanWorktrees,
+  holdJob,
+  prioritizeJob,
+  releaseJob,
+  removeJob,
+  renderQueue,
+  retryJob,
+  reviseJob,
+  runStatus,
+  runTick,
+} from "./driver.js";
 import { productionHost } from "./host.js";
 import { pauseFactory, resumeFactory } from "./rails.js";
 import { parseSince, renderLedgerFile } from "./ledger.js";
@@ -30,6 +44,10 @@ function usage(): never {
       "       kiln cancel --queued [--repo <name>] [--workflow <name>] [--config <file>]",
       "       kiln cancel <jobId> [--config <file>]",
       "       kiln remove <jobId> [--config <file>]",
+      "       kiln next <jobId> [--config <file>]",
+      "       kiln hold <jobId> [--config <file>]",
+      "       kiln release <jobId> [--config <file>]",
+      "       kiln queue [--config <file>]",
       "       kiln clean [--apply] [--repo <name>] [--config <file>]",
       "       kiln pause [--config <file>]",
       "       kiln resume [--config <file>]",
@@ -81,10 +99,11 @@ function usage(): never {
       "retry launches a failed or dead",
       "job again, the same way tick launches, and clears the attempt ledger.",
       "A landed job that only failed to open its pull request is delivered again.",
-      "A running job with no yak event or log output for stallTimeoutMs (default",
-      "15 minutes; 0 disables it) is killed and retried. A crash, a non-zero exit,",
-      "or a process that is already gone when tick or serve starts (orphaned) retries",
-      "after 10s, 20s, 40s, and so on, capped at 5 minutes, up to maxAttempts",
+      "A running job with no yak event, log output, or agent session output for",
+      "stallTimeoutMs (default 15 minutes; 0 disables it) is killed and retried.",
+      "A crash, a non-zero exit, or a process that is already gone when tick or",
+      "serve starts (orphaned) retries after 10s, 20s, 40s, and so on, capped at",
+      "5 minutes, up to maxAttempts",
       "A rejected Claude login (401 or an invalid bearer token) is auth-failed and is not retried.",
       "(default 3, overridable per repo). Hitting the cap is a budget failure and the",
       "job needs a person. The same failure fingerprint stops the job after",
@@ -129,6 +148,13 @@ function usage(): never {
       "keepWorktrees: true in the config turns that off. kiln clean lists every",
       "worktree, its size, owner, and what would happen, and changes nothing.",
       "--apply removes the removable ones. A worktree no Kiln job owns is left alone.",
+      "kiln next <jobId> moves a job that has not started to the front of the queue;",
+      "the most recent move goes first. A blocked job keeps its place and launches",
+      "first once its dependencies are done. kiln hold <jobId> keeps a job that has",
+      "not started from launching or retrying, across restarts, without taking a",
+      "slot, until kiln release <jobId>. A running or finished job is refused, and a",
+      "repeat writes nothing. kiln queue prints the jobs that have not started in",
+      "launch order: position, id, repo, title, and why it is there.",
       "",
       "serve listens on 127.0.0.1. The page is a board of workflow stages:",
       "queued, spec, build, review, approve, land, PR review, Done (landed locally),",
@@ -552,6 +578,29 @@ function cleanCommand(argv: string[]): void {
   );
 }
 
+function queueActionCommand(action: "next" | "hold" | "release", argv: string[]): void {
+  const flags = parseFlags(argv);
+  rejectServeFlags(flags);
+  const jobId = flags.positionals[0];
+  if (!jobId || flags.positionals.length !== 1 || flags.test || flags.note || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.queued) {
+    usage();
+  }
+  assertJobId(jobId);
+  const config = resolveKilnConfig({ configPath: flags.configPath });
+  const run = action === "next" ? prioritizeJob : action === "hold" ? holdJob : releaseJob;
+  process.stdout.write(`${run(config, jobId).message}\n`);
+}
+
+function queueCommand(argv: string[]): void {
+  const flags = parseFlags(argv);
+  rejectServeFlags(flags);
+  if (flags.positionals.length !== 0 || flags.test || flags.note || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.queued) {
+    usage();
+  }
+  const config = resolveKilnConfig({ configPath: flags.configPath });
+  process.stdout.write(renderQueue(config));
+}
+
 function retryCommand(argv: string[]): void {
   const flags = parseFlags(argv);
   rejectServeFlags(flags);
@@ -727,6 +776,14 @@ async function main(): Promise<void> {
   }
   if (command === "clean") {
     cleanCommand(argv.slice(1));
+    return;
+  }
+  if (command === "next" || command === "hold" || command === "release") {
+    queueActionCommand(command, argv.slice(1));
+    return;
+  }
+  if (command === "queue") {
+    queueCommand(argv.slice(1));
     return;
   }
   if (command === "revise") {

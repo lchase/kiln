@@ -361,9 +361,20 @@ function listHtml(model: AppModel, csrf: string, clock: BoardClock): string {
     .join("")}`;
 }
 
+/** Jobs in one column. Queued cards follow launch order, the same order `kiln queue` prints. */
+function inColumn<T extends JobView>(jobs: readonly T[], column: PipelineColumn): T[] {
+  const rows = jobs.filter((job) => job.column === column);
+  if (column !== "queued") return rows;
+  return rows.sort((left, right) => (left.queuePosition ?? Infinity) - (right.queuePosition ?? Infinity));
+}
+
+function heldChip(job: JobView): string {
+  return job.held ? `<span class="chip">Held</span>` : "";
+}
+
 function pipelineHtml(jobs: readonly JobView[], clock: BoardClock): string {
   const columns = PIPELINE_COLUMNS.map((column) => {
-    const cards = jobs.filter((job) => job.column === column).map((job) => pipeCard(job, clock)).join("");
+    const cards = inColumn(jobs, column).map((job) => pipeCard(job, clock)).join("");
     return `<section class="col" data-column="${column}">
 <header class="full"><h2>${escapeHtml(COLUMN_LABEL[column])}</h2><span class="count"></span></header>
 <div class="slim-face"><span>${escapeHtml(COLUMN_LABEL[column])}</span><span class="count"></span></div>
@@ -407,14 +418,14 @@ function pipeCard(job: JobView, clock: BoardClock): string {
   const blocked = job.launchBlock ? `<p class="reason">${escapeHtml(job.reason)}</p>${launchFixHtml(job)}` : "";
   return `<article class="card" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}"${activityAttrs(job)}${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
 <a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a>
-<div class="job-meta"><span class="meta">${escapeHtml(job.repo)}</span><span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}</div>
+<div class="job-meta"><span class="meta">${escapeHtml(job.repo)}</span><span class="chip">${escapeHtml(job.workflow)}</span>${heldChip(job)}${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}</div>
 ${progressHtml(job, clock, false)}${blocked}
 </article>`;
 }
 
 function groupedJobs(jobs: readonly JobView[], section: "repos" | "history", csrf: string, clock: BoardClock): string {
   const blocks = PIPELINE_COLUMNS.flatMap((column) => {
-    const rows = jobs.filter((job) => job.column === column);
+    const rows = inColumn(jobs, column);
     if (rows.length === 0) return [];
     const cards = rows.map((job) => jobRow(job, section, csrf, clock)).join("\n");
     return [
@@ -466,7 +477,7 @@ function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", 
   return `<article class="${classes.join(" ")}" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}" data-deps="${escapeHtml(job.dependsOn.map((dep) => dep.jobId).join(" "))}"${activityAttrs(job)}${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
 <div class="job-main">
 <div class="job-top">${flag}<a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a></div>
-<div class="job-meta"><span class="num">${escapeHtml(job.jobId)}</span>${repo}<span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span><span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}${sandbox}${pr}</div>
+<div class="job-meta"><span class="num">${escapeHtml(job.jobId)}</span>${repo}<span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span>${heldChip(job)}<span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}${sandbox}${pr}</div>
 ${progressHtml(job, clock, false)}${reason}${fix}${section === "inbox" ? ranHtml(job) : ""}${history}${unsafe}${retrying}${attempt}${deps}${feedback}${body}${notes}${tail}${unseen}${links}
 </div>
 ${actionsHtml(job, section, csrf)}
@@ -691,6 +702,12 @@ function actionsHtml(job: BoardJob, section: "inbox" | "hand" | "repos" | "histo
     );
   }
   if (showRetry && job.retry) forms.push(postForm(`/api/jobs/${id}/retry`, "retry", "Retry", csrf));
+  const queueable = (section === "repos" || section === "job") && job.queuePosition !== undefined;
+  if (queueable && job.held) forms.push(postForm(`/api/jobs/${id}/release`, "release", "Release", csrf));
+  if (queueable && !job.held) {
+    forms.push(postForm(`/api/jobs/${id}/next`, "next", "Run next", csrf));
+    forms.push(postForm(`/api/jobs/${id}/hold`, "hold", "Hold", csrf));
+  }
   if (section === "job" && job.canStop) {
     forms.push(confirmForm(`/api/jobs/${id}/cancel`, "stop", "Stop job", "Confirm stop", csrf));
   }

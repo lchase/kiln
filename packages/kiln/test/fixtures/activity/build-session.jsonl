@@ -1,0 +1,16 @@
+{"type": "system", "subtype": "init", "cwd": "__WORKTREE__", "session_id": "s-build", "model": "claude-opus"}
+{"type": "assistant", "timestamp": "2026-11-26T21:40:00.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll find where the activity summary is built."}]}}
+{"type": "assistant", "timestamp": "2026-11-26T21:40:01.000Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": "cd __WORKTREE__/packages/kiln && grep -n \"Ran \" src/activity.ts", "description": "Find the summary"}}]}}
+{"type": "user", "timestamp": "2026-11-26T21:40:02.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "b1", "content": "62:    return { kind: \"command\", summary: `Ran ${command}`, command };"}]}}
+{"type": "assistant", "timestamp": "2026-11-26T21:40:03.000Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "r1", "name": "Read", "input": {"file_path": "__WORKTREE__/packages/kiln/src/a.ts"}}]}}
+{"type": "user", "timestamp": "2026-11-26T21:40:04.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "r1", "content": "export const a = 1;\n"}]}}
+{"type": "assistant", "timestamp": "2026-11-26T21:40:05.000Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "b2", "name": "Bash", "input": {"command": "cd __WORKTREE__ && npm test -w @lchase/kiln\necho done"}}]}}
+{"type": "user", "timestamp": "2026-11-26T21:40:06.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "b2", "content": "# tests 4\n# pass 4\n# fail 0\ndone"}]}}
+{"type": "assistant", "timestamp": "2026-11-26T21:40:07.000Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "b3", "name": "Bash", "input": {"command": "diff /tmp/x __WORKTREE__-other/a.ts __WORKTREE__/b.ts"}}]}}
+{"type": "user", "timestamp": "2026-11-26T21:40:08.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "b3", "content": "1c1"}]}}
+{"type": "assistant", "timestamp": "2026-11-26T21:40:09.000Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "b4", "name": "Bash", "input": {"command": "cd __WORKTREE__ && gh auth login --with-token ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}]}}
+{"type": "user", "timestamp": "2026-11-26T21:40:10.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "b4", "content": "logged in"}]}}
+{"type": "assistant", "timestamp": "2026-11-26T21:40:11.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Tests pass. The token ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx is not needed."}]}}
+{"type": "assistant", "timestamp": "2026-11-26T21:40:12.000Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "s1", "name": "StructuredOutput", "input": {"status": "READY", "summary": "done"}}]}}
+{"type": "user", "timestamp": "2026-11-26T21:40:13.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "s1", "content": "Structured output provided successfully"}]}}
+{"type": "result", "subtype": "success", "timestamp": "2026-11-26T21:40:14.000Z", "is_error": false, "result": "{\"status\":\"READY\",\"summary\":\"done\"}"}

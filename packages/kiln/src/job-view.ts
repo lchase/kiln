@@ -161,6 +161,10 @@ export interface JobView {
   canStop: boolean;
   /** Remove job: not running, approved, gated, or in review, and nothing depends on it. */
   canRemove: boolean;
+  /** `kiln hold`. The board says "Held" in words. */
+  held: boolean;
+  /** 1-based place in launch order. Set only for a job that has not started. */
+  queuePosition?: number;
   attemptCount: number;
   maxAttempts: number;
   scheduledRetry: boolean;
@@ -171,6 +175,9 @@ export interface JobView {
   latestEventAt?: string;
   /** Time of the newest session activity event. Absent until a phase writes output. */
   lastActivityAt?: string;
+  /** Newest agent note of a running job, for a one-line "doing now". Absent otherwise. */
+  latestNote?: string;
+  latestNoteAt?: string;
   eventCount: number;
   prUrl?: string;
   prNumber?: number;
@@ -270,6 +277,8 @@ export function projectJob(job: StatusJobView, events: readonly KilnEvent[]): Jo
     canRevise: job.canRevise,
     canStop: !["done", "rejected", "cancelled"].includes(job.state),
     canRemove: !["running", "approved", "needs-human", "in-review"].includes(job.state) && !job.dependents?.length,
+    held: job.held === true,
+    ...(job.queuePosition !== undefined ? { queuePosition: job.queuePosition } : {}),
     attemptCount: job.attemptCount,
     maxAttempts: job.maxAttempts,
     scheduledRetry: waiting,
@@ -279,6 +288,7 @@ export function projectJob(job: StatusJobView, events: readonly KilnEvent[]): Jo
     ...(failure?.fingerprint ? { fingerprint: shortFingerprint(failure.fingerprint) } : {}),
     ...(activity.latest ? { latestEventAt: activity.latest } : {}),
     ...(job.lastActivityAt ? { lastActivityAt: job.lastActivityAt } : {}),
+    ...(columnOf(job) === "running" && job.latestNote && job.latestNoteAt ? { latestNote: job.latestNote, latestNoteAt: job.latestNoteAt } : {}),
     eventCount: activity.count,
     ...(target.prUrl || job.prUrl ? { prUrl: target.prUrl ?? job.prUrl } : {}),
     ...(target.prNumber || job.prNumber ? { prNumber: target.prNumber ?? job.prNumber } : {}),

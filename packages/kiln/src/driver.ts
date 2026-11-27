@@ -44,6 +44,7 @@ import {
   activeLaunchBlock,
   activeLaunchBlocks,
   appendEvent,
+  queueControls,
   readEvents,
   type LaunchBlock,
   type LaunchFix,
@@ -75,6 +76,7 @@ import {
   decide,
   isLanded,
   jobState,
+  launchOrder,
   type Observation,
   type ObservedArtifact,
   type ObservedGate,
@@ -87,6 +89,7 @@ import {
   fileMtimeMs,
   isPidAlive,
   killTree,
+  newestMtimeMs,
   readAttemptLedger,
   recoverRuns,
   resetAttemptLedger,
@@ -456,6 +459,97 @@ export function cancelJob(
   });
 }
 
+export interface QueueActionResult {
+  changed: boolean;
+  message: string;
+}
+
+/**
+ * Move a job that has not started to the front of the queue. `kiln next` and
+ * the board Run next button both call this. The most recent move goes first.
+ * A blocked job keeps its place and launches once its dependencies are met.
+ */
+export function prioritizeJob(
+  config: LoadedKilnConfig,
+  jobId: string,
+  host: KilnHost = defaultHost(),
+  now = new Date(),
+): QueueActionResult {
+  return queueAction(config, jobId, "next", host, now);
+}
+
+/** Keep a job that has not started from launching or retrying until `releaseJob`. It takes no slot. */
+export function holdJob(
+  config: LoadedKilnConfig,
+  jobId: string,
+  host: KilnHost = defaultHost(),
+  now = new Date(),
+): QueueActionResult {
+  return queueAction(config, jobId, "hold", host, now);
+}
+
+/** End a hold. The job goes back to where its other ordering puts it. */
+export function releaseJob(
+  config: LoadedKilnConfig,
+  jobId: string,
+  host: KilnHost = defaultHost(),
+  now = new Date(),
+): QueueActionResult {
+  return queueAction(config, jobId, "release", host, now);
+}
+
+const QUEUE_EVENT = { next: "job.prioritized", hold: "job.held", release: "job.released" } as const;
+
+/**
+ * Order and holds are events, never job-file fields. Only a job `launchOrder`
+ * lists can be moved, held, or released. A repeat writes nothing.
+ */
+function queueAction(
+  config: LoadedKilnConfig,
+  jobId: string,
+  action: keyof typeof QUEUE_EVENT,
+  host: KilnHost,
+  now: Date,
+): QueueActionResult {
+  assertJobId(jobId);
+  return withTickLock(config.kilnDir, () => {
+    const world = observe(config, host, now);
+    const observed = world.observation.jobs.find((candidate) => candidate.jobId === jobId);
+    if (!observed) throw new Error(`No job ${jobId}.`);
+    const job = world.jobs.get(jobId);
+    if (!job) throw new Error(`Job ${jobId} is invalid: ${observed.error ?? "unreadable job file"}`);
+    const was = jobState(observed, world.observation);
+    const order = launchOrder(world.observation, now);
+    if (!order.some((entry) => entry.job.jobId === jobId)) {
+      return { changed: false, message: `kiln: ${jobId} is ${was}; ${action} only applies to jobs that have not started` };
+    }
+    if (action === "hold" && observed.held) return { changed: false, message: `kiln: ${jobId} already held` };
+    if (action === "release" && !observed.held) return { changed: false, message: `kiln: ${jobId} is not held` };
+    if (action === "next") {
+      const newest = Math.max(-1, ...order.map((entry) => entry.job.prioritizedIndex ?? -1));
+      if (observed.prioritizedIndex === newest) return { changed: false, message: `kiln: ${jobId} already first` };
+    }
+    appendEvent(config.kilnDir, {
+      job_id: jobId,
+      event: QUEUE_EVENT[action],
+      ts: now.toISOString(),
+      properties: { repo: job.repo, was },
+    });
+    const stillHeld = observed.held ? " (still held; release it to launch)" : "";
+    const done = { next: `moved ${jobId} to the front${stillHeld}`, hold: `held ${jobId}`, release: `released ${jobId}` };
+    return { changed: true, message: done[action] };
+  });
+}
+
+/** `kiln queue`: every job that has not started, in launch order. */
+export function renderQueue(config: LoadedKilnConfig, host: KilnHost = defaultHost(), now = new Date()): string {
+  const entries = launchOrder(observe(config, host, now).observation, now);
+  if (entries.length === 0) return "queue empty\n";
+  return `${entries
+    .map((entry, index) => `${index + 1}  ${entry.job.jobId}  ${entry.job.repo}  ${entry.job.title}  ${entry.reason}`)
+    .join("\n")}\n`;
+}
+
 /** Live launch and run pids of a job. A finished run's pid is never returned. */
 function liveJobPids(config: LoadedKilnConfig, observed: ObservedJob): number[] {
   const crumb = readBreadcrumbs(config.kilnDir).find((candidate) => candidate.jobId === observed.jobId);
@@ -778,6 +872,7 @@ function observe(config: LoadedKilnConfig, host: KilnHost, now = new Date()): Wo
       launchFailed,
       ...(launchError ? { launchError } : {}),
       ...(entry.job ? launchBlockField(events, entry.job.id) : {}),
+      ...(entry.job ? queueFields(events, entry.job.id) : {}),
       ...(crumb ? { launchPid: crumb.pid } : {}),
       ...(launchActivityMs !== undefined ? { launchActivityMs } : {}),
       ...(logPath ? { logPath } : {}),
@@ -877,7 +972,7 @@ function apply(
     // missing test command does not hold the only slot for the tick.
     const retry = action.type === "retry";
     let opened = false;
-    for (const queued of launchQueue(world, job)) {
+    for (const queued of launchQueue(world, job, now)) {
       if (opened) break;
       const report = launchJob(config, world, queued, host, sandboxFacts);
       launches.push(retry && queued.id === job.id ? { ...report, retry: true } : report);
@@ -1607,11 +1702,11 @@ function spawnAgent(host: KilnHost, spec: AgentStart): { pid: number } {
   return { pid: child.pid ?? 0 };
 }
 
-/** Jobs `decide` would launch, starting at `first`, healthy ones ahead of a launch error. */
-function launchQueue(world: World, first: Job): Job[] {
-  const ready = world.observation.jobs.filter((job) => canLaunch(job, world.observation));
-  const healthy = ready.filter((job) => !job.launchError);
-  const ordered = [...healthy, ...ready.filter((job) => job.launchError)];
+/** Jobs `decide` would launch, starting at `first`, in launch order. */
+function launchQueue(world: World, first: Job, now: Date): Job[] {
+  const ordered = launchOrder(world.observation, now)
+    .map((entry) => entry.job)
+    .filter((job) => canLaunch(job, world.observation));
   const start = ordered.findIndex((job) => job.jobId === first.id);
   const slice = start >= 0 ? ordered.slice(start) : ordered;
   const jobs: Job[] = [];
@@ -1623,6 +1718,14 @@ function launchQueue(world: World, first: Job): Job[] {
     jobs.push(job);
   }
   return jobs.length > 0 ? jobs : [first];
+}
+
+function queueFields(events: ReturnType<typeof readEvents>, jobId: string): { held?: true; prioritizedIndex?: number } {
+  const controls = queueControls(events, jobId);
+  return {
+    ...(controls.held ? { held: true } : {}),
+    ...(controls.prioritizedIndex !== undefined ? { prioritizedIndex: controls.prioritizedIndex } : {}),
+  };
 }
 
 function launchBlockField(events: ReturnType<typeof readEvents>, jobId: string): { launchBlock?: LaunchBlock } {
@@ -1855,7 +1958,10 @@ function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun[]> {
       const sandboxError = sandboxFailureDetail(stepEvents);
       const cost = costFromJournal(events);
       const pid = livePid(events);
-      const activityMs = eventActivityMs(events) ?? fileMtimeMs(join(runDir, "journal.jsonl"));
+      const activityMs = later(
+        eventActivityMs(events) ?? fileMtimeMs(join(runDir, "journal.jsonl")),
+        newestMtimeMs(join(runDir, "sessions")),
+      );
       const finishedReason =
         finished && typeof finished.reason === "string" ? finished.reason : undefined;
       const run: ObservedRun = {

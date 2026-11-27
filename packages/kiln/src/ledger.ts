@@ -13,7 +13,13 @@ import { formatSpend, spendSnapshot, type SpendSnapshot } from "./rails.js";
 const SINCE = /^(\d+)([dhms])$/;
 /** A cancel of work already under way. A queued cancel is not an intervention. */
 const STOPPED = new Set(["running", "approved", "needs-human"]);
-const REASON_RANK = ["gate rejected", "manual edit", "re-queued or retried by hand"];
+const REASON_RANK = [
+  "gate rejected",
+  "manual edit",
+  "re-queued or retried by hand",
+  "moved to front by hand",
+  "held by hand",
+];
 
 export interface LedgerOptions {
   /** Inclusive lower bound. Omit to count the whole log. */
@@ -133,6 +139,8 @@ function reasonsFor(event: KilnEvent): string[] {
     reasons.push("manual edit");
   }
   if (event.event === "job.retried") reasons.push("re-queued or retried by hand");
+  if (event.event === "job.prioritized") reasons.push("moved to front by hand");
+  if (event.event === "job.held") reasons.push("held by hand");
   if (event.event === "job.cancelled" && STOPPED.has(event.properties.was ?? "")) reasons.push("stopped by hand");
   if (event.event === "needs-human") reasons.push(`needs-human (${event.properties.reason})`);
   return reasons;
@@ -156,7 +164,13 @@ function repoByJob(events: readonly KilnEvent[]): Map<string, string> {
 }
 
 function repoOf(event: KilnEvent): string | undefined {
-  if (event.event === "job.added" || event.event === "job.retried" || event.event === "run.started") {
+  if (
+    event.event === "job.added" ||
+    event.event === "job.retried" ||
+    event.event === "job.prioritized" ||
+    event.event === "job.held" ||
+    event.event === "run.started"
+  ) {
     return event.properties.repo;
   }
   if (event.event === "gate.resolved") return event.properties.repo;

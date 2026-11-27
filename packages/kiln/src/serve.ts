@@ -1,20 +1,24 @@
 import { parseActivityCursor, readRunActivity, type ActivityFeed } from "./activity.js";
+import { fork } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { AUTH_PREFLIGHT_PREFIX } from "./auth.js";
 import { loadKilnConfig, type LoadedKilnConfig } from "./config.js";
 import {
   answerJob,
   cancelJob,
   cancelQueuedJobs,
+  holdJob,
+  prioritizeJob,
   readStatus,
+  releaseJob,
   removeJob,
   retryJob,
   reviseJob,
-  runTick,
   startupRecovery,
 } from "./driver.js";
 import { browse } from "./fs-browse.js";
@@ -34,7 +38,7 @@ import {
 } from "./board-view.js";
 import { appendEvent, eventsForJob, readEvents } from "./events.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
-import { cachedGitHub, defaultHost, productionHost, type KilnHost, type PullRequestViewCache } from "./host.js";
+import { cachedGitHub, defaultHost, type KilnHost, type PullRequestViewCache } from "./host.js";
 import { intakeJobs } from "./intake-http.js";
 import { isJobId, jobBasename, packageRoot } from "./paths.js";
 import { SANDBOX_PREFLIGHT_PREFIX, sandboxIsEnabled } from "./sandbox.js";
@@ -42,6 +46,7 @@ import type { StatusJobView } from "./report.js";
 import { renderApp, type AppSection, type ServePageOptions, renderMessagePage, renderTextPage } from "./serve-page.js";
 import { isPaused, pauseFactory, resumeFactory, spendFor } from "./rails.js";
 import { readSettings, saveSettings } from "./settings.js";
+import type { TickReply, TickRequest } from "./tick-worker.js";
 import { triggerRows } from "./triggers.js";
 import { formatServeStartup } from "./version.js";
 import { listWorkflowNames, overlayLoadCounts, workflowNamesNeedingTest } from "./workflow.js";
@@ -98,6 +103,7 @@ export function startServe(options: ServeOptions): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     let firstTick: NodeJS.Timeout | undefined;
     let triggerStartup = true;
+    let ticking = false;
 
     const shutdown = (): void => {
       if (stopped) return;
@@ -137,7 +143,15 @@ export function startServe(options: ServeOptions): Promise<void> {
         const startup = triggerStartup;
         triggerStartup = false;
         refreshLiveConfig(state);
-        safeTick(state.config, state.secrets, startup);
+        // A tick still running is not joined by a second one. The next interval tries again.
+        if (ticking) {
+          triggerStartup = startup;
+          return;
+        }
+        ticking = true;
+        startTick(state, startup, () => {
+          ticking = false;
+        });
       };
       firstTick = setTimeout(tick, 0);
       timer = setInterval(tick, options.tickSeconds * 1000);
@@ -160,28 +174,43 @@ export function loadServeCss(): string {
  */
 const pullRequestViews: PullRequestViewCache = new Map();
 
-function tickHost(): KilnHost {
-  const host = productionHost();
-  return { ...host, github: cachedGitHub(host.github, { cache: pullRequestViews, mode: "refresh" }) };
-}
-
 function pageHost(): KilnHost {
   const host = defaultHost();
   return { ...host, github: cachedGitHub(host.github, { cache: pullRequestViews, mode: "read" }) };
 }
 
-function safeTick(config: LoadedKilnConfig, secrets: string[], triggerStartup: boolean): void {
+/**
+ * Run one tick in a child process, so its synchronous `gh` and `git` calls
+ * do not hold page requests. The child's pull request reads land in the
+ * cache that pages read from.
+ */
+function startTick(state: LiveConfig, triggerStartup: boolean, done: () => void): void {
+  const secrets = state.secrets;
+  const fail = (message: string): void => {
+    process.stderr.write(`tick: ${redact(message, secrets)}\n`);
+  };
+  let child: ReturnType<typeof fork>;
   try {
-    const report = runTick(config, tickHost(), { startup: false, triggerStartup });
+    child = fork(fileURLToPath(new URL("./tick-worker.js", import.meta.url)), [], { serialization: "advanced" });
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+    done();
+    return;
+  }
+  child.once("message", (reply: TickReply) => {
+    for (const [key, entry] of reply.views) pullRequestViews.set(key, entry);
+    if (reply.error !== undefined) fail(reply.error);
+    const report = reply.report ?? "";
     if (report.startsWith(SANDBOX_PREFLIGHT_PREFIX) || report.startsWith(AUTH_PREFLIGHT_PREFIX)) {
       const tickAt = report.indexOf("\ntick ");
       const head = tickAt === -1 ? report : report.slice(0, tickAt);
       process.stderr.write(`${redact(head.trimEnd(), secrets)}\n`);
     }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`tick: ${redact(message, secrets)}\n`);
-  }
+  });
+  child.once("error", (error) => fail(error.message));
+  child.once("exit", done);
+  const request: TickRequest = { config: state.config, triggerStartup };
+  child.send(request);
 }
 
 async function handle(
@@ -275,7 +304,7 @@ async function handle(
       redirect(res, redirectTarget(req));
       return;
     }
-    const action = /^\/api\/jobs\/([^/]+)\/(approve|reject|retry|revise|cancel|remove)$/.exec(path);
+    const action = /^\/api\/jobs\/([^/]+)\/(approve|reject|retry|revise|cancel|remove|next|hold|release)$/.exec(path);
     if (!action?.[1] || !action[2]) {
       sendJson(res, 404, { error: "Not found." }, secrets);
       return;
@@ -291,6 +320,10 @@ async function handle(
     }
     if (action[2] === "cancel" || action[2] === "remove") {
       stopOrRemove(req, res, config, css, secrets, jobId, action[2]);
+      return;
+    }
+    if (action[2] === "next" || action[2] === "hold" || action[2] === "release") {
+      queueAction(req, res, config, css, secrets, jobId, action[2]);
       return;
     }
     if (action[2] === "revise") {
@@ -653,6 +686,34 @@ function stopOrRemove(
     return;
   }
   redirect(res, kind === "remove" ? "/" : redirectTarget(req));
+}
+
+/** Run next, Hold, and Release. A refusal is `changed: false` with a message, not an error. */
+function queueAction(
+  req: IncomingMessage,
+  res: ServerResponse,
+  config: LoadedKilnConfig,
+  css: string,
+  secrets: string[],
+  jobId: string,
+  kind: "next" | "hold" | "release",
+): void {
+  let result: { changed: boolean; message: string };
+  try {
+    const run = kind === "next" ? prioritizeJob : kind === "hold" ? holdJob : releaseJob;
+    result = run(config, jobId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = message.startsWith("No job ") ? 404 : 409;
+    if (wantsJson(req)) sendJson(res, status, { error: message }, secrets);
+    else sendHtml(res, status, renderMessagePage(css, "Could not change the queue", message, config.boardTheme), secrets);
+    return;
+  }
+  if (wantsJson(req)) {
+    sendJson(res, 200, { ok: true, changed: result.changed, message: result.message, job: findJob(config, jobId) }, secrets);
+    return;
+  }
+  redirect(res, redirectTarget(req));
 }
 
 function sendFindings(

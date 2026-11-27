@@ -209,6 +209,10 @@ export interface ObservedJob {
   cancelled?: boolean;
   /** Attempt cap that applies to this job (repo override or global). */
   attemptCap?: number;
+  /** `kiln hold` without a later `kiln release`. Never launched or retried; takes no slot. */
+  held?: boolean;
+  /** Log index of the latest `kiln next`. Bigger goes first. */
+  prioritizedIndex?: number;
   /** The job file could not be used. Decide skips it. */
   error?: string;
 }
@@ -325,10 +329,15 @@ function activeRunState(job: ObservedJob): JobState {
  * A cancelled upstream is never met, stacked or not.
  */
 export function dependenciesMet(job: ObservedJob, observation: Observation): boolean {
-  return job.dependsOn.every((dep) => {
+  return unmetDependency(job, observation) === undefined;
+}
+
+/** First dependency that is not met, in `dependsOn` order. */
+export function unmetDependency(job: ObservedJob, observation: Observation): string | undefined {
+  return job.dependsOn.find((dep) => {
     const upstream = observation.jobs.find((candidate) => candidate.jobId === dep);
-    if (!upstream || upstream.cancelled) return false;
-    return job.stack ? isLanded(upstream) : isDone(upstream);
+    if (!upstream || upstream.cancelled) return true;
+    return !(job.stack ? isLanded(upstream) : isDone(upstream));
   });
 }
 
@@ -375,6 +384,11 @@ function needsDelivery(job: ObservedJob): boolean {
 }
 
 export function canLaunch(job: ObservedJob, observation: Observation): boolean {
+  return !job.held && launchable(job, observation);
+}
+
+/** `canLaunch` apart from a hold. */
+function launchable(job: ObservedJob, observation: Observation): boolean {
   if (job.cancelled || job.error || job.run || job.launching || job.launchFailed || job.fixInProgress) return false;
   return dependenciesMet(job, observation);
 }
@@ -386,15 +400,92 @@ function canStartFix(job: ObservedJob): boolean {
 }
 
 /** A recorded transient failure whose backoff has elapsed. One retry per tick, ahead of a new job. */
-function canRetry(job: ObservedJob, observation: Observation, now: Date): boolean {
+export function canRetry(job: ObservedJob, observation: Observation, now: Date): boolean {
+  return !job.held && retryPending(job) && retryDue(job, now) && dependenciesMet(job, observation);
+}
+
+/** A recorded automatic retry, whatever the time, the dependencies, or a hold. */
+function retryPending(job: ObservedJob): boolean {
   if (job.cancelled || job.error || job.launching || job.retriesExhausted || job.stopReason || job.ledgerError) return false;
   if (job.run && !job.runRetired) return false;
   if (!job.nextRetryAt) return false;
-  const due = Date.parse(job.nextRetryAt);
-  if (!Number.isFinite(due) || due > now.getTime()) return false;
   if (job.run?.gateDecision === "reject" || isLanded(job)) return false;
-  if (job.run?.status === "suspended") return false;
-  return dependenciesMet(job, observation);
+  return job.run?.status !== "suspended";
+}
+
+function retryDue(job: ObservedJob, now: Date): boolean {
+  const due = Date.parse(job.nextRetryAt ?? "");
+  return Number.isFinite(due) && due <= now.getTime();
+}
+
+/** One job that has not started, and why it sits where it does. */
+export interface QueueEntry {
+  job: ObservedJob;
+  reason: string;
+}
+
+interface QueueGroups {
+  /** (a) Retries whose backoff has passed. `decide` takes the first one. */
+  due: ObservedJob[];
+  /** (b) Launchable jobs, healthy ahead of a launch error. `decide` launches the first one. */
+  ready: ObservedJob[];
+  /** (c) Blocked jobs and retries that are not due yet. */
+  waiting: ObservedJob[];
+  /** (d) Held jobs. */
+  held: ObservedJob[];
+}
+
+/**
+ * Every job that has not started, in the order Kiln will launch them. `decide`,
+ * `kiln queue`, status, and the board all read this, so they cannot disagree.
+ * Within each group a job moved to the front (`kiln next`) goes first, the most
+ * recent move first, then observation order (`createdAt`, then id).
+ */
+export function launchOrder(observation: Observation, now = new Date()): QueueEntry[] {
+  const groups = queueGroups(observation, now);
+  return [...groups.due, ...groups.ready, ...groups.waiting, ...groups.held].map((job) => ({
+    job,
+    reason: queueReason(job, observation, now),
+  }));
+}
+
+function queueGroups(observation: Observation, now: Date): QueueGroups {
+  const groups: QueueGroups = { due: [], ready: [], waiting: [], held: [] };
+  const withError: ObservedJob[] = [];
+  for (const job of observation.jobs) {
+    if (job.error || job.cancelled) continue;
+    const pending = retryPending(job);
+    const fresh = !pending && launchable(job, observation);
+    if (!pending && !fresh) {
+      const state = jobState(job, observation);
+      if (state !== "queued" && state !== "blocked") continue;
+    }
+    if (job.held) groups.held.push(job);
+    else if (pending && retryDue(job, now) && dependenciesMet(job, observation)) groups.due.push(job);
+    else if (fresh && !job.launchError) groups.ready.push(job);
+    else if (fresh) withError.push(job);
+    else groups.waiting.push(job);
+  }
+  return {
+    due: byPriority(groups.due),
+    ready: [...byPriority(groups.ready), ...byPriority(withError)],
+    waiting: byPriority(groups.waiting),
+    held: byPriority(groups.held),
+  };
+}
+
+/** Moved-to-front jobs first, newest move first. The rest keep their order (sort is stable). */
+function byPriority(jobs: ObservedJob[]): ObservedJob[] {
+  return [...jobs].sort((left, right) => (right.prioritizedIndex ?? -1) - (left.prioritizedIndex ?? -1));
+}
+
+function queueReason(job: ObservedJob, observation: Observation, now: Date): string {
+  if (job.held) return "held";
+  const unmet = unmetDependency(job, observation);
+  if (unmet) return `waits for ${unmet}`;
+  if (retryPending(job) && !retryDue(job, now)) return `retries at ${job.nextRetryAt}`;
+  if (job.prioritizedIndex !== undefined) return "moved to front";
+  return "ready";
 }
 
 export function decide(observation: Observation, now = new Date()): Action[] {
@@ -426,7 +517,8 @@ export function decide(observation: Observation, now = new Date()): Action[] {
   // Pause and the daily dollar cap stop new runs. In-flight work is not touched.
   if (observation.paused || observation.spendBlocked) return actions;
 
-  const retry = observation.jobs.find((job) => canRetry(job, observation, now));
+  const queue = queueGroups(observation, now);
+  const retry = queue.due[0];
   if (retry) {
     actions.push({ type: "retry", jobId: retry.jobId, repo: retry.repo });
     return actions;
@@ -438,9 +530,7 @@ export function decide(observation: Observation, now = new Date()): Action[] {
     return actions;
   }
 
-  const ready = observation.jobs.filter((job) => canLaunch(job, observation));
-  const healthy = ready.filter((job) => !job.launchError);
-  const picked = healthy[0] ?? ready[0];
+  const picked = queue.ready[0];
   if (picked) actions.push({ type: "launch", jobId: picked.jobId, repo: picked.repo });
   return actions;
 }

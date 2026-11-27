@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { parseActivityStream, readRunActivity } from "../src/activity.js";
+import { newestActivity, parseActivityStream, readRunActivity } from "../src/activity.js";
 import { packageRoot } from "../src/paths.js";
 import { reapLaunches } from "./reap.js";
 
@@ -184,6 +184,91 @@ describe("activity parser", () => {
   });
 });
 
+describe("activity from a recorded build session", () => {
+  const FAKE_GH = `ghp_${"x".repeat(36)}`;
+  const worktree = "/tmp/kiln-yak/.yak/worktrees/run-a7e4";
+  const recorded = (cwd = worktree) =>
+    readFileSync(join(root, "test", "fixtures", "activity", "build-session.jsonl"), "utf8").replaceAll("__WORKTREE__", cwd);
+  const byId = (events: ReturnType<typeof parseActivityStream>, start: string) => {
+    const found = events.find((event) => event.summary.startsWith(start));
+    assert.ok(found, `no event starting ${start} in ${events.map((event) => event.summary).join(" | ")}`);
+    return found;
+  };
+
+  it("drops the cd into the worktree and shows worktree paths relative to it", () => {
+    const events = parseActivityStream(recorded(), "build", AT);
+    for (const event of events) {
+      assert.doesNotMatch(event.summary, /^Ran cd /);
+      assert.equal(event.summary.replaceAll(`${worktree}-other`, "").includes(worktree), false, event.summary);
+    }
+    const sub = byId(events, "Ran in packages/kiln:");
+    assert.equal(sub.summary, 'Ran in packages/kiln: grep -n "Ran " src/activity.ts');
+    assert.equal(sub.summary.split("packages/kiln").length, 2);
+    assert.equal(byId(events, "Ran npm test").summary, "Ran npm test -w @lchase/kiln");
+    assert.equal(byId(events, "Read ").summary, "Read packages/kiln/src/a.ts");
+    assert.equal(byId(events, "Ran diff").summary, `Ran diff /tmp/x ${worktree}-other/a.ts b.ts`);
+  });
+
+  it("keeps today's summaries when the session has no init cwd", () => {
+    const text = recorded().split("\n").filter((entry) => !entry.includes('"subtype": "init"') && !entry.includes('"subtype":"init"')).join("\n");
+    const events = parseActivityStream(text, "build", AT);
+    assert.equal(byId(events, "Ran cd ").summary, `Ran cd ${worktree}/packages/kiln && grep -n "Ran " src/activity.ts`);
+    assert.equal(byId(events, "Read ").summary, "Read src/a.ts");
+  });
+
+  it("leaves a root that only appears inside a longer path, and masks a token cut by the summary limit", () => {
+    const bash = (command: string) =>
+      line({ type: "system", subtype: "init", cwd: worktree }) +
+      line({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "b1", name: "Bash", input: { command } }] } });
+    const nested = parseActivityStream(bash(`ls /mnt${worktree}/a ${worktree}/b`), "build", AT)[0];
+    assert.equal(nested?.summary, `Ran ls /mnt${worktree}/a b`);
+    const straddle = parseActivityStream(bash(`echo ${"a".repeat(140)} ${FAKE_GH}`), "build", AT)[0];
+    assert.equal(straddle?.summary.includes("ghp_"), false, straddle?.summary);
+    assert.equal(straddle?.summary.includes("[redacted]"), true, straddle?.summary);
+  });
+
+  it("keeps the full original command and the output tail in the detail", () => {
+    const events = parseActivityStream(recorded(), "build", AT);
+    assert.equal(
+      byId(events, "Ran in packages/kiln:").detail,
+      `$ cd ${worktree}/packages/kiln && grep -n "Ran " src/activity.ts\n\n62:    return { kind: "command", summary: \`Ran \${command}\`, command };`,
+    );
+    assert.equal(byId(events, "Ran npm test").detail, `$ cd ${worktree} && npm test -w @lchase/kiln\necho done\n\n# tests 4\n# pass 4\n# fail 0\ndone`);
+  });
+
+  it("marks notes and actions, and words results for an operator", () => {
+    const events = parseActivityStream(recorded(), "build", AT);
+    for (const event of events) assert.equal(event.role, event.kind === "message" ? "note" : "action", event.summary);
+    assert.equal(events.filter((event) => event.role === "note").length, 2);
+    assert.equal(byId(events, "Returned its result").kind, "tool");
+    const result = events.at(-1);
+    assert.equal(result?.kind, "result");
+    assert.equal(result?.summary, "Step finished");
+    assert.equal(parseActivityStream(line({ type: "result", subtype: "success", result: "" }), "build", AT)[0]?.summary, "Step finished");
+    assert.equal(parseActivityStream(line({ type: "result", subtype: "error_during_execution" }), "build", AT)[0]?.summary, "The step failed");
+    assert.equal(parseActivityStream(line({ type: "result", subtype: "success", result: "Updated it." }), "build", AT)[0]?.summary, "Updated it.");
+  });
+
+  it("masks a token in a command's summary and detail and in the newest note", () => {
+    const events = parseActivityStream(recorded(), "build", AT);
+    const login = byId(events, "Ran gh auth login");
+    assert.equal(login.summary, "Ran gh auth login --with-token [redacted]");
+    assert.match(login.detail ?? "", /^\$ cd .* && gh auth login --with-token \[redacted\]/);
+    assert.equal(JSON.stringify(events).includes(FAKE_GH), false);
+
+    const dir = mkdtempSync(join(tmpdir(), "kiln-activity-note-"));
+    keep.push(dir);
+    mkdirSync(join(dir, "sessions"), { recursive: true });
+    assert.deepEqual(newestActivity(dir), {});
+    writeFileSync(join(dir, "sessions", "build.jsonl"), recorded());
+    const feed = readRunActivity(dir, { running: true });
+    assert.equal(feed.events.every((event) => event.role === (event.kind === "message" ? "note" : "action")), true);
+    const newest = newestActivity(dir);
+    assert.equal(newest.at, "2026-11-26T21:40:14.000Z");
+    assert.deepEqual(newest.note, { text: "Tests pass. The token [redacted] is not needed.", at: "2026-11-26T21:40:11.000Z" });
+  });
+});
+
 describe("activity endpoint", () => {
   it("polls incrementally, redacts secrets, and defaults a running job to Live", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "kiln-activity-http-"));
@@ -295,6 +380,10 @@ describe("activity endpoint", () => {
       assert.equal(opened.events.some((event) => event.summary === "Read src/foo.ts"), true);
       assert.equal(opened.events.some((event) => event.summary === "Edit src/foo.ts (+12 -3)"), true);
       assert.equal(opened.events.some((event) => event.summary === "Ran npm test - 3 failed"), true);
+      assert.equal(
+        opened.events.every((event) => (event as { role?: string }).role === (event.kind === "message" ? "note" : "action")),
+        true,
+      );
       const body = JSON.stringify(first.body);
       assert.equal(body.includes(TOKEN), false);
       assert.equal(body.includes(MODEL_KEY), false);
@@ -305,6 +394,8 @@ describe("activity endpoint", () => {
       const status = await json(`${server.url}/api/jobs/${jobId}`);
       assert.equal(status.status, 200);
       assert.equal((status.body as { lastActivityAt?: string }).lastActivityAt, opened.lastActivityAt);
+      assert.equal((status.body as { latestNote?: string }).latestNote, "config leaked [redacted]");
+      assert.equal((status.body as { latestNoteAt?: string }).latestNoteAt, "2026-11-15T18:00:09.000Z");
 
       writeFileSync(
         session,

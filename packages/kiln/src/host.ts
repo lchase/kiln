@@ -151,7 +151,7 @@ export function defaultHost(): KilnHost {
 }
 
 /** One `view` answer, or the error it threw, and when it was read. */
-interface PullRequestViewEntry {
+export interface PullRequestViewEntry {
   at: number;
   view?: { state: PullRequestState; mergedAt: string | null };
   error?: unknown;
@@ -160,8 +160,12 @@ interface PullRequestViewEntry {
 /** Keyed by checkout and pull request number. Share one between the hosts of a process. */
 export type PullRequestViewCache = Map<string, PullRequestViewEntry>;
 
-/** How long `kiln serve` answers a page from the last pull request state it read. Longer than one default tick. */
-export const PULL_REQUEST_VIEW_TTL_MS = 45_000;
+/**
+ * How long `kiln serve` answers a page from the last pull request state it
+ * read. Several default ticks long, so a slow or skipped tick does not send
+ * a page request to gh. The tick always asks gh itself.
+ */
+export const PULL_REQUEST_VIEW_TTL_MS = 180_000;
 
 /**
  * Wrap `view` so a long-lived process does not run `gh pr view` for every

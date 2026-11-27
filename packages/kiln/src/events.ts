@@ -6,7 +6,9 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   rmSync,
+  statSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
@@ -30,6 +32,9 @@ export const EVENT_NAMES = [
   "job.cancelled",
   "job.removed",
   "job.retried",
+  "job.prioritized",
+  "job.held",
+  "job.released",
   "launch.blocked",
   "launch.cleared",
   "run.started",
@@ -98,6 +103,12 @@ const JobCancelled = z.object({
   repo: z.string().min(1),
   workflow: z.string().min(1),
   was: z.enum(JOB_STATES).optional(),
+  once,
+});
+/** `kiln next`, `kiln hold`, `kiln release`. `was` is the derived state at the time. */
+const JobQueueControl = z.object({
+  repo: z.string().min(1),
+  was: z.enum(JOB_STATES),
   once,
 });
 /** Kiln deleted its own records for the job. Git is untouched; `branch` is what the operator may delete. */
@@ -266,6 +277,9 @@ export const EventSchema = z.discriminatedUnion("event", [
   z.object({ ...envelope, event: z.literal("job.cancelled"), job_id: z.string().min(1), properties: JobCancelled }),
   z.object({ ...envelope, event: z.literal("job.removed"), job_id: z.string().min(1), properties: JobRemoved }),
   z.object({ ...envelope, event: z.literal("job.retried"), job_id: z.string().min(1), properties: JobRetried }),
+  z.object({ ...envelope, event: z.literal("job.prioritized"), job_id: z.string().min(1), properties: JobQueueControl }),
+  z.object({ ...envelope, event: z.literal("job.held"), job_id: z.string().min(1), properties: JobQueueControl }),
+  z.object({ ...envelope, event: z.literal("job.released"), job_id: z.string().min(1), properties: JobQueueControl }),
   z.object({ ...envelope, event: z.literal("launch.blocked"), job_id: z.string().min(1), properties: LaunchBlocked }),
   z.object({ ...envelope, event: z.literal("launch.cleared"), job_id: z.string().min(1), properties: LaunchCleared }),
   z.object({ ...envelope, event: z.literal("run.started"), job_id: z.string().min(1), properties: RunStarted }),
@@ -371,6 +385,7 @@ export function appendEvent(kilnDir: string, draft: EventDraft): void {
     report(error);
     return;
   }
+  if (knownRecorded(kilnDir, event)) return;
   try {
     withEventsLock(kilnDir, () => {
       if (alreadyRecorded(kilnDir, event)) return;
@@ -454,6 +469,26 @@ export function activeLaunchBlock(events: readonly KilnEvent[], jobId: string): 
   return blocks.at(-1);
 }
 
+/** Operator ordering for one job, derived from the log. Nothing is stored on the job. */
+export interface QueueControls {
+  /** Log index of the job's latest `job.prioritized`. Bigger means moved to the front more recently. */
+  prioritizedIndex?: number;
+  /** Last of `job.held` and `job.released` wins. */
+  held: boolean;
+}
+
+export function queueControls(events: readonly KilnEvent[], jobId: string): QueueControls {
+  let prioritizedIndex: number | undefined;
+  let held = false;
+  events.forEach((event, index) => {
+    if (event.job_id !== jobId) return;
+    if (event.event === "job.prioritized") prioritizedIndex = index;
+    else if (event.event === "job.held") held = true;
+    else if (event.event === "job.released") held = false;
+  });
+  return { ...(prioritizedIndex !== undefined ? { prioritizedIndex } : {}), held };
+}
+
 function buildEvent(draft: EventDraft): KilnEvent {
   const properties = redactDeep(draft.properties);
   const candidate = {
@@ -478,6 +513,68 @@ function parseLine(line: string): KilnEvent | undefined {
     return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
+  }
+}
+
+const onceSeen = new Map<string, { size: number; keys: Set<string> }>();
+
+function onceKey(event: {
+  job_id?: unknown;
+  run_id?: unknown;
+  event?: unknown;
+  step?: unknown;
+  properties?: { once?: unknown };
+}): string | undefined {
+  const once = event.properties?.once;
+  if (typeof once !== "string" || !once) return undefined;
+  return JSON.stringify([event.job_id ?? null, event.run_id ?? null, event.event, event.step ?? null, once]);
+}
+
+/**
+ * Lock-free answer to "is this `once` event already in the log", from an
+ * in-process index of the file. Observing a run re-offers every journal
+ * line on every status read, and nearly all are already recorded: without
+ * this each one took the lock and parsed the whole log. The index follows
+ * the file by size: it reads only the appended bytes, and starts over when
+ * the file shrank. It can only miss an event, never invent one, and a miss
+ * falls through to the locked check in `alreadyRecorded`.
+ */
+function knownRecorded(kilnDir: string, event: KilnEvent): boolean {
+  const key = onceKey(event);
+  if (!key) return false;
+  const path = eventsPath(kilnDir);
+  try {
+    const size = statSync(path).size;
+    let seen = onceSeen.get(path);
+    if (!seen || size < seen.size) {
+      seen = { size: 0, keys: new Set() };
+      onceSeen.set(path, seen);
+    }
+    if (size > seen.size) {
+      const buf = Buffer.alloc(size - seen.size);
+      const fd = openSync(path, "r");
+      let got = 0;
+      try {
+        got = readSync(fd, buf, 0, buf.length, seen.size);
+      } finally {
+        closeSync(fd);
+      }
+      // Only whole lines are indexed. A half-written last line is read next time.
+      const end = buf.lastIndexOf(0x0a, got - 1) + 1;
+      for (const line of buf.toString("utf8", 0, end).split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const recorded = onceKey(JSON.parse(line) as Parameters<typeof onceKey>[0]);
+          if (recorded) seen.keys.add(recorded);
+        } catch {
+          // A corrupt line does not count as a recorded event.
+        }
+      }
+      seen.size += end;
+    }
+    return seen.keys.has(key);
+  } catch {
+    return false;
   }
 }
 

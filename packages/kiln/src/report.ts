@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { newestActivityAt } from "./activity.js";
+import { newestActivity } from "./activity.js";
 import { AUTH_FAILED_LINE } from "./auth.js";
 import { launchBlockLabel, type LaunchBlock } from "./events.js";
 import { readBoardFiles, readReviewRounds, type BoardFile, type BoardReviewRound } from "./board.js";
@@ -12,6 +12,7 @@ import {
   isDone,
   isLanded,
   jobState,
+  launchOrder,
   type Action,
   type FailureReason,
   type Observation,
@@ -219,6 +220,12 @@ export interface StatusJobView {
   launchError?: string;
   /** Set while a config precondition is refusing launch. The state stays `queued`. */
   launchBlock?: LaunchBlock;
+  /** `kiln hold`. The state stays queued, blocked, or failed; it never launches or retries. */
+  held?: boolean;
+  /** 1-based place in launch order (`kiln queue`). Omitted once the job has started. */
+  queuePosition?: number;
+  /** Why the job sits there: `ready`, `moved to front`, `held`, `waits for <job>`, `retries at <time>`. */
+  queueReason?: string;
   /** Recorded attempts. `0` when the job has no attempt ledger. */
   attemptCount: number;
   /** Configured budget. The board prints `attempt N/M`. */
@@ -264,6 +271,9 @@ export interface StatusJobView {
   logTail?: string;
   /** Time of the newest session activity event. Absent until a phase writes output. */
   lastActivityAt?: string;
+  /** Newest agent note (redacted, one line) and its time. Absent until the agent writes one. */
+  latestNote?: string;
+  latestNoteAt?: string;
   /** Worktree diff stat, or the build summary when the tree is clean. */
   diffSummary?: string;
   /** Latest open step failure, from a `step.failed` event. */
@@ -294,12 +304,21 @@ export interface StatusView {
  * Derived state for every job, or for one id.
  * Throws `No job <id>` when that id is not on disk, same as `kiln status`.
  */
-export function statusView(observation: Observation, jobId?: string): StatusView {
+export function statusView(observation: Observation, jobId?: string, now = new Date()): StatusView {
   const selected = jobId ? observation.jobs.filter((job) => job.jobId === jobId) : observation.jobs;
   if (jobId && selected.length === 0) {
     throw new Error(`No job ${jobId}.`);
   }
-  return { jobs: selected.map((job) => toStatusJob(job, observation)) };
+  const queue = new Map(
+    launchOrder(observation, now).map((entry, index) => [entry.job.jobId, { queuePosition: index + 1, queueReason: entry.reason }]),
+  );
+  return {
+    jobs: selected.map((job) => {
+      const view = toStatusJob(job, observation);
+      const place = job.error ? undefined : queue.get(job.jobId);
+      return { ...view, ...(place && job.held ? { held: true } : {}), ...(place ?? {}) };
+    }),
+  };
 }
 
 export function renderStatus(view: StatusView): string {
@@ -332,6 +351,7 @@ export function statusDetails(job: StatusJobView): string[] {
   if (job.state === "failed" && job.launchFailed && job.logPath) lines.push(`log ${job.logPath}`);
   if (job.state === "failed" && job.launchError) lines.push(job.launchError);
   if (job.launchBlock) lines.push(launchBlockLabel(job.launchBlock));
+  if (job.held) lines.push("held");
   if (job.sandboxError && (job.state === "failed" || job.state === "dead" || job.state === "needs-human")) {
     lines.push(`sandbox ${job.sandboxError}`);
   }
@@ -537,11 +557,11 @@ function stallStamp(job: ObservedJob): string | undefined {
   return new Date(ms).toISOString();
 }
 
-function activityStamp(job: ObservedJob): { lastActivityAt?: string } {
+function activityStamp(job: ObservedJob): { lastActivityAt?: string; latestNote?: string; latestNoteAt?: string } {
   const run = job.run;
   if (!run || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(run.runId)) return {};
-  const at = newestActivityAt(join(run.checkout, ".runs", run.runId));
-  return at ? { lastActivityAt: at } : {};
+  const { at, note } = newestActivity(join(run.checkout, ".runs", run.runId));
+  return { ...(at ? { lastActivityAt: at } : {}), ...(note ? { latestNote: note.text, latestNoteAt: note.at } : {}) };
 }
 
 function progressFor(job: ObservedJob): StepProgress[] {

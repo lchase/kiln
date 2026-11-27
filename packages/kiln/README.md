@@ -291,6 +291,8 @@ A job's step list (card stepper, job page stepper, and the Overview phase list) 
 
 `GET /api/jobs` and `GET /api/jobs/<id>` return that view as JSON, including the attention sections. `GET /api/status` is that same list plus `repos` (name and path) and `configError` (`null`, or the validation message). `GET /api/jobs` carries those two fields too, and the page polls it every 3 seconds, so a repo added from the CLI shows up on the Add job chips without a separate reload. `POST /api/jobs` adds work through the intake adapters. The body is `{ repo, workflow, title?, issue?, after?, stack?, dryRun?, source }` where `source` is `{ kind: "prompt", text }`, `{ kind: "spec", path }`, `{ kind: "tickets", dir, context? }`, or `{ kind: "jira", key }`. `issue` is an optional `KEY-123` id, the same field `kiln add --issue` stores. With `deliver=pr` the draft title is `[ABC-123] Title` and the remote branch is `ABC-123-slug`. A Jira `key` is `PROJ-123` or a browse URL. The source stores that issue key when `issue` is omitted, and rejects a different key. A tickets import does not take `issue`; each file has its own. `dryRun: true` previews a tickets import or a Jira issue and writes nothing. A Jira preview includes the fetched summary as the title. The response is `{ ids: string[] }`. Spec and ticket paths must be absolute and under the home directory.
 
+A job's Live feed (`GET /api/jobs/<id>/activity`) reads plainly. A command that starts with `cd` into the run's worktree drops that `cd`, or shows the subdirectory once (`Ran in packages/kiln: grep ...`), and paths inside the worktree show relative to it. The expanded line has the full original command and the end of its output. Each event has a `role`: `note` for the agent's own words, `action` for tool calls and commands. A running job's view carries `latestNote` and `latestNoteAt`, its newest note, and omits them until the agent writes one. Secrets stay masked in all of these.
+
 `POST /api/jobs/<id>/approve`, `POST /api/jobs/<id>/reject`, `POST /api/jobs/<id>/retry`, `POST /api/jobs/<id>/cancel`, and `POST /api/jobs/<id>/remove` call the same functions as the CLI. Every POST requires the CSRF token embedded in the page (`X-Kiln-CSRF`, or a `csrf` field on the approve forms). A request whose Origin or Host is not this localhost port is rejected. That check also covers `GET /api/fs`. `GET /api/fs?path=` lists directories and `.md` files under the home directory. A chosen `.md` file returns its first 40 lines. Paths outside the home directory, hidden directories, and other files are refused. The page and the stylesheet ship inside the package (`assets/serve.css`, `assets/serve.js`, read from the package root).
 
 A page does not ask GitHub for a pull request's state on every request. The tick reads it with `gh pr view` and the board answers from that for up to 45 seconds, so a merge can take until the next tick to show. A merged pull request is not asked about again while serve is running. `kiln status` and `kiln tick` on the command line always ask.
@@ -359,6 +361,34 @@ token like every POST, and a GET changes nothing. A job id with `/`, `..`, or an
 button before it posts. `kiln ledger` counts a stop of a running, approved, or gated job as `stopped by hand`. A
 queued cancel is not counted.
 
+Kiln launches the oldest ready job first, by the time it was added. Three commands change that for a job that has
+not started (queued, blocked, or failed and waiting to retry):
+
+- `kiln next <jobId>` moves it to the front. When several jobs have been moved, the most recent move goes first.
+  Dependencies still win: a blocked job keeps its front place and launches first once its dependencies are met.
+- `kiln hold <jobId>` keeps it from launching and from retrying on its own, across ticks and restarts, until
+  released. A held job takes no slot.
+- `kiln release <jobId>` ends the hold. The job goes back to where its other ordering puts it.
+
+Each writes one event (`job.prioritized`, `job.held`, `job.released`) and nothing else; the order is read back from
+the event log, never from the job file, so a job with no such events launches exactly as before. A running, gated,
+in-review, done, rejected, or cancelled job is refused with `kiln: <id> is <state>; <command> only applies to jobs
+that have not started`, and nothing is written. A repeat writes nothing: `kiln: <id> already first`,
+`kiln: <id> already held`, or `kiln: <id> is not held`. Moving a held job to the front says it is still held; it
+keeps that place once released. `kiln pause` still stops every launch, and `kiln cancel` still cancels a held job.
+
+`kiln queue` prints every job that has not started, in the order the next ticks will launch them, one line each:
+position, id, repo, title, and why it is there. Due retries come first, then ready jobs, then blocked jobs and retries
+that are not due yet, then held jobs. The reason is `moved to front`, `ready`, `waits for <job>`,
+`retries at <time>`, or `held`. Prints `queue empty` when nothing is waiting.
+
+`POST /api/jobs/<id>/next`, `POST /api/jobs/<id>/hold`, and `POST /api/jobs/<id>/release` call the same functions.
+They need the CSRF token like every POST, reject a bad job id before any file is read, answer 404 for an unknown
+job, and return `{ ok, changed, message, job }` for JSON or redirect back for a form. On the board, a job that has
+not started shows "Run next" and "Hold" on the Repos list and the job page, and a held job shows "Release" and the
+word "Held". The Queued column lists cards in launch order. `kiln ledger` counts a move to the front as
+`moved to front by hand` and a hold as `held by hand`. A release is not counted.
+
 Jira search sends `JIRA_API_TOKEN` only as a Basic header in a child process. The token is not written into the job, the spec, or the event log. Polling is the only Jira ingress. A webhook can later call the same issue-to-event function.
 
 ## Tick, status, approve
@@ -378,7 +408,7 @@ while true; do npm run kiln -- tick; sleep 30; done
 
 A job is ready when its dependencies are met and the number of jobs in flight is under `maxConcurrent`. The default is after merged: every job in `dependsOn` is `done`. `--stack` is met when that one upstream has landed. A rejected gate does not unblock the next job. An ok run with no readable approval does not either. An authentication failure does not either: reason `auth-failed` stays in Needs human until `kiln retry`.
 
-`stallTimeoutMs` (default `900000`, 15 minutes), `maxAttempts` (default `3`), and `maxFixRounds` (default `2`) live in the kiln config. `stallTimeoutMs` of `0` or below turns stall detection off. A running job with no yak journal event and no log output for that long is killed, process tree included, and marked failed with reason `stalled`. A process that is already gone when `kiln tick` or `kiln serve` starts is `orphaned`. An agent or launch crash is `crashed`. A non-zero exit that is not a gate rejection is `failed`. Those four retry on their own after `10s × 2^(n-1)`, capped at 5 minutes. A rejected gate, a cancelled run, and an ok run with no readable approval do not. After `maxAttempts` the failure is class `budget` and the job is `needs-human`. The same fingerprint does that after `maxSameFingerprint` (default 3) even sooner. A test, build, or type error is class `deterministic` and is not retried. `repos.<name>.maxAttempts` and `repos.<name>.maxFixRounds` override the global caps. `dailyDollarCap`, when set, blocks new runs once today's recorded dollars reach it. `kiln pause` does the same until `kiln resume`. In-flight runs finish. `kiln revise <id> --note <text>` sends a gated job around again with that note in the next prompt. Each attempt is a file under `<kiln-dir>/attempts/<job-id>.json`, so state stays derived. Status prints `attempts`, `reason`, and `next retry` from the same view `readStatus` returns. On the board, a dead card in Needs human shows `attempt N/M` and the reason. A failure that still has a scheduled retry stays in its stage column instead, with `retrying` and the local time.
+`stallTimeoutMs` (default `900000`, 15 minutes), `maxAttempts` (default `3`), and `maxFixRounds` (default `2`) live in the kiln config. `stallTimeoutMs` of `0` or below turns stall detection off. A running job with no yak journal event, no log output, and no agent session output (the newest mtime under `.runs/<run id>/sessions/`) for that long is killed, process tree included, and marked failed with reason `stalled`. A process that is already gone when `kiln tick` or `kiln serve` starts is `orphaned`. An agent or launch crash is `crashed`. A non-zero exit that is not a gate rejection is `failed`. Those four retry on their own after `10s × 2^(n-1)`, capped at 5 minutes. A rejected gate, a cancelled run, and an ok run with no readable approval do not. After `maxAttempts` the failure is class `budget` and the job is `needs-human`. The same fingerprint does that after `maxSameFingerprint` (default 3) even sooner. A test, build, or type error is class `deterministic` and is not retried. `repos.<name>.maxAttempts` and `repos.<name>.maxFixRounds` override the global caps. `dailyDollarCap`, when set, blocks new runs once today's recorded dollars reach it. `kiln pause` does the same until `kiln resume`. In-flight runs finish. `kiln revise <id> --note <text>` sends a gated job around again with that note in the next prompt. Each attempt is a file under `<kiln-dir>/attempts/<job-id>.json`, so state stays derived. Status prints `attempts`, `reason`, and `next retry` from the same view `readStatus` returns. On the board, a dead card in Needs human shows `attempt N/M` and the reason. A failure that still has a scheduled retry stays in its stage column instead, with `retrying` and the local time.
 
 While a `deliver=pr` job is `in-review`, tick reads that pull request with `gh`: check runs for the head, reviews, and unresolved review comments. The operator's inline comments and unresolved threads count; a top-level note counts only when it starts with `/kiln`, and that prefix is left out of the fix prompt. Comments from `kiln` or a `[bot]` login are ignored, and a resolved thread does not start a round. Pending checks are ignored. A completed failing check on a head that no round has recorded, or review feedback newer than the last round, starts `workflows/fix.yaml` with `yak run --from` that head. The prompt is the original spec plus the failing check names (with a short log excerpt) and the review comment bodies, including file and line. The agent commits on `yak/<run-id>` and does not push. Kiln fast-forwards the open pull request branch. It does not open a second pull request, force-push, merge, approve, or comment. The same head and the same feedback do not start two runs. Each round is a file under `<kiln-dir>/feedback/<job-id>.json`. A stall or crash during a fix uses the attempt ledger above. After `maxFixRounds` the job is `needs-human` with reason `feedback-exhausted`. Feedback Kiln cannot classify is `needs-human` with reason `feedback-ambiguous`. The person merges the pull request.
 
@@ -391,6 +421,7 @@ State is derived from the yak journal, the gate files, and (for `deliver=pr`) `g
 | State | Meaning |
 | --- | --- |
 | `queued` | Dependencies are met, and the job has not started |
+| held | Not a state: a held job keeps its derived state (`queued`, `blocked`, or `failed` awaiting retry). It never launches or retries on its own and takes no slot. Status prints `held`, `kiln queue` prints reason `held`, and the board says "Held" |
 | `cancelled` | Any job that was not done or rejected, stopped by `kiln cancel`. Tick does not launch, retry, deliver, or watch it. Dependents, after-merged and stacked, stay `blocked`. Its worktree is removed; a branch is deleted only when no commit is lost |
 | `blocked` | An after-merged dependency is not `done`, or a stacked dependency has not landed. A missing job id is named |
 | `running` | Yak is alive, or the launch process is alive and has not written a journal |
