@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.21.0](https://github.com/lchase/kiln/compare/kiln-v0.20.1...kiln-v0.21.0) (2026-11-27)
+
+
+### Features
+
+* show a board action in progress and post it once ([#89](https://github.com/lchase/kiln/issues/89)) ([2558a75](https://github.com/lchase/kiln/commit/2558a754db78e26ed5548e56852954621db0830d))
+
+
+### Bug Fixes
+
+* keep the board responsive while jobs run ([#93](https://github.com/lchase/kiln/issues/93)) ([5e16d8a](https://github.com/lchase/kiln/commit/5e16d8ae5af6f7cc49e4f631f950bc36e6218fe3))
+
 ## [0.20.1](https://github.com/lchase/kiln/compare/kiln-v0.20.0...kiln-v0.20.1) (2026-11-26)
 
 
