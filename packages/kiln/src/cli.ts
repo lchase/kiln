@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { addRepo, renderRepoList, resolveKilnConfig } from "./config.js";
 import { renderSandboxStatus, runSandboxBuild } from "./sandbox.js";
-import { answerJob, cancelJob, cancelQueuedJobs, removeJob, retryJob, reviseJob, runStatus, runTick } from "./driver.js";
+import { answerJob, cancelJob, cancelQueuedJobs, cleanWorktrees, removeJob, retryJob, reviseJob, runStatus, runTick } from "./driver.js";
 import { productionHost } from "./host.js";
 import { pauseFactory, resumeFactory } from "./rails.js";
 import { parseSince, renderLedgerFile } from "./ledger.js";
@@ -30,6 +30,7 @@ function usage(): never {
       "       kiln cancel --queued [--repo <name>] [--workflow <name>] [--config <file>]",
       "       kiln cancel <jobId> [--config <file>]",
       "       kiln remove <jobId> [--config <file>]",
+      "       kiln clean [--apply] [--repo <name>] [--config <file>]",
       "       kiln pause [--config <file>]",
       "       kiln resume [--config <file>]",
       "       kiln ledger [--since 7d] [--repo <name>] [--config <file>]",
@@ -117,10 +118,17 @@ function usage(): never {
       "kiln cancel <jobId> stops one job whatever it is doing: a running run's",
       "process tree is killed and not retried, a gate is closed without an answer,",
       "and an in-review pull request is left open and no longer watched.",
-      "Branches and worktrees stay. Done and rejected jobs are left alone.",
+      "Branches stay; the next tick removes the worktree. Done and rejected jobs are left alone.",
       "kiln remove <jobId> deletes Kiln's records for a job that is not running,",
       "gated, or in review and that no other job depends on. The event log keeps",
       "its history plus job.removed. Git is untouched; the branch name is printed.",
+      "Each tick removes a run's worktree (.yak/worktrees/<run-id>) once nothing will",
+      "use it again: done, rejected, cancelled, failed, replaced by a retry, or landed",
+      "and pushed. Uncommitted changes are first committed to yak/<run-id> (never",
+      "pushed). The branch is deleted only when its tip is on a remote or in the base.",
+      "keepWorktrees: true in the config turns that off. kiln clean lists every",
+      "worktree, its size, owner, and what would happen, and changes nothing.",
+      "--apply removes the removable ones. A worktree no Kiln job owns is left alone.",
       "",
       "serve listens on 127.0.0.1. The page is a board of workflow stages:",
       "queued, spec, build, review, approve, land, PR review, Done (landed locally),",
@@ -160,6 +168,7 @@ interface FlagBag {
   workflow?: string;
   context?: string;
   dryRun: boolean;
+  apply: boolean;
   stack: boolean;
   queued: boolean;
   deliver?: "local" | "pr";
@@ -173,7 +182,7 @@ interface FlagBag {
 }
 
 function parseFlags(argv: string[]): FlagBag {
-  const bag: FlagBag = { positionals: [], after: [], dryRun: false, stack: false, noTick: false, queued: false };
+  const bag: FlagBag = { positionals: [], after: [], dryRun: false, apply: false, stack: false, noTick: false, queued: false };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const next = argv[i + 1];
@@ -227,6 +236,10 @@ function parseFlags(argv: string[]): FlagBag {
     }
     if (flag === "--dry-run") {
       bag.dryRun = true;
+      continue;
+    }
+    if (flag === "--apply") {
+      bag.apply = true;
       continue;
     }
     if (flag === "--title") {
@@ -526,6 +539,19 @@ function removeCommand(argv: string[]): void {
   process.stdout.write(`removed ${jobId}\n${branch}\n`);
 }
 
+function cleanCommand(argv: string[]): void {
+  const flags = parseFlags(argv);
+  rejectServeFlags(flags);
+  const { repo, ...rest } = flags;
+  if (flags.positionals.length !== 0 || flags.test || flags.note || hasIntakeFlags(rest) || flags.deliver || flags.base) {
+    usage();
+  }
+  const config = resolveKilnConfig({ configPath: flags.configPath });
+  process.stdout.write(
+    cleanWorktrees(config, { apply: flags.apply, ...(repo ? { repo } : {}) }, productionHost()),
+  );
+}
+
 function retryCommand(argv: string[]): void {
   const flags = parseFlags(argv);
   rejectServeFlags(flags);
@@ -697,6 +723,10 @@ async function main(): Promise<void> {
   }
   if (command === "remove") {
     removeCommand(argv.slice(1));
+    return;
+  }
+  if (command === "clean") {
+    cleanCommand(argv.slice(1));
     return;
   }
   if (command === "revise") {

@@ -539,9 +539,9 @@ function summarizeEvent(event: KilnEvent): string {
     case "pr.feedback":
       return `Feedback round ${event.properties.round} · ${event.properties.trigger}`;
     case "worktree.cleaned":
-      return "Worktree cleaned";
+      return worktreeLabel("Worktree cleaned", event.properties);
     case "worktree.kept":
-      return "Worktree kept";
+      return worktreeLabel("Worktree kept", event.properties);
     case "needs-human":
       return `Needs a person · ${event.properties.reason}`;
     case "job.cancelled":
@@ -901,6 +901,13 @@ function unescapeJson(value: string): string {
   } catch {
     return value.replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
   }
+}
+
+function worktreeLabel(head: string, properties: { snapshot?: string; branch?: "deleted" | "kept" }): string {
+  const parts = [head];
+  if (properties.snapshot) parts.push(`snapshot ${properties.snapshot.slice(0, 12)}`);
+  if (properties.branch) parts.push(`branch ${properties.branch}`);
+  return parts.join(" · ");
 }
 
 function oneLine(text: string, max: number): string {

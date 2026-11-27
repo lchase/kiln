@@ -61,6 +61,8 @@ export interface LoadedKilnConfig {
   stallTimeoutMs: number;
   /** Transient failures before the job needs a person. Default 3. */
   maxAttempts: number;
+  /** True: the tick leaves finished runs' worktrees in place. Default false. */
+  keepWorktrees: boolean;
   /** Pull request fix rounds before needs-human. Default 2. */
   maxFixRounds: number;
   /** Identical fingerprints before Needs human. Default 3. */
@@ -163,6 +165,7 @@ export function loadKilnConfig(configPath: string, options: LoadKilnConfigOption
     maxConcurrent: parsed.data.maxConcurrent ?? 2,
     stallTimeoutMs: parsed.data.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS,
     maxAttempts: parsed.data.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+    keepWorktrees: parsed.data.keepWorktrees ?? false,
     maxFixRounds: parsed.data.maxFixRounds ?? DEFAULT_MAX_FIX_ROUNDS,
     maxSameFingerprint: parsed.data.maxSameFingerprint ?? DEFAULT_MAX_SAME_FINGERPRINT,
     ...(parsed.data.dailyDollarCap !== undefined ? { dailyDollarCap: parsed.data.dailyDollarCap } : {}),

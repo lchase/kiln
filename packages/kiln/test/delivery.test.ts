@@ -568,7 +568,9 @@ describe("delivery", { concurrency: 1 }, () => {
     const downstreamRemote = defaultRemoteBranch({ title: "Show the summary", jobId: downstream });
     assert.equal(github.pulls[1]?.base, upstreamRemote);
     assert.equal(github.pulls[1]?.head, downstreamRemote);
-    assert.equal(git(worktree, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), `yak/${runId}`);
+    // Landed and pushed: the tick that delivered it also removed its worktree.
+    assert.match(delivered, new RegExp(`cleaned ${runId}`));
+    assert.equal(existsSync(worktree), false);
     const pushedYak = spawnSync("git", ["rev-parse", "--verify", `refs/heads/yak/${runId}`], {
       cwd: origin,
       encoding: "utf8",

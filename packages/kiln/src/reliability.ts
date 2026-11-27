@@ -13,7 +13,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import { authenticationFailureLine } from "./auth.js";
 import { attemptsFor, type LoadedKilnConfig } from "./config.js";
@@ -71,7 +71,7 @@ export interface RecoverOptions {
   now: Date;
 }
 
-const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
+export const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 
 /** Elapsed time must be strictly greater than the timeout. `<= 0` disables stall detection. */
 export function isStalled(activityMs: number | undefined, nowMs: number, timeoutMs: number): boolean {
@@ -121,10 +121,9 @@ export function resetAttemptLedger(kilnDir: string, jobId: string, runId?: strin
 
 /**
  * Stall, orphan, crash, and non-zero-exit handling for one observation.
- * A run that finishes with status `failed` takes the same worktree decision
- * as a crash. Caller holds the tick lock. Safe to run twice: a run id is
- * recorded once, and worktree cleanup no-ops once the tree is gone or must
- * be kept.
+ * A run that finishes with status `failed` is recorded like a crash. Caller
+ * holds the tick lock. Safe to run twice: a run id is recorded once.
+ * Worktree cleanup is the tick's separate pass (`worktrees.ts`).
  */
 export function recoverRuns(
   config: LoadedKilnConfig,
@@ -179,19 +178,6 @@ export function recoverRuns(
         ...(recorded.decision.needsHuman ? { needsHuman: true } : {}),
       });
     }
-    const checkout = job.run?.checkout ?? config.repos[job.repo]?.path;
-    const runId = pending.runId ?? job.run?.runId;
-    if (checkout && runId) {
-      const outcome = cleanupRunWorktree(checkout, runId);
-      if (outcome === "removed" || outcome === "kept") {
-        appendEvent(config.kilnDir, {
-          job_id: job.jobId,
-          run_id: runId,
-          event: outcome === "removed" ? "worktree.cleaned" : "worktree.kept",
-          properties: { once: `worktree.${outcome}:${runId}` },
-        });
-      }
-    }
   }
   return notes;
 }
@@ -244,7 +230,7 @@ function pendingFailure(job: ObservedJob, config: LoadedKilnConfig, options: Rec
       : { reason: "crashed", runId: run.runId, pid: run.pid, detail: "process exited" });
   }
   // A normal failed exit (journal status failed) is not a crash. It still
-  // records an attempt and reaches cleanupRunWorktree below.
+  // records an attempt.
   if (run?.status === "failed") {
     return classifyAuth(job, { reason: "failed", runId: run.runId, pid: run.pid, detail: "non-zero exit" });
   }
@@ -394,78 +380,9 @@ function writeLedger(kilnDir: string, ledger: AttemptLedger): void {
   renameSync(tmp, path);
 }
 
-/**
- * Drop a failed run's worktree only when that loses no commits.
- * A branch with commits that are not on HEAD and not on a remote is kept,
- * and so is a dirty worktree. The checkout's own worktree is not removed.
- * The branch is left in place.
- * A second call, or a call when the worktree is already gone, does nothing.
- */
-export function cleanupRunWorktree(checkout: string, runId: string): "kept" | "removed" | "absent" {
-  if (!safeRunId(runId)) return "kept";
-  const root = resolve(checkout);
-  const branch = `yak/${runId}`;
-  const worktree = resolve(root, ".yak", "worktrees", runId);
-  const worktreeRoot = resolve(root, ".yak", "worktrees");
-  if (worktree === root || !worktree.startsWith(`${worktreeRoot}${sep}`)) return "kept";
-
-  if (!existsSync(worktree)) return "absent";
-  const branchExists = gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
-  if (checkedOut(root, branch)) return "kept";
-  if (branchExists && hasUnpushedCommits(root, branch)) return "kept";
-  if (worktreeDirty(worktree)) return "kept";
-
-  if (worktreeListed(root, worktree)) {
-    gitOk(root, ["worktree", "remove", worktree]);
-  }
-  return existsSync(worktree) ? "kept" : "removed";
-}
-
-function safeRunId(runId: string): boolean {
+/** A run id that is safe to use as a path segment under `.yak/worktrees/`. */
+export function safeRunId(runId: string): boolean {
   return RUN_ID.test(runId) && !runId.includes("..");
-}
-
-function checkedOut(checkout: string, branch: string): boolean {
-  const result = git(checkout, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  return result.status === 0 && result.stdout.trim() === branch;
-}
-
-/**
- * Commits on the branch that are neither in HEAD nor on any remote.
- * `--not` toggles exclusion for every following revision, so it must appear
- * once: a second `--not` would count commits that exist only on a remote.
- * A git error keeps the worktree.
- */
-function hasUnpushedCommits(checkout: string, branch: string): boolean {
-  const result = git(checkout, ["rev-list", "--count", branch, "--not", "HEAD", "--remotes"]);
-  if (result.status !== 0) return true;
-  const count = Number(result.stdout.trim());
-  return !Number.isInteger(count) || count > 0;
-}
-
-function worktreeDirty(worktree: string): boolean {
-  const result = git(worktree, ["status", "--porcelain"]);
-  if (result.status !== 0) return true;
-  return result.stdout.trim().length > 0;
-}
-
-function worktreeListed(checkout: string, worktree: string): boolean {
-  const result = git(checkout, ["worktree", "list", "--porcelain"]);
-  if (result.status !== 0) return false;
-  return result.stdout.split("\n").some((line) => line.startsWith("worktree ") && resolve(line.slice("worktree ".length)) === worktree);
-}
-
-function gitOk(cwd: string, args: string[]): boolean {
-  return git(cwd, args).status === 0;
-}
-
-function git(cwd: string, args: string[]): { status: number; stdout: string } {
-  const result = spawnSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-  });
-  return { status: result.status ?? 1, stdout: result.stdout ?? "" };
 }
 
 const PROTECTED = new Set([process.pid, process.ppid].filter((pid) => Number.isInteger(pid) && pid > 1));

@@ -958,6 +958,8 @@
     var rounds = document.getElementById("max-fix-rounds");
     if (attempts) attempts.value = data.maxAttempts != null ? String(data.maxAttempts) : "";
     if (stall) stall.value = data.stallTimeoutMs != null ? String(data.stallTimeoutMs) : "";
+    var keepTrees = document.getElementById("keep-worktrees");
+    if (keepTrees) keepTrees.checked = data.keepWorktrees === true;
     if (rounds) rounds.value = data.maxFixRounds != null ? String(data.maxFixRounds) : "";
     var fingerprint = document.getElementById("max-same-fingerprint");
     var cap = document.getElementById("daily-dollar-cap");
@@ -1513,6 +1515,8 @@
     if (attempts !== undefined) body.maxAttempts = attempts;
     if (stall !== undefined) body.stallTimeoutMs = stall;
     if (rounds !== undefined) body.maxFixRounds = rounds;
+    var keepTreesInput = document.getElementById("keep-worktrees");
+    if (keepTreesInput && keepTreesInput.checked) body.keepWorktrees = true;
     var fingerprint = optionalInt(inputValue("max-same-fingerprint"));
     var cap = optionalNumber(inputValue("daily-dollar-cap"));
     if (fingerprint !== undefined) body.maxSameFingerprint = fingerprint;
@@ -1553,6 +1557,7 @@
     });
     if (data.adapter) body.adapter = data.adapter;
     if (data.sandbox) body.sandbox = data.sandbox;
+    if (data.keepWorktrees === true) body.keepWorktrees = true;
     return body;
   }
 
