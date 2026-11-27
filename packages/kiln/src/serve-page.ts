@@ -29,12 +29,14 @@ import {
   stepAgent,
   shortSha,
   stateTone,
+  stepFocus,
   type ActivityRead,
   type FindingView,
   type JobView,
   type PhaseView,
   type PipelineColumn,
   type ReviewDeliverable,
+  type StepFocus,
   type StepMark,
 } from "./job-view.js";
 import type { ActivityEvent, ActivityFeed } from "./activity.js";
@@ -545,11 +547,11 @@ function queueWhyHtml(job: JobView, titles: ReadonlyMap<string, string>): string
  * One segment per `job.steps` entry. Only a running card marks `current`, and
  * that one segment sweeps. A needs-a-hand card marks the failed step.
  */
-export function stepTrackHtml(job: Pick<JobView, "steps">, mode: "running" | "needs-you" | "needs-hand"): string {
+export function stepTrackHtml(job: Parameters<typeof stepFocus>[0], mode: "running" | "needs-you" | "needs-hand"): string {
   const steps = job.steps;
   if (steps.length === 0) return "";
-  const failed = mode === "needs-hand" ? focusStep(steps) : undefined;
-  const marked = failed?.status === "failed" ? failed : undefined;
+  const focus = stepFocus(job);
+  const marked = mode === "needs-hand" && focus?.kind === "step" && focus.step.status === "failed" ? focus.step : undefined;
   const segs = steps
     .map((step) => {
       let cls = "upcoming";
@@ -560,17 +562,24 @@ export function stepTrackHtml(job: Pick<JobView, "steps">, mode: "running" | "ne
       return `<span class="seg ${cls}" title="${escapeHtml(step.label)}"></span>`;
     })
     .join("");
-  return `<div class="track" role="img" aria-label="${escapeHtml(trackLabel(steps, mode, marked))}">${segs}</div>`;
+  return `<div class="track" role="img" aria-label="${escapeHtml(trackLabel(steps, mode, marked, focus))}">${segs}</div>`;
 }
 
-function trackLabel(steps: readonly StepMark[], mode: "running" | "needs-you" | "needs-hand", failed: StepMark | undefined): string {
+function trackLabel(
+  steps: readonly StepMark[],
+  mode: "running" | "needs-you" | "needs-hand",
+  failed: StepMark | undefined,
+  focus: StepFocus | undefined,
+): string {
   const total = steps.length;
+  // With no step to name, the outcome says where the job is.
+  const settled = focus?.kind === "outcome" ? focus.label : `All ${total} steps done`;
   if (failed) return `Failed at ${failed.label}`;
-  if (steps.every((step) => step.status === "done" || step.status === "skipped")) return `All ${total} steps done`;
+  if (steps.every((step) => step.status === "done" || step.status === "skipped")) return settled;
   const at = mode === "running" ? steps.findIndex((step) => step.status === "running") : -1;
   const index = at >= 0 ? at : steps.findIndex((step) => step.status !== "done" && step.status !== "skipped");
   const step = steps[index];
-  return step ? `Step ${index + 1} of ${total}: ${step.label}` : `All ${total} steps done`;
+  return step ? `Step ${index + 1} of ${total}: ${step.label}` : settled;
 }
 
 /** Running: the track, the live step with `step N of M` and how long it has run, and the newest note. */
@@ -645,12 +654,14 @@ function handCard(job: JobView, csrf: string): string {
   );
 }
 
-/** `Merged #88`, `Landed`, `Rejected`, or `Cancelled`. */
-export function doneOutcome(job: Pick<JobView, "state" | "prNumber">): { label: string; glyph: IconName } {
-  if (job.state === "rejected") return { label: "Rejected", glyph: "circle-x" };
-  if (job.state === "cancelled") return { label: "Cancelled", glyph: "ban" };
-  if (job.prNumber) return { label: `Merged #${job.prNumber}`, glyph: "git-merge" };
-  return { label: "Landed", glyph: "circle-check" };
+/** The stepper's outcome (`Merged #88`, `Landed locally`, `Rejected`, `Cancelled`, ...) with its glyph. */
+export function doneOutcome(job: Parameters<typeof stepFocus>[0]): { label: string; glyph: IconName } {
+  const focus = stepFocus(job);
+  const label = focus?.kind === "outcome" ? focus.label : (focus?.step.label ?? "");
+  if (job.state === "rejected") return { label, glyph: "circle-x" };
+  if (job.state === "cancelled") return { label, glyph: "ban" };
+  if (label.startsWith("Merged")) return { label, glyph: "git-merge" };
+  return { label, glyph: "circle-check" };
 }
 
 function metricHtml(name: string, glyph: IconName, value: string): string {
@@ -770,16 +781,19 @@ function progressHtml(job: JobView, clock: BoardClock): string {
     ...(clock.now !== undefined ? { now: clock.now } : {}),
     stallTimeoutMs: clock.stallTimeoutMs,
   });
-  const focus = focusStep(job.steps);
+  const focus = stepFocus(job);
   const items = job.steps
     .map((step) => {
       const cls = stepClass(step.status);
       const mark = step.status === "done" ? icon("check", "icon mark") : "";
-      const current = step.status === "running" || step.status === "failed" ? ` aria-current="step"` : "";
+      const current = !job.finished && (step.status === "running" || step.status === "failed") ? ` aria-current="step"` : "";
       return `<li class="step ${cls}"${current}>${mark}<span class="name">${escapeHtml(step.label)}</span></li>`;
     })
     .join("");
-  const nowName = focus ? `<span class="step-now ${stepClass(focus.status)}" aria-hidden="true">${escapeHtml(focus.label)}</span>` : "";
+  // An outcome is read: the step list carries no outcome words.
+  let nowName = "";
+  if (focus?.kind === "step") nowName = `<span class="step-now ${stepClass(focus.step.status)}" aria-hidden="true">${escapeHtml(focus.step.label)}</span>`;
+  else if (focus) nowName = `<span class="step-now outcome">${escapeHtml(focus.label)}</span>`;
   const liveness = live.liveness === "idle" ? "" : livenessHtml(live);
   const meta = nowName || liveness ? `<div class="progress-meta">${nowName}${liveness}</div>` : "";
   return `<div class="progress"><ol class="steps" aria-label="Steps">${items}</ol>${meta}</div>`;
@@ -791,14 +805,6 @@ function stepClass(status: StepMark["status"]): string {
   if (status === "running") return "current";
   if (status === "failed") return "failed";
   return "upcoming";
-}
-
-function focusStep(steps: readonly StepMark[]): StepMark | undefined {
-  return (
-    steps.find((step) => step.status === "running") ??
-    steps.find((step) => step.status === "failed") ??
-    [...steps].reverse().find((step) => step.status === "done")
-  );
 }
 
 function livenessHtml(live: ActivityRead, withDot = true): string {
@@ -1181,14 +1187,16 @@ function progressRowHtml(job: JobView, started: ReadonlySet<string>): string {
       const target = segment.id === "reviews" ? job.steps.find((step) => isReviewStep(step.id) && started.has(step.id))?.id : started.has(segment.id) ? segment.id : undefined;
       const name = target ? `<a href="${stepHref(job, target)}">${escapeHtml(segment.label)}</a>` : escapeHtml(segment.label);
       const cls = stepClass(segment.status);
-      const current = segment.status === "running" || segment.status === "failed" ? ` aria-current="step"` : "";
+      const current = !job.finished && (segment.status === "running" || segment.status === "failed") ? ` aria-current="step"` : "";
       const mark = segment.status === "done" ? icon("check", "icon mark") : "";
       const failed = segment.status === "failed" ? `<span class="prog-note">failed</span>` : "";
       const duration = segment.durationMs !== undefined ? `<span class="prog-note">${escapeHtml(formatDuration(segment.durationMs))}</span>` : "";
       return `<li class="prog-step ${cls}"${current}><span class="prog-bar" aria-hidden="true"></span><span class="prog-name">${mark}${name}</span>${failed}${duration}</li>`;
     })
     .join("");
-  return `<section class="job-progress" aria-label="Progress"><ol class="prog">${items}</ol></section>`;
+  const focus = stepFocus(job);
+  const outcome = focus?.kind === "outcome" ? `<p class="prog-outcome">${escapeHtml(focus.label)}</p>` : "";
+  return `<section class="job-progress" aria-label="Progress"><ol class="prog">${items}</ol>${outcome}</section>`;
 }
 
 function currentStepLabel(job: JobView): string | undefined {

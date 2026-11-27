@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildAttention } from "../src/attention.js";
-import { QUIET_AFTER_MS, activityLiveness, progressSegments, projectJob, type PipelineColumn } from "../src/job-view.js";
+import { QUIET_AFTER_MS, activityLiveness, progressSegments, projectJob, stepFocus, type JobView, type PipelineColumn, type StepMark } from "../src/job-view.js";
 import type { ActivityFeed } from "../src/activity.js";
 import { buildBoard, jobDetail } from "../src/board-view.js";
 import { renderApp } from "../src/serve-page.js";
@@ -859,5 +859,105 @@ describe("job page", () => {
     }
     const held = mainOf(render({ ...queued, held: true }, []));
     assert.match(held, /action="\/api\/jobs\/SAMPLE-1\/release"/);
+  });
+});
+
+describe("stepFocus", () => {
+  const all = (status: StepMark["status"] = "done"): StepMark[] =>
+    ["build", "verify", "approve", "land"].map((id) => ({ id, label: id, status }));
+  const focus = (extra: Partial<Parameters<typeof stepFocus>[0]>) =>
+    stepFocus({ state: "done", workflow: "feature", inbox: false, steps: all(), ...extra });
+  const outcome = (label: string, short = label) => ({ kind: "outcome", label, short });
+
+  it("names a merged deliver=pr job with its pull request, never Land", () => {
+    assert.deepEqual(focus({ deliver: "pr", prNumber: 88 }), outcome("Merged #88", "Merged"));
+    assert.deepEqual(focus({ deliver: "pr" }), outcome("Merged"));
+    assert.deepEqual(focus({ prUrl: "https://example.test/pr/1" }), outcome("Merged"));
+  });
+
+  it("names an in-review job's open pull request", () => {
+    assert.deepEqual(focus({ state: "in-review", deliver: "pr", prNumber: 91 }), outcome("Pull request #91 open", "Pull request open"));
+    assert.deepEqual(focus({ state: "in-review", deliver: "pr" }), outcome("Pull request open"));
+  });
+
+  it("names a done deliver=local job Landed locally", () => {
+    assert.deepEqual(focus({ deliver: "local" }), outcome("Landed locally"));
+    assert.deepEqual(focus({}), outcome("Landed locally"));
+  });
+
+  it("names a done investigation Findings approved, even in a deliver=pr repo", () => {
+    assert.deepEqual(focus({ workflow: "investigation", deliver: "pr" }), outcome("Findings approved"));
+  });
+
+  it("words a done review job like its history line", () => {
+    assert.deepEqual(focus({ workflow: "review", prNumber: 7, reviewUrl: "https://example.test/c" }), outcome("Comment posted"));
+    assert.deepEqual(focus({ workflow: "review", prNumber: 7 }), outcome("Approved"));
+  });
+
+  it("names rejected and cancelled jobs, even with a step left running", () => {
+    assert.deepEqual(focus({ state: "rejected" }), outcome("Rejected"));
+    assert.deepEqual(focus({ state: "cancelled", steps: all("running") }), outcome("Cancelled"));
+  });
+
+  it("names an open gate Your decision", () => {
+    const gated = all().map((step) => (step.id === "approve" || step.id === "land" ? { ...step, status: "pending" as const } : step));
+    assert.deepEqual(focus({ state: "needs-human", steps: gated }), outcome("Your decision"));
+    assert.deepEqual(focus({ state: "needs-human", inbox: true, steps: gated }), outcome("Your decision"));
+  });
+
+  it("names a running or failed step, as before", () => {
+    const running = all().map((step, index) => ({ ...step, status: index === 0 ? ("done" as const) : index === 1 ? ("running" as const) : ("pending" as const) }));
+    assert.deepEqual(focus({ state: "running", steps: running }), { kind: "step", step: running[1] });
+    const failed = running.map((step) => (step.status === "running" ? { ...step, status: "failed" as const } : step));
+    assert.deepEqual(focus({ state: "dead", steps: failed }), { kind: "step", step: failed[1] });
+  });
+
+  it("keeps the last done step for a queued or approved job", () => {
+    const between = all().map((step, index) => (index < 2 ? step : { ...step, status: "pending" as const }));
+    assert.deepEqual(focus({ state: "approved", steps: between }), { kind: "step", step: between[1] });
+    assert.equal(focus({ state: "queued", steps: all("pending") }), undefined);
+  });
+
+  it("carries deliver from status into the view", () => {
+    const view: JobView = projectJob(job({ jobId: "d1", state: "done", deliver: "pr", prNumber: 4 }), []);
+    assert.equal(view.deliver, "pr");
+  });
+});
+
+describe("job page outcome", () => {
+  const page = { csrf: "token", repos: [{ name: "web", path: "/repos/web" }], workflows: ["feature"], now: Date.parse("2026-11-09T04:12:00.000Z") };
+  const progressOf = (status: StatusJobView): string => {
+    const html = renderApp({
+      css: "",
+      section: "job",
+      board: buildBoard([status], []),
+      attention: buildAttention([status]),
+      page,
+      detail: jobDetail({ job: status, events: [], maxFixRounds: 2 }),
+    });
+    const at = html.indexOf('aria-label="Progress"');
+    assert.ok(at >= 0, "missing Progress");
+    return html.slice(at, html.indexOf("</section>", at));
+  };
+  const plan = workflowStepPlan("feature");
+
+  for (const [state, extra, word] of [
+    ["done", { prNumber: 88, deliver: "pr" }, "Merged #88"],
+    ["rejected", {}, "Rejected"],
+    ["cancelled", {}, "Cancelled"],
+  ] as const) {
+    it(`says ${word} under the progress row, with no current segment`, () => {
+      const steps = plan.map((id, index) => ({ id, phase: state === "done" || index < 3 ? ("done" as const) : index === 3 ? ("current" as const) : ("pending" as const) }));
+      const progress = progressOf(job({ jobId: "SAMPLE-1", state, steps, ...extra }));
+      assert.match(progress, new RegExp(`<p class="prog-outcome">${word}</p>`));
+      assert.doesNotMatch(progress, /aria-current/);
+      assert.doesNotMatch(progress, /prog-outcome">Land</);
+    });
+  }
+
+  it("adds no outcome line while a step runs", () => {
+    const progress = progressOf(featureJob("build"));
+    assert.doesNotMatch(progress, /prog-outcome/);
+    assert.match(progress, /aria-current="step"/);
   });
 });
