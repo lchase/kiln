@@ -879,6 +879,7 @@ describe("local workflows and skills section", () => {
     }
     assert.match(pane, /aria-describedby="[^"]*overlay-skills-warn/);
     assert.match(pane, /aria-describedby="[^"]*overlay-skill-paths-warn/);
+    assert.match(pane, /id="overlay-skill-names"[^>]*aria-labelledby="overlay-skill-names-label"[^>]*aria-live="polite"/);
     for (const key of ["overlay.workflows", "overlay.prompts", "overlay.skills", "overlay.skillPaths"]) {
       assert.match(pane, new RegExp(`data-error="${key.replace(".", "\\.")}"`), key);
     }

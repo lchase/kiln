@@ -1658,7 +1658,7 @@ ${settingRow({
 <div class="setting-row">
 <div class="setting-text"><p class="setting-label" id="overlay-skill-names-label">Skills agents will see</p>
 <p class="setting-explain">From the saved folders. Save to check new ones.</p></div>
-<div class="setting-control" id="overlay-skill-names"></div>
+<div class="setting-control" id="overlay-skill-names" role="region" aria-labelledby="overlay-skill-names-label" aria-live="polite"></div>
 </div>
 </div>`,
     ),
