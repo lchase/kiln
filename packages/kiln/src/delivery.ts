@@ -8,7 +8,15 @@ import type { GitRemote, KilnHost, PullRequestRef } from "./host.js";
 import { HostError } from "./host.js";
 import { readJobSpec } from "./jobs.js";
 import { jobBasename } from "./paths.js";
-import { chooseRemoteBranch, defaultRemoteBranch, formatBranchTemplate, isPublishableBranch, pullRequestTitle } from "./pr-names.js";
+import {
+  chooseRemoteBranch,
+  defaultRemoteBranch,
+  formatBranchTemplate,
+  isChangeType,
+  isPublishableBranch,
+  pullRequestTitle,
+  type ChangeType,
+} from "./pr-names.js";
 import type { Job } from "./schemas.js";
 
 /**
@@ -175,10 +183,12 @@ export function deliverJob(request: DeliverRequest): DeliverOutcome {
     if (remoteSha !== localSha) {
       request.host.git.publishBranch(request.checkout, localBranch, remoteName, request.baseBranch);
     }
+    const { changeType } = approverNotes(request);
     const title = pullRequestTitle({
       title: request.job.title,
       ...(request.job.issue ? { issue: request.job.issue } : {}),
       ...(repo?.prTitle ? { template: repo.prTitle } : {}),
+      ...(changeType ? { type: changeType } : {}),
     });
     writeDelivery(request.config.kilnDir, {
       jobId: request.job.id,
@@ -251,12 +261,17 @@ export function deliverJob(request: DeliverRequest): DeliverOutcome {
   }
 }
 
-/** First paragraph of the job spec, capped, plus the job id and reviewer verdicts. */
+/**
+ * The approver's plain summary when it wrote one, then the first paragraph
+ * of the job spec, capped, plus the job id and reviewer verdicts.
+ */
 export function pullRequestBody(request: DeliverRequest): string {
   const spec = readJobSpec(request.config.kilnDir, request.job);
   const summary = specSummary(spec);
-  const reviews = reviewerLines(join(request.checkout, ".runs", request.runId, "artifacts"));
+  const reviews = reviewerLines(runArtifactsDir(request));
+  const { prSummary } = approverNotes(request);
   return [
+    ...(prSummary ? [prSummary, ""] : []),
     summary,
     "",
     `Kiln job: ${request.job.id}`,
@@ -284,6 +299,28 @@ export function specSummary(specText: string): string {
   if (!paragraph) return "(empty spec)";
   if (paragraph.length <= 500) return paragraph;
   return `${paragraph.slice(0, 497)}...`;
+}
+
+function runArtifactsDir(request: Pick<DeliverRequest, "checkout" | "runId">): string {
+  return join(request.checkout, ".runs", request.runId, "artifacts");
+}
+
+/**
+ * Optional `prSummary` and `changeType` from the latest approver decision.
+ * An empty summary or a change type outside the allowed list counts as absent.
+ */
+export function approverNotes(request: Pick<DeliverRequest, "checkout" | "runId">): {
+  prSummary?: string;
+  changeType?: ChangeType;
+} {
+  const decision = latestArtifact(runArtifactsDir(request), "decision");
+  if (typeof decision !== "object" || decision === null) return {};
+  const record = decision as Record<string, unknown>;
+  const summary = typeof record.prSummary === "string" ? record.prSummary.trim() : "";
+  return {
+    ...(summary ? { prSummary: summary } : {}),
+    ...(isChangeType(record.changeType) ? { changeType: record.changeType } : {}),
+  };
 }
 
 function reviewerLines(artifactsDir: string): string[] {

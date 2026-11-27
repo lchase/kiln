@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { Worker } from "node:worker_threads";
 import { loadKilnConfig } from "../src/config.js";
-import { pullRequestBody } from "../src/delivery.js";
+import { approverNotes, pullRequestBody } from "../src/delivery.js";
 import { evidenceSection } from "../src/evidence.js";
 import { appendEvent, eventsPath, readEvents, type KilnEvent } from "../src/events.js";
 import { ledgerRows, parseSince, renderLedger } from "../src/ledger.js";
@@ -457,6 +457,50 @@ describe("pull request evidence", () => {
     });
     assert.match(body, /## Evidence/);
     assert.equal(body.includes(FAKE_GITHUB), false);
+  });
+
+  it("puts the approver's plain summary first and otherwise leaves the body as it was", () => {
+    const dir = tempDir("kiln-pr-body-");
+    const kiln = kilnHome(dir);
+    const config = loadKilnConfig(join(kiln, "kiln.config.json"));
+    const job = {
+      id: "job-s",
+      repo: "web",
+      workflow: "feature",
+      spec: "specs/job-s.md",
+      title: "Synthetic",
+      source: { kind: "prompt", ref: "inline" },
+      createdAt: "2026-04-10T00:00:00.000Z",
+    } satisfies Job;
+    mkdirSync(join(kiln, "specs"), { recursive: true });
+    writeFileSync(join(kiln, "specs", "job-s.md"), "# Synthetic\n\nShip the summary.\n");
+    const checkout = join(dir, "repo");
+    const request = { config, job, checkout, runId: "run-s", baseBranch: "main", host: {} as KilnHost };
+    const artifacts = join(checkout, ".runs", "run-s", "artifacts");
+
+    const withoutArtifact = pullRequestBody(request);
+    assert.match(withoutArtifact, /^Ship the summary\.\n\nKiln job: job-s\n\n## Reviewers\n- \(no reviewer artifacts\)\n/);
+
+    mkdirSync(artifacts, { recursive: true });
+    writeFileSync(join(artifacts, "decision.json"), JSON.stringify({ decision: "APPROVE", reason: "ok" }));
+    const today = pullRequestBody(request);
+    assert.match(today, /^Ship the summary\.\n\nKiln job: job-s\n\n## Reviewers\n- approver: APPROVE\n/);
+
+    for (const blank of ["", "   \n "]) {
+      writeFileSync(join(artifacts, "decision.json"), JSON.stringify({ decision: "APPROVE", reason: "ok", prSummary: blank }));
+      assert.equal(pullRequestBody(request), today);
+    }
+
+    writeFileSync(
+      join(artifacts, "decision.json"),
+      JSON.stringify({ decision: "APPROVE", reason: "ok", prSummary: "S", changeType: "feat" }),
+    );
+    assert.equal(pullRequestBody(request), `S\n\n${today}`);
+    assert.deepEqual(approverNotes(request), { prSummary: "S", changeType: "feat" });
+
+    writeFileSync(join(artifacts, "decision.2.json"), JSON.stringify({ decision: "APPROVE", reason: "ok", changeType: "feature" }));
+    assert.deepEqual(approverNotes(request), {});
+    assert.equal(pullRequestBody(request), today);
   });
 });
 

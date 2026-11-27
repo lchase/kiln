@@ -24,18 +24,38 @@ export function stripIssuePrefix(title: string, issue: string): string {
   return trimmed;
 }
 
+/** Values the approver may return as `changeType`, used for a `{type}` title placeholder. */
+export const CHANGE_TYPES = ["feat", "fix", "docs", "test", "refactor", "chore"] as const;
+export type ChangeType = (typeof CHANGE_TYPES)[number];
+
+export function isChangeType(value: unknown): value is ChangeType {
+  return typeof value === "string" && (CHANGE_TYPES as readonly string[]).includes(value);
+}
+
 /**
- * No issue: the title is unchanged, including when a repo template is set.
- * With an issue: strip a leading `ABC-123:`, `ABC-123 `, or `[ABC-123]`
- * so a Jira `KEY: summary` title is not applied twice, then fill the template.
- * The default template is `[{issue}] {title}`.
+ * The default template is `[{issue}] {title}`. A template that uses `{issue}`
+ * applies only when the job has an issue; without one the title is returned
+ * unchanged. A template without `{issue}` applies to every job.
+ * With an issue, a leading `ABC-123:`, `ABC-123 `, or `[ABC-123]` is stripped
+ * so a Jira `KEY: summary` title is not applied twice.
+ * `{type}` is filled from the approver's change type, and a leading imported
+ * ticket number (`01: `) is dropped from the title. With no type, a `{type}`
+ * template falls back to the default title so no literal `{type}` is shown.
  */
-export function pullRequestTitle(input: { title: string; issue?: string; template?: string }): string {
+export function pullRequestTitle(input: { title: string; issue?: string; template?: string; type?: string }): string {
   const raw = input.title.trim();
-  if (!input.issue) return raw;
-  const title = stripIssuePrefix(raw, input.issue);
   const template = input.template?.trim() || DEFAULT_PR_TITLE;
-  return template.replaceAll("{issue}", input.issue).replaceAll("{title}", title).replace(/[ \t]{2,}/g, " ").trim();
+  const usesType = template.includes("{type}");
+  if (usesType && !input.type) return pullRequestTitle({ title: raw, ...(input.issue ? { issue: input.issue } : {}) });
+  if (template.includes("{issue}") && !input.issue) return raw;
+  let title = input.issue ? stripIssuePrefix(raw, input.issue) : raw;
+  if (usesType) title = title.replace(/^\d+:\s*/, "").trim() || title;
+  return template
+    .replaceAll("{issue}", input.issue ?? "")
+    .replaceAll("{type}", input.type ?? "")
+    .replaceAll("{title}", title)
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
 }
 
 /** Kebab-case title, at most 50 characters. An issue prefix is not part of the slug. */

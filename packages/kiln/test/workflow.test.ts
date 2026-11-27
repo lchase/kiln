@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { packageRoot } from "../src/paths.js";
+import { CHANGE_TYPES } from "../src/pr-names.js";
 import { yakCliPath } from "../src/report.js";
 import { materializeWorkflow, workflowInputs, workflowNamesNeedingTest, workflowNeedsTestCommand } from "../src/workflow.js";
 
@@ -144,6 +145,30 @@ describe("feature workflow", () => {
     assert.doesNotMatch(`${run.stdout}\n${run.stderr}`, /prompt references/);
     assert.doesNotMatch(`${run.stdout}\n${run.stderr}`, /needs artifact/);
     assert.match(run.stderr, /no such file or directory|ENOENT|mock fixture/);
+  });
+
+  it("lets the approver return an optional plain summary and change type", () => {
+    const source = readFileSync(join(root, "workflows", "feature.yaml"), "utf8");
+    const start = source.indexOf("  - id: approver\n");
+    const end = source.indexOf("  - id: approve\n", start + 1);
+    assert.ok(start >= 0 && end > start);
+    const lines = source.slice(start, end).split("\n").map((line) => line.trim());
+    const properties = lines.slice(lines.indexOf("properties:") + 1, lines.findIndex((line) => line.startsWith("required:")));
+    assert.deepEqual(properties, [
+      "decision: { type: string, enum: [APPROVE, ESCALATE] }",
+      "reason: { type: string }",
+      "prSummary: { type: string }",
+      "changeType: { type: string, enum: [feat, fix, docs, test, refactor, chore] }",
+    ]);
+    assert.ok(lines.includes("required: [decision, reason]"));
+    assert.ok(lines.includes("additionalProperties: false"));
+    assert.deepEqual(
+      properties.at(-1)?.match(/enum: \[([^\]]*)\]/)?.[1]?.split(", "),
+      [...CHANGE_TYPES],
+    );
+    const preamble = readFileSync(join(root, "prompts", "kiln", "approver.md"), "utf8");
+    assert.match(preamble, /`prSummary`/);
+    assert.match(preamble, /`changeType` is exactly one of `feat`, `fix`, `docs`, `test`, `refactor`, `chore`/);
   });
 
   it("fills the feature schema from the spec text and does not invent extra fields", () => {
