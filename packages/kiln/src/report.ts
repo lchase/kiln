@@ -285,6 +285,8 @@ export interface StatusJobView {
   feedbackLedgerError?: string;
   /** Spec, build, decision, reviews, and the gate, for the console drawer. */
   files?: BoardFile[];
+  /** Valid jobs whose `dependsOn` names this one. Remove is refused while any exist. */
+  dependents?: string[];
 }
 
 export interface StatusView {
@@ -418,6 +420,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
       ...(job.logTail ? { logTail: job.logTail } : {}),
       ...activityStamp(job),
       ...boardFields(job),
+      ...dependentsField(job, observation),
     };
   }
 
@@ -491,6 +494,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     ...(job.run?.sandboxError ? { sandboxError: job.run.sandboxError } : {}),
     ...(job.sandboxed ? { sandboxed: true } : {}),
     ...boardFields(job),
+    ...dependentsField(job, observation),
   };
 }
 
@@ -580,12 +584,23 @@ function dependencyViews(job: ObservedJob, observation: Observation): StatusDepe
   });
 }
 
+function dependentsField(job: ObservedJob, observation: Observation): { dependents?: string[] } {
+  const dependents = observation.jobs
+    .filter((candidate) => !candidate.error && candidate.dependsOn.includes(job.jobId))
+    .map((candidate) => candidate.jobId);
+  return dependents.length > 0 ? { dependents } : {};
+}
+
 function blockReasons(job: ObservedJob, observation: Observation): { dep: string; detail: string }[] {
   const reasons: { dep: string; detail: string }[] = [];
   for (const dep of job.dependsOn) {
     const upstream = observation.jobs.find((candidate) => candidate.jobId === dep);
     if (!upstream) {
       reasons.push({ dep, detail: `blocked on missing job ${dep}` });
+      continue;
+    }
+    if (upstream.cancelled) {
+      reasons.push({ dep, detail: `blocked on cancelled job ${dep}` });
       continue;
     }
     if (job.stack) {

@@ -2256,6 +2256,9 @@
     }
   }
 
+  var actionPending = false;
+  var PENDING_LABEL = { approve: "Approving", reject: "Rejecting", revise: "Sending back", retry: "Retrying" };
+
   function poll() {
     fetch("/api/jobs", { cache: "no-store", headers: { Accept: "application/json" } })
       .then(function (response) {
@@ -2267,6 +2270,8 @@
         var rev = data && data.attention && data.attention.revision;
         var current = body.getAttribute("data-revision");
         if (rev && current && rev !== current) {
+          // A reload here would cancel the form post that is still on its way.
+          if (actionPending) return;
           location.reload();
           return;
         }
@@ -2435,6 +2440,58 @@
     var open = localStorage.getItem("kiln-drawer");
     if (open) openJob(open);
   } catch (err) { /* private mode */ }
+  // Approve, reject, revise, and retry are plain form posts, and the server
+  // takes a moment to answer. Mark the clicked button busy and lock the rest
+  // of its row, so the click is seen and a second one cannot post twice.
+  document.addEventListener("submit", function (event) {
+    var form = event.target;
+    if (!form || !form.classList || !form.classList.contains("act")) return;
+    if (form.getAttribute("data-pending") === "true") {
+      event.preventDefault();
+      return;
+    }
+    form.setAttribute("data-pending", "true");
+    actionPending = true;
+    var button = form.querySelector("button");
+    var kind = "";
+    for (var name in PENDING_LABEL) if (form.classList.contains(name)) kind = name;
+    if (button) {
+      button.setAttribute("data-label", button.textContent || "");
+      button.setAttribute("aria-busy", "true");
+      button.textContent = (PENDING_LABEL[kind] || button.textContent || "Working") + "\u2026";
+    }
+    // After this event, or the browser may drop the submit and the note.
+    setTimeout(function () {
+      var row = (form.closest && form.closest(".d-actions")) || form;
+      var controls = row.querySelectorAll("button, input");
+      for (var i = 0; i < controls.length; i += 1) {
+        if (controls[i].tagName === "INPUT") controls[i].readOnly = true;
+        else controls[i].disabled = true;
+      }
+    }, 0);
+  });
+  // Coming back with the back button restores the page as it was left.
+  if (typeof window !== "undefined" && window.addEventListener) {
+    window.addEventListener("pageshow", function (event) {
+      if (!event.persisted) return;
+      actionPending = false;
+      var forms = document.querySelectorAll('form.act[data-pending="true"]');
+      for (var i = 0; i < forms.length; i += 1) {
+        forms[i].removeAttribute("data-pending");
+        var row = (forms[i].closest && forms[i].closest(".d-actions")) || forms[i];
+        var controls = row.querySelectorAll("button, input");
+        for (var k = 0; k < controls.length; k += 1) {
+          controls[k].disabled = false;
+          controls[k].readOnly = false;
+          if (controls[k].getAttribute("aria-busy") === "true") {
+            controls[k].removeAttribute("aria-busy");
+            controls[k].textContent = controls[k].getAttribute("data-label") || controls[k].textContent;
+          }
+        }
+      }
+    });
+  }
+
   paintLiveness();
   poll();
   setInterval(poll, 3000);

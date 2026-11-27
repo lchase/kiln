@@ -157,6 +157,10 @@ export interface JobView {
   canApprove: boolean;
   canReject: boolean;
   canRevise: boolean;
+  /** Stop job: anything not done, rejected, or cancelled. */
+  canStop: boolean;
+  /** Remove job: not running, approved, gated, or in review, and nothing depends on it. */
+  canRemove: boolean;
   attemptCount: number;
   maxAttempts: number;
   scheduledRetry: boolean;
@@ -267,6 +271,8 @@ export function projectJob(job: StatusJobView, events: readonly KilnEvent[]): Jo
     canApprove: job.canApprove,
     canReject: job.canReject,
     canRevise: job.canRevise,
+    canStop: !["done", "rejected", "cancelled"].includes(job.state),
+    canRemove: !["running", "approved", "needs-human", "in-review"].includes(job.state) && !job.dependents?.length,
     attemptCount: job.attemptCount,
     maxAttempts: job.maxAttempts,
     scheduledRetry: waiting,
@@ -543,7 +549,9 @@ function summarizeEvent(event: KilnEvent): string {
     case "needs-human":
       return `Needs a person · ${event.properties.reason}`;
     case "job.cancelled":
-      return "Cancelled before it started";
+      return event.properties.was ? `Stopped by operator (was ${event.properties.was})` : "Cancelled before it started";
+    case "job.removed":
+      return "Removed";
     case "review.posted":
       return `Posted the review on ${event.properties.repo}#${event.properties.number}`;
     case "review.failed":

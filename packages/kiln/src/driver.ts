@@ -13,13 +13,15 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { claudeCredentialPreflight } from "./auth.js";
 import { buildAttention, type KilnStatus } from "./attention.js";
 import { attemptsFor, fixRoundsFor, type LoadedKilnConfig } from "./config.js";
 import {
   clearLaunchError,
   deliverJob,
+  deliveryPath,
+  launchErrorPath,
   plannedRemoteBranch,
   readDelivery,
   readLaunchError,
@@ -29,6 +31,7 @@ import {
   isMerged,
 } from "./delivery.js";
 import {
+  feedbackLedgerPath,
   feedbackSpec,
   openFeedbackRound,
   planFeedback,
@@ -65,8 +68,8 @@ import {
   writeFindings,
 } from "./findings.js";
 import { defaultHost, type AgentStart, type KilnHost, type PullRequestState } from "./host.js";
-import { markJobCancelled, readJobSpec, resolveJobSpec } from "./jobs.js";
-import { jobBasename, packageRoot } from "./paths.js";
+import { jobFilePath, markJobCancelled, readJobSpec, resolveJobSpec } from "./jobs.js";
+import { assertJobId, jobBasename, packageRoot } from "./paths.js";
 import {
   canLaunch,
   decide,
@@ -80,8 +83,10 @@ import {
   type RunStatus,
 } from "./reconcile.js";
 import {
+  attemptLedgerPath,
   fileMtimeMs,
   isPidAlive,
+  killTree,
   readAttemptLedger,
   recoverRuns,
   resetAttemptLedger,
@@ -115,7 +120,7 @@ import {
   sandboxPreflightFor,
   type SandboxFacts,
 } from "./sandbox.js";
-import { JobSchema, type Job } from "./schemas.js";
+import { JobSchema, type Job, type JobState } from "./schemas.js";
 import {
   ensureReviewHead,
   evaluateTriggers,
@@ -360,6 +365,160 @@ export function cancelQueuedJobs(
   });
 }
 
+export interface CancelJobResult {
+  outcome: "cancelled" | "already-cancelled" | "finished";
+  /** Derived state before this cancel. Omitted when the job was already cancelled. */
+  was?: JobState;
+  message: string;
+}
+
+/**
+ * Stop one job, whatever it is doing. `kiln cancel <jobId>` and the board
+ * Stop button both call this. The job file is stamped first, so a crash
+ * mid-stop cannot relaunch it, and one `job.cancelled` records the prior
+ * state. A live launch or run process tree is killed and `yak cancel`
+ * closes the journal. No gate is answered, nothing is posted or delivered,
+ * and branches, worktrees, and pull requests are left as they are.
+ * Done and rejected jobs are left alone. A second call writes nothing; it
+ * only finishes stopping a process an earlier call could not kill.
+ */
+export function cancelJob(
+  config: LoadedKilnConfig,
+  jobId: string,
+  host: KilnHost = defaultHost(),
+  now = new Date(),
+): CancelJobResult {
+  assertJobId(jobId);
+  return withTickLock(config.kilnDir, () => {
+    const world = observe(config, host, now);
+    const observed = world.observation.jobs.find((candidate) => candidate.jobId === jobId);
+    if (!observed) throw new Error(`No job ${jobId}.`);
+    const job = world.jobs.get(jobId);
+    if (!job) throw new Error(`Job ${jobId} is invalid: ${observed.error ?? "unreadable job file"}`);
+    if (job.cancelledAt) {
+      const stopped = stopJobProcesses(config, observed);
+      const note = stopped.length > 0 ? `; stopped process ${stopped.join(", ")}` : "";
+      return { outcome: "already-cancelled", message: `${jobId} already cancelled${note}` };
+    }
+    const was = jobState(observed, world.observation);
+    if (was === "done" || was === "rejected") {
+      return { outcome: "finished", was, message: `${jobId} is ${was}; nothing to stop` };
+    }
+    markJobCancelled(config, job, now);
+    appendEvent(config.kilnDir, {
+      job_id: job.id,
+      ...(observed.run ? { run_id: observed.run.runId } : {}),
+      event: "job.cancelled",
+      ts: now.toISOString(),
+      properties: { repo: job.repo, workflow: job.workflow, was, once: "job.cancelled" },
+    });
+    stopJobProcesses(config, observed);
+    return { outcome: "cancelled", was, message: `cancelled ${jobId} (was ${was})` };
+  });
+}
+
+/** Live launch and run pids of a job. A finished run's pid is never returned. */
+function liveJobPids(config: LoadedKilnConfig, observed: ObservedJob): number[] {
+  const crumb = readBreadcrumbs(config.kilnDir).find((candidate) => candidate.jobId === observed.jobId);
+  const run = observed.run;
+  const pids = [crumb?.pid, run?.status === "alive" ? run.pid : undefined];
+  return pids.filter((pid): pid is number => pid !== undefined && pidAlive(pid));
+}
+
+/**
+ * Kill the launch and run process trees that are still alive, close an
+ * unfinished yak journal, and drop the launch breadcrumb. A finished run
+ * is not touched, so a recycled pid of an old run is never signalled.
+ * Returns the pids it killed.
+ */
+function stopJobProcesses(config: LoadedKilnConfig, observed: ObservedJob): number[] {
+  const run = observed.run;
+  const pids = liveJobPids(config, observed);
+  for (const pid of pids) {
+    if (!killTree(pid)) {
+      throw new Error(`Could not stop process ${pid} for job ${observed.jobId}. Run kiln cancel ${observed.jobId} again.`);
+    }
+  }
+  if (run && (run.status === "alive" || run.status === "suspended" || run.status === "dead")) {
+    try {
+      spawnSync(process.execPath, [yakCliPath(), "cancel", run.runId], {
+        cwd: run.checkout,
+        encoding: "utf8",
+        timeout: 20_000,
+      });
+    } catch {
+      // Best effort, as in retry. The job file already says cancelled.
+    }
+  }
+  rmSync(breadcrumbPath(config.kilnDir, observed.jobId), { force: true });
+  return pids;
+}
+
+const ACTIVE_STATES: readonly JobState[] = ["running", "approved", "needs-human", "in-review"];
+
+/**
+ * Delete Kiln's own records for one job that is no longer active. The CLI
+ * and the board Remove button both call this. Git is not touched: the
+ * branch, worktree, and pull request stay. The event log keeps the job's
+ * history and gains one `job.removed`. A spec outside the kiln home is
+ * never deleted.
+ */
+export function removeJob(
+  config: LoadedKilnConfig,
+  jobId: string,
+  host: KilnHost = defaultHost(),
+): { branch?: string; removed: string[] } {
+  assertJobId(jobId);
+  return withTickLock(config.kilnDir, () => {
+    const world = observe(config, host);
+    const observed = world.observation.jobs.find((candidate) => candidate.jobId === jobId);
+    if (!observed) throw new Error(`No job ${jobId}.`);
+    const state = jobState(observed, world.observation);
+    if (!observed.error && ACTIVE_STATES.includes(state)) {
+      throw new Error(`Job ${jobId} is ${state}. Run kiln cancel ${jobId} first.`);
+    }
+    if (liveJobPids(config, observed).length > 0) {
+      throw new Error(`Job ${jobId} still has a live process. Run kiln cancel ${jobId} first.`);
+    }
+    const dependents = world.observation.jobs
+      .filter((candidate) => !candidate.error && candidate.dependsOn.includes(jobId))
+      .map((candidate) => candidate.jobId);
+    if (dependents.length > 0) {
+      throw new Error(`Job ${jobId} is needed by ${dependents.join(", ")}. Remove or cancel those first.`);
+    }
+    const job = world.jobs.get(jobId);
+    const kilnDir = config.kilnDir;
+    const base = jobBasename(jobId);
+    const paths = [
+      jobFilePath(config.jobsDir, jobId),
+      join(kilnDir, "rendered", base),
+      attemptLedgerPath(kilnDir, jobId),
+      feedbackLedgerPath(kilnDir, jobId),
+      deliveryPath(kilnDir, jobId),
+      launchErrorPath(kilnDir, jobId),
+      breadcrumbPath(kilnDir, jobId),
+      join(kilnDir, "logs", `${base}.log`),
+    ];
+    // Only Kiln's own spec copy, never another record a hand-edited job file names.
+    const ownSpec = resolve(kilnDir, "specs", `${jobId}.md`);
+    if (job && !isAbsolute(job.spec) && resolve(kilnDir, job.spec) === ownSpec) paths.push(ownSpec);
+    const removed = paths.filter((path) => existsSync(path));
+    for (const path of removed) rmSync(path, { recursive: true, force: true });
+    const branch = observed.run ? `yak/${observed.run.runId}` : undefined;
+    appendEvent(kilnDir, {
+      job_id: jobId,
+      event: "job.removed",
+      properties: {
+        repo: job?.repo || observed.repo || "unknown",
+        workflow: job?.workflow || observed.workflow || "unknown",
+        ...(branch ? { branch } : {}),
+        once: "job.removed",
+      },
+    });
+    return { ...(branch ? { branch } : {}), removed };
+  });
+}
+
 export function retryJob(config: LoadedKilnConfig, jobId: string, host: KilnHost = defaultHost()): string {
   return withTickLock(config.kilnDir, () => {
     const world = observe(config, host);
@@ -526,7 +685,7 @@ function observe(config: LoadedKilnConfig, host: KilnHost, now = new Date()): Wo
     const deliveryRunId = picked.fixInProgress ? deliveryRecord?.runId : run?.runId;
     const delivery =
       entry.job && repo && deliver === "pr"
-        ? observedDelivery(config.kilnDir, host, repo.path, entry.job.id, deliveryRunId)
+        ? observedDelivery(config.kilnDir, host, repo.path, entry.job.id, deliveryRunId, !entry.job.cancelledAt)
         : undefined;
     const launchError = entry.job && !run ? readLaunchError(config.kilnDir, entry.job.id) : undefined;
     const stackError =
@@ -821,6 +980,7 @@ function observedDelivery(
   checkout: string,
   jobId: string,
   runId: string | undefined,
+  viewPullRequest = true,
 ): ObservedJob["delivery"] | undefined {
   const record = readDelivery(kilnDir, jobId);
   if (!record) return undefined;
@@ -828,7 +988,8 @@ function observedDelivery(
   let prState: PullRequestState | undefined;
   let merged = false;
   let viewError: string | undefined;
-  if (record.prNumber) {
+  // A cancelled job is no longer watched, so Kiln does not ask GitHub about it.
+  if (record.prNumber && viewPullRequest) {
     try {
       const viewed = host.github.view(checkout, record.prNumber);
       prState = viewed.state;
@@ -896,7 +1057,7 @@ function bindOpenFixRuns(config: LoadedKilnConfig, world: World): void {
 function publishReadyFixes(config: LoadedKilnConfig, host: KilnHost, world: World): string[] {
   const notes: string[] = [];
   for (const job of world.observation.jobs) {
-    if (!job.fixAwaitingPublish || !job.run) continue;
+    if (job.cancelled || !job.fixAwaitingPublish || !job.run) continue;
     const ledger = readFeedbackLedger(config.kilnDir, job.jobId);
     if (!ledger || ledger === "corrupt") continue;
     const open = openFeedbackRound(ledger);
@@ -1082,6 +1243,7 @@ function watchPullRequests(config: LoadedKilnConfig, world: World, host: KilnHos
 }
 
 function shouldWatch(job: ObservedJob): boolean {
+  if (job.cancelled) return false;
   if (job.deliver !== "pr" || job.workflow === INVESTIGATION_WORKFLOW || job.workflow === REVIEW_WORKFLOW) return false;
   if (job.error || job.feedbackLedgerError || job.feedbackExhausted || job.feedbackAmbiguous) return false;
   if (job.fixInProgress || job.fixAwaitingPublish || job.launching) return false;
