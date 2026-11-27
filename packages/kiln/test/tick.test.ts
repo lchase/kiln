@@ -513,7 +513,7 @@ describe("kiln tick", { concurrency: 1 }, () => {
     assert.match(handColumn, new RegExp(`id="job-${blockedId}"`));
     assert.match(handColumn, /Blocked: web has no test command/);
     assert.match(handColumn, /Edit web in Settings/);
-    const hand = renderApp({ css: "", section: "hand", board, attention: status.attention, page });
+    const hand = pipeline;
     assert.match(hand, /Needs a hand/);
     assert.match(hand, /Blocked: web has no test command/);
     assert.match(hand, /id="intake-warn"/);

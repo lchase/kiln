@@ -35,6 +35,7 @@ import {
   readDiffStat,
   statsFor,
   unseenChanges,
+  type DiffFile,
   type StatWindow,
 } from "./board-view.js";
 import { appendEvent, eventsForJob, readEvents } from "./events.js";
@@ -439,6 +440,12 @@ async function handle(
       return;
     }
     sendJson(res, 200, job, secrets);
+    return;
+  }
+
+  // The board has Needs you and Needs a hand as columns. Old links land there.
+  if (path === "/inbox" || path === "/hand") {
+    redirect(res, "/");
     return;
   }
 
@@ -875,8 +882,11 @@ function readInside(kilnDir: string, target: string): string | undefined {
   } catch {
     return undefined;
   }
+  // Compare the lexical path with the lexical kiln dir: realpath can add a prefix
+  // (macOS tmp dirs live under /private/var), so checking it against `root` would reject every file.
+  const lexicalRoot = resolve(kilnDir);
   const resolved = resolve(target);
-  if (resolved !== root && !resolved.startsWith(root + sep)) return undefined;
+  if (resolved !== lexicalRoot && !resolved.startsWith(lexicalRoot + sep)) return undefined;
   let real: string;
   try {
     real = realpathSync(resolved);
@@ -1082,8 +1092,6 @@ function statusDocument(state: LiveConfig): unknown {
 
 function listSection(path: string): AppSection | undefined {
   if (path === "/" || path === "" || path === "/board" || path === "/pipeline") return "pipeline";
-  if (path === "/inbox") return "inbox";
-  if (path === "/hand") return "hand";
   if (path === "/repos") return "repos";
   if (path === "/history") return "history";
   if (path === "/stats") return "stats";
@@ -1117,7 +1125,7 @@ function renderShell(
 ): string {
   const status = readStatus(state.config, undefined, pageHost());
   const events = readEvents(state.config.kilnDir, { warn: () => {} });
-  const board = buildBoard(status.jobs, events);
+  const board = buildBoard(status.jobs, events, section === "pipeline" ? (job) => doneDiffFiles(state, job, events) : undefined);
   const page = pageOptions(state, csrf);
   return renderApp({
     css,
@@ -1176,6 +1184,30 @@ function unseenDocument(state: LiveConfig, seenValues: string[]) {
   const events = readEvents(state.config.kilnDir, { warn: () => {} });
   const board = buildBoard(readStatus(state.config, undefined, pageHost()).jobs, events);
   return unseenChanges(events, parseSeenQuery(seenValues), new Set(board.inbox.map((job) => job.jobId)));
+}
+
+/**
+ * A finished job's branch diff does not change, so the Done card reads it once
+ * per job id in this process. A failed read is remembered too and leaves the
+ * diff and file count off the card.
+ */
+const doneDiffMemo = new Map<string, DiffFile[] | null>();
+
+function doneDiffFiles(state: LiveConfig, job: StatusJobView, events: ReturnType<typeof readEvents>): DiffFile[] | undefined {
+  const key = `${job.repo}\u0000${job.jobId}`;
+  const cached = doneDiffMemo.get(key);
+  if (cached !== undefined) return cached ?? undefined;
+  const repo = state.config.repos[job.repo];
+  const branch = branchOf(job, events);
+  const base = prBase(events, job.jobId);
+  let files: DiffFile[] | undefined;
+  try {
+    files = repo && branch && base ? readDiffFiles(repo.path, base, branch) : undefined;
+  } catch {
+    files = undefined;
+  }
+  doneDiffMemo.set(key, files ?? null);
+  return files;
 }
 
 function detailDocument(state: LiveConfig, job: StatusJobView) {

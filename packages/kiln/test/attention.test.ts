@@ -12,7 +12,8 @@ import {
   type StatusJobView,
   type StepEvent,
 } from "../src/report.js";
-import { renderConsole } from "../src/serve-page.js";
+import { buildBoard, jobDetail } from "../src/board-view.js";
+import { renderApp, renderConsole } from "../src/serve-page.js";
 import type { Observation, ObservedJob } from "../src/reconcile.js";
 import { leafStepIds, workflowLeafSteps, workflowStepPlan } from "../src/workflow.js";
 
@@ -204,16 +205,21 @@ describe("attention view", () => {
     const changed = jobs.map((item) => (item.jobId === "queued" ? { ...item, state: "running" as const } : item));
     assert.notEqual(buildAttention(changed).revision, attention.revision);
 
-    const page = (section: "inbox" | "hand" | "repos" | "history") =>
+    const page = (section: "pipeline" | "repos" | "history") =>
       renderConsole("/* kiln-serve */", attention, { csrf: "", repos: [], workflows: [], section });
-    const html = page("inbox");
+    const column = (html: string, name: string) => {
+      const start = html.indexOf(`<section class="col" data-column="${name}"`);
+      assert.ok(start >= 0, name);
+      return html.slice(start, html.indexOf("</section>", start));
+    };
+    const html = page("pipeline");
     assert.match(html, /\(1\) Kiln/);
     assert.doesNotMatch(html, /id="graph-panel"/);
-    assert.match(html, /action="\/api\/jobs\/human\/approve"/);
-    assert.match(html, /id="job-human"/);
-    assert.doesNotMatch(html, /id="job-dead"/);
-    assert.doesNotMatch(html, /id="job-review"/);
-    const hand = page("hand");
+    const needsYou = column(html, "needs-you");
+    assert.match(needsYou, /id="job-human"/);
+    assert.match(needsYou, /<a class="card-btn" href="\/jobs\/human">Review<\/a>/);
+    assert.doesNotMatch(needsYou, /id="job-dead"/);
+    const hand = column(html, "needs-hand");
     assert.match(hand, /action="\/api\/jobs\/failed\/retry"/);
     assert.match(hand, /id="job-dead"/);
     assert.match(hand, /id="job-failed"/);
@@ -361,11 +367,22 @@ describe("attention view", () => {
     assert.match(attention.needsYou[0]?.findings ?? "", /Which runner\?/);
     assert.equal(attention.needsYou[1]?.job.diffSummary, " src/summary.ts | 4 ++++");
     assert.equal(attention.needsYou[1]?.findings, undefined);
-    const html = renderConsole("", attention);
-    assert.match(html, /Which runner\?/);
-    assert.match(html, /src\/summary\.ts/);
-    assert.match(html, /No must-fix findings/);
-    assert.doesNotMatch(html, /should not show for an investigation/);
+    // The gate text lives on each job page. The board card links there.
+    const jobs = attention.needsYou.map((item) => item.job);
+    const jobPage = (id: string) => {
+      const job = jobs.find((item) => item.jobId === id);
+      assert.ok(job);
+      return renderApp({ css: "", section: "job", board: buildBoard(jobs, []), attention, detail: jobDetail({ job, events: [], maxFixRounds: 2 }) });
+    };
+    const probePage = jobPage("probe");
+    const featPage = jobPage("feat");
+    assert.match(probePage, /Which runner\?/);
+    assert.match(featPage, /src\/summary\.ts/);
+    assert.match(featPage, /No must-fix findings/);
+    const decision = probePage.slice(probePage.indexOf('id="decision"'), probePage.indexOf("\n</section>", probePage.indexOf('id="decision"')));
+    assert.match(decision, /Which runner\?/);
+    assert.doesNotMatch(decision, /should not show for an investigation/);
+    assert.match(renderConsole("", attention), /<a class="card-btn" href="\/jobs\/probe">Review<\/a>/);
   });
 
   it("leaves a scheduled retry out of attention and keeps a dead job in it", () => {
@@ -436,10 +453,10 @@ describe("attention view", () => {
     assert.match(repos, /attempt 1\/3 · stalled/);
     const row = repos.slice(repos.indexOf('id="job-again"'), repos.indexOf("</article>", repos.indexOf('id="job-again"')));
     assert.doesNotMatch(row, /Needs a decision/);
-    const hand = renderConsole("", attention, { ...options, section: "hand" });
+    const pipeline = renderConsole("", attention, { ...options, section: "pipeline" });
+    const handStart = pipeline.indexOf('data-column="needs-hand"');
+    const hand = pipeline.slice(handStart, pipeline.indexOf("</section>", handStart));
     assert.match(hand, /id="job-spent"/);
-    assert.match(hand, /Needs a decision/);
-    assert.match(hand, /attempt 3\/3 · crashed/);
     assert.doesNotMatch(hand, /id="job-again"/);
 
     const resumed = statusView(
