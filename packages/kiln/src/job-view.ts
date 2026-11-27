@@ -310,6 +310,59 @@ export function projectJob(job: StatusJobView, events: readonly KilnEvent[]): Jo
   };
 }
 
+export interface ProgressSegment {
+  id: string;
+  label: string;
+  status: PhaseStatus;
+  /** Set only once the step (or every folded review) is done or failed. */
+  durationMs?: number;
+}
+
+const REVIEW_STEPS: ReadonlySet<string> = new Set(["security", "ux", "ui", "code"]);
+
+/**
+ * The job page's progress row: one segment per step, with consecutive review
+ * steps (security, ux, ui, code) folded into one "Reviews" segment.
+ */
+export function progressSegments(job: Pick<JobView, "steps" | "phases">): ProgressSegment[] {
+  const segments: ProgressSegment[] = [];
+  const steps = job.steps;
+  let index = 0;
+  while (index < steps.length) {
+    const step = steps[index];
+    if (!step) break;
+    if (!REVIEW_STEPS.has(step.id)) {
+      segments.push(segmentOf(step.id, step.label, [step], job.phases));
+      index += 1;
+      continue;
+    }
+    const group: StepMark[] = [];
+    while (index < steps.length && steps[index] && REVIEW_STEPS.has(steps[index]?.id ?? "")) {
+      group.push(steps[index] as StepMark);
+      index += 1;
+    }
+    segments.push(segmentOf("reviews", "Reviews", group, job.phases));
+  }
+  return segments;
+}
+
+function segmentOf(id: string, label: string, steps: readonly StepMark[], phases: readonly PhaseView[]): ProgressSegment {
+  const statuses = steps.map((step) => step.status);
+  const status: PhaseStatus = statuses.includes("failed")
+    ? "failed"
+    : statuses.includes("running")
+      ? "running"
+      : statuses.every((value) => value === "done" || value === "skipped")
+        ? "done"
+        : "pending";
+  const segment: ProgressSegment = { id, label, status };
+  if (status !== "done" && status !== "failed") return segment;
+  const ids = new Set(steps.map((step) => step.id));
+  const durations = phases.filter((phase) => ids.has(phase.id) && phase.durationMs !== undefined).map((phase) => phase.durationMs ?? 0);
+  if (durations.length > 0) segment.durationMs = durations.reduce((sum, ms) => sum + ms, 0);
+  return segment;
+}
+
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const sec = Math.round(ms / 1000);

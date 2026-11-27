@@ -88,7 +88,15 @@ export interface JobChanges {
   prNumber?: number;
   prUrl?: string;
   diffStat?: string;
+  /** Per-file line counts from `git diff --numstat base...branch`. Absent without a base. */
+  files?: DiffFile[];
   commits: CommitRow[];
+}
+
+export interface DiffFile {
+  path: string;
+  added: number;
+  removed: number;
 }
 
 export interface JobRail {
@@ -298,6 +306,7 @@ export function jobChanges(
   events: readonly KilnEvent[],
   commits: readonly CommitRow[],
   diffStat?: string,
+  files?: readonly DiffFile[],
 ): JobChanges {
   let branch = job.branch;
   let base: string | undefined;
@@ -317,6 +326,7 @@ export function jobChanges(
     ...(prNumber ? { prNumber } : {}),
     ...(prUrl ? { prUrl } : {}),
     ...(diff ? { diffStat: diff } : {}),
+    ...(files && files.length > 0 ? { files: [...files] } : {}),
     commits: [...commits],
   };
 }
@@ -363,9 +373,10 @@ export function jobDetail(input: {
   maxFixRounds: number;
   commits?: readonly CommitRow[];
   diffStat?: string;
+  diffFiles?: readonly DiffFile[];
 }): JobDetail {
   const jobEvents = input.events.filter((event) => event.job_id === input.job.jobId);
-  const changes = jobChanges(input.job, input.events, input.commits ?? [], input.diffStat);
+  const changes = jobChanges(input.job, input.events, input.commits ?? [], input.diffStat, input.diffFiles);
   return {
     job: projectJob(input.job, input.events),
     overview: phaseFeed(input.events, input.job.jobId),
@@ -515,6 +526,28 @@ export function readDiffStat(repoPath: string, base: string, branch: string): st
   if (result.status !== 0) return undefined;
   const text = (result.stdout ?? "").trim();
   return text || undefined;
+}
+
+/** `git diff --numstat base...branch`. Failure is omitted, not invented. */
+export function readDiffFiles(repoPath: string, base: string, branch: string): DiffFile[] | undefined {
+  if (!safeRef(base) || !safeRef(branch)) return undefined;
+  const result = spawnSync("git", ["diff", "--numstat", `${base}...${branch}`], {
+    cwd: repoPath,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) return undefined;
+  return parseNumstat(result.stdout ?? "");
+}
+
+/** One `added<TAB>removed<TAB>path` line per file. A binary file's `-` counts as 0. */
+export function parseNumstat(text: string): DiffFile[] {
+  const files: DiffFile[] = [];
+  for (const line of text.split("\n")) {
+    const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line.trimEnd());
+    if (!match?.[3]) continue;
+    files.push({ path: match[3], added: match[1] === "-" ? 0 : Number(match[1]), removed: match[2] === "-" ? 0 : Number(match[2]) });
+  }
+  return files;
 }
 
 export function branchOf(job: StatusJobView, events: readonly KilnEvent[]): string | undefined {
