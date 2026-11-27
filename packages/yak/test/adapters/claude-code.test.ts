@@ -114,7 +114,11 @@ describe('ClaudeCodeAdapter', () => {
       tools: ['Read', 'Edit'],
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
+      settingSources: ['project', 'local'],
+      strictMcpConfig: true,
     })
+    expect(call.options?.settingSources).not.toContain('user')
+    expect(call.options?.mcpServers).toBeUndefined()
     expect(call.options?.resume).toBeUndefined()
   })
 
@@ -128,7 +132,7 @@ describe('ClaudeCodeAdapter', () => {
     let seen: string | undefined
     queryMock.mockImplementation((params) => {
       seen = params.options?.additionalDirectories?.[0]
-      expect(params.options?.settingSources).toBeUndefined()
+      expect(params.options?.settingSources).toContain('project')
       expect(seen).toBeTruthy()
       expect(readlinkSync(path.join(seen!, '.claude', 'skills', 'widget'))).toBe(path.join(real, 'widget'))
       return fakeQuery([resultSuccess()])

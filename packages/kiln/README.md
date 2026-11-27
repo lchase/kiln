@@ -69,7 +69,11 @@ Prompt lookup uses the same relative path as the package (`prompts/kiln/…`, an
 
 Workflow YAML is loaded from the package or from the local workflows directory. It is not loaded from the directory where you ran `kiln`.
 
-`skills/` is a tree of Claude Code skills (`<name>/SKILL.md`). Kiln passes that directory, plus `overlay.skillPaths`, to the agent. With the sandbox off, the Skill tool can load them. With `sandbox.mode` set to `docker`, yak mounts only those directories into the container, read-only, at the same host path. It does not mount `~/.claude`. Skills are not copied into the checkout or into job artifacts. The Skill tool sees each skill under its directory name. A launch with skill directories set refuses an installed `@lchase/yak` that drops `skillDirs` while loading workflow YAML, so an older package cannot ignore them. Settings does not accept workflow YAML or skill file bodies.
+`skills/` is a tree of Claude Code skills (`<name>/SKILL.md`). Kiln passes that directory, plus `overlay.skillPaths`, to the agent. With the sandbox off, the Skill tool can load them. With `sandbox.mode` set to `docker`, yak mounts only those directories into the container, read-only, at the same host path. It does not mount `~/.claude`. Skills are not copied into the checkout or into job artifacts. The Skill tool sees each skill under its directory name.
+
+Agents do not load your user Claude Code setup (`~/.claude`): no global CLAUDE.md, plugins, user skills, agents, hooks, or MCP servers. The checkout's project settings still load. This keeps every agent turn small; the user setup added about 120K tokens per turn. A skill an agent needs, such as `smart-review` for the code review, goes in `skills/` or `overlay.skillPaths`. For a skill installed as a plugin, point `skillPaths` at the plugin's `skills` directory, for example `~/.claude/plugins/marketplaces/<marketplace>/plugins/smart-review/skills`.
+
+A launch with skill directories set refuses an installed `@lchase/yak` that drops `skillDirs` while loading workflow YAML, so an older package cannot ignore them. Settings does not accept workflow YAML or skill file bodies.
 
 There is no separate `agents/` directory. In this stack, factory agents are prompt files under `prompts/`.
 
