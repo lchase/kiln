@@ -479,15 +479,15 @@ function queueAction(
     const job = world.jobs.get(jobId);
     if (!job) throw new Error(`Job ${jobId} is invalid: ${observed.error ?? "unreadable job file"}`);
     const was = jobState(observed, world.observation);
-    const listed = launchOrder(world.observation, now).some((entry) => entry.job.jobId === jobId);
-    if (!listed) {
+    const order = launchOrder(world.observation, now);
+    if (!order.some((entry) => entry.job.jobId === jobId)) {
       return { changed: false, message: `kiln: ${jobId} is ${was}; ${action} only applies to jobs that have not started` };
     }
-    if (action === "hold" && observed.held) return { changed: false, message: `${jobId} already held` };
-    if (action === "release" && !observed.held) return { changed: false, message: `${jobId} is not held` };
+    if (action === "hold" && observed.held) return { changed: false, message: `kiln: ${jobId} already held` };
+    if (action === "release" && !observed.held) return { changed: false, message: `kiln: ${jobId} is not held` };
     if (action === "next") {
-      const newest = Math.max(-1, ...world.observation.jobs.map((candidate) => candidate.prioritizedIndex ?? -1));
-      if (observed.prioritizedIndex === newest) return { changed: false, message: `${jobId} already first` };
+      const newest = Math.max(-1, ...order.map((entry) => entry.job.prioritizedIndex ?? -1));
+      if (observed.prioritizedIndex === newest) return { changed: false, message: `kiln: ${jobId} already first` };
     }
     appendEvent(config.kilnDir, {
       job_id: jobId,
@@ -495,7 +495,8 @@ function queueAction(
       ts: now.toISOString(),
       properties: { repo: job.repo, was },
     });
-    const done = { next: `moved ${jobId} to the front`, hold: `held ${jobId}`, release: `released ${jobId}` };
+    const stillHeld = observed.held ? " (still held; release it to launch)" : "";
+    const done = { next: `moved ${jobId} to the front${stillHeld}`, hold: `held ${jobId}`, release: `released ${jobId}` };
     return { changed: true, message: done[action] };
   });
 }

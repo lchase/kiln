@@ -370,8 +370,9 @@ not started (queued, blocked, or failed and waiting to retry):
 Each writes one event (`job.prioritized`, `job.held`, `job.released`) and nothing else; the order is read back from
 the event log, never from the job file, so a job with no such events launches exactly as before. A running, gated,
 in-review, done, rejected, or cancelled job is refused with `kiln: <id> is <state>; <command> only applies to jobs
-that have not started`, and nothing is written. A repeat writes nothing: `<id> already first`, `<id> already held`,
-or `<id> is not held`. `kiln pause` still stops every launch, and `kiln cancel` still cancels a held job.
+that have not started`, and nothing is written. A repeat writes nothing: `kiln: <id> already first`,
+`kiln: <id> already held`, or `kiln: <id> is not held`. Moving a held job to the front says it is still held; it
+keeps that place once released. `kiln pause` still stops every launch, and `kiln cancel` still cancels a held job.
 
 `kiln queue` prints every job that has not started, in the order the next ticks will launch them, one line each:
 position, id, repo, title, and why it is there. Due retries come first, then ready jobs, then blocked jobs and retries
