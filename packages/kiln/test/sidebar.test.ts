@@ -43,7 +43,7 @@ const repos = [
   { name: "api", path: "/repos/api" },
 ];
 
-function board(options: { section?: "pipeline" | "inbox"; paused?: boolean; spend?: SpendSnapshot } = {}): string {
+function board(options: { section?: "pipeline" | "repos"; paused?: boolean; spend?: SpendSnapshot } = {}): string {
   const attention = buildAttention([
     job("SAMPLE-1", "needs-human", "web", "Empty state"),
     job("SAMPLE-2", "queued", "api", "Refresh the list"),
@@ -103,7 +103,7 @@ describe("sidebar", () => {
     assert.match(notifyBtn, /class="icon icon-bell-off"/);
 
     const links = side.match(/<a class="nav-link"[\s\S]*?<\/a>/g) ?? [];
-    const labels = ["Pipeline", "Inbox", "Needs a hand", "Repos", "History", "Stats", "Today", "Triggers", "Settings"];
+    const labels = ["Pipeline", "Repos", "History", "Stats", "Today", "Triggers", "Settings"];
     assert.equal(links.length, labels.length);
     for (const label of labels) {
       const link = links.find((item) => item.includes(`>${label}</span>`));
@@ -123,9 +123,13 @@ describe("sidebar", () => {
     assert.doesNotMatch(side, /stroke="#[0-9a-fA-F]/);
     assert.doesNotMatch(side, /var\(--primary\)/);
 
-    const inbox = sidebar(board({ section: "inbox", spend }));
-    assert.match(inbox, /href="\/inbox" aria-current="page"/);
-    assert.doesNotMatch(inbox, /href="\/" aria-current="page"/);
+    assert.doesNotMatch(side, /href="\/inbox"|href="\/hand"|id="inbox-unseen"|>Inbox<|>Needs a hand</);
+    // The Pipeline badge is the waiting count, the same number as the `(N) Kiln` title.
+    assert.match(pipeline ?? "", /<span class="badge">1<\/span>/);
+    assert.match(html, /<title>\(1\) Kiln<\/title>/);
+    const repos = sidebar(board({ section: "repos", spend }));
+    assert.match(repos, /href="\/repos" aria-current="page"/);
+    assert.doesNotMatch(repos, /href="\/" aria-current="page"/);
   });
 
   it("keeps pause and a cap hit in the footer when the factory is paused", () => {

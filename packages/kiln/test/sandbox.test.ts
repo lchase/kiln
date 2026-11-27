@@ -336,7 +336,7 @@ describe("sandbox launch and board", () => {
     assert.match(rendered, /sandbox: docker/);
     assert.doesNotMatch(rendered.slice(rendered.indexOf("- id: land")), /sandbox:/);
     const view = job as StatusJobView;
-    const html = renderConsole("", buildAttention([view]), { csrf: "", repos: [], workflows: [], section: "hand" });
+    const html = renderConsole("", buildAttention([view]), { csrf: "", repos: [], workflows: [], section: "repos" });
     assert.match(html, /sandbox · docker/);
     assert.match(html, /id="job-/);
     const reason = status.attention.needsYou.find((item) => item.job.jobId === written.job.id)?.reason ?? "";

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -158,7 +158,8 @@ describe("kiln cli", () => {
 
   it("sees the same registry and jobs from two working directories", () => {
     const home = mkdtempSync(join(tmpdir(), "kiln-cli-home-"));
-    const dirA = mkdtempSync(join(tmpdir(), "kiln-cli-a-"));
+    // realpath: on macOS tmpdir() is a symlink to /private/var, and the CLI stores its real cwd.
+    const dirA = realpathSync(mkdtempSync(join(tmpdir(), "kiln-cli-a-")));
     const dirB = mkdtempSync(join(tmpdir(), "kiln-cli-b-"));
     keep.push(home, dirA, dirB);
     const web = join(dirA, "web");

@@ -211,6 +211,53 @@ export interface JobView {
   reviewPostError?: string;
   /** Set while a config precondition is refusing launch. */
   launchBlock?: LaunchBlock;
+  /** Why a queued job sits where it does: `ready`, `moved to front`, `held`, `waits for <job>`, `retries at <time>`. */
+  queueReason?: string;
+  /** What a finished job cost and changed. Each field is set only when Kiln can derive it. */
+  doneMetrics?: DoneMetrics;
+}
+
+export interface DoneMetrics {
+  costUsd?: number;
+  /** First `run.started` to last `run.finished` for the job. */
+  runMs?: number;
+  added?: number;
+  removed?: number;
+  files?: number;
+  /** `pr.feedback` rounds. Set only when the job has a pull request. */
+  fixRounds?: number;
+}
+
+/**
+ * Metrics for a finished job's card. A metric whose source is missing is left
+ * out, never reported as zero. `diffFiles` is the branch's numstat when the
+ * caller could read it.
+ */
+export function doneMetrics(
+  job: Pick<JobView, "jobId" | "costUsd" | "prNumber">,
+  events: readonly KilnEvent[],
+  diffFiles?: readonly { added: number; removed: number }[],
+): DoneMetrics {
+  let first: number | undefined;
+  let last: number | undefined;
+  let rounds = 0;
+  for (const event of events) {
+    if (event.job_id !== job.jobId) continue;
+    const ts = Date.parse(event.ts);
+    if (event.event === "run.started" && Number.isFinite(ts) && first === undefined) first = ts;
+    if (event.event === "run.finished" && Number.isFinite(ts)) last = ts;
+    if (event.event === "pr.feedback") rounds += 1;
+  }
+  const metrics: DoneMetrics = {};
+  if (job.costUsd !== null && Number.isFinite(job.costUsd)) metrics.costUsd = job.costUsd;
+  if (first !== undefined && last !== undefined && last >= first) metrics.runMs = last - first;
+  if (diffFiles) {
+    metrics.added = diffFiles.reduce((sum, file) => sum + file.added, 0);
+    metrics.removed = diffFiles.reduce((sum, file) => sum + file.removed, 0);
+    metrics.files = diffFiles.length;
+  }
+  if (job.prNumber !== undefined) metrics.fixRounds = rounds;
+  return metrics;
 }
 
 export function isInbox(job: StatusJobView): boolean {
@@ -302,6 +349,7 @@ export function projectJob(job: StatusJobView, events: readonly KilnEvent[]): Jo
     canRemove: !["running", "approved", "needs-human", "in-review"].includes(job.state) && !job.dependents?.length,
     held: job.held === true,
     ...(job.queuePosition !== undefined ? { queuePosition: job.queuePosition } : {}),
+    ...(job.queueReason ? { queueReason: job.queueReason } : {}),
     attemptCount: job.attemptCount,
     maxAttempts: job.maxAttempts,
     scheduledRetry: waiting,
@@ -473,7 +521,7 @@ export function activityLiveness(input: {
   const age = now - at;
   if (age > QUIET_AFTER_MS) {
     const minutes = Math.max(2, Math.floor(age / 60_000));
-    return { liveness: "quiet", label: `quiet ${minutes}m` };
+    return { liveness: "quiet", label: `quiet for ${minutes}m` };
   }
   return { liveness: "working", label: "Working" };
 }

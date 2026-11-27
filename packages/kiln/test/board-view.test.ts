@@ -536,11 +536,13 @@ describe("board HTTP", () => {
       const missing = await json(`${server.url}/api/jobs/missing-job/detail`);
       assert.equal(missing.status, 404);
 
-      const page = await text(`${server.url}/inbox`);
+      const page = await text(`${server.url}/`);
       assert.equal(page.status, 200);
       assert.match(page.body, /Show the weekly summary/);
-      assert.match(page.body, /action="\/api\/jobs\/[^"]+\/approve"/);
+      assert.match(page.body, new RegExp(`<a class="card-btn" href="/jobs/${gateId}">Review</a>`));
       assert.match(page.body, /Needs a hand/);
+      const gatePage = await text(`${server.url}/jobs/${gateId}`);
+      assert.match(gatePage.body, /action="\/api\/jobs\/[^"]+\/approve"/);
     } finally {
       if (server.child.exitCode === null) server.child.kill("SIGTERM");
     }

@@ -341,7 +341,7 @@ describe("run reliability", () => {
       utimesSync(session, quietAt, quietAt);
       const quiet = board(now);
       assert.equal(quiet.stallActivityAt, quietAt.toISOString());
-      assert.deepEqual(quiet.live, { liveness: "quiet", label: "quiet 5m" });
+      assert.deepEqual(quiet.live, { liveness: "quiet", label: "quiet for 5m" });
 
     } finally {
       killGroup(tree.parentPid);
