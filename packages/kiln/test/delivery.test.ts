@@ -711,7 +711,7 @@ describe("delivery", { concurrency: 1 }, () => {
     stopJob(config.kilnDir, other);
   });
 
-  it("does not put a kiln bin directory on the yak child's PATH, and refuses to push the base branch", () => {
+  it("does not put a kiln bin directory on the yak child's PATH, and refuses to push the base branch", (t) => {
     const { cwd, home } = workDir();
     const { checkout } = initOrigin(join(cwd, "repos"));
     assert.equal(
@@ -727,12 +727,17 @@ describe("delivery", { concurrency: 1 }, () => {
     assert.match(launched, new RegExp(`launch ${id}\\s+web`));
     const crumb = JSON.parse(readFileSync(join(config.kilnDir, "launching", `${id}.json`), "utf8")) as { pid?: number };
     assert.ok(crumb.pid && crumb.pid > 0);
-    const pathEnv = childPath(crumb.pid);
     const kilnBin = join(config.kilnDir, "bin");
     assert.equal(existsSync(kilnBin), false);
-    for (const entry of pathEnv.split(delimiter)) {
-      assert.notEqual(entry, kilnBin);
-      assert.equal(entry.endsWith(`${sep}.kiln${sep}bin`), false, entry);
+    // A child's environment is only readable through /proc (Linux). Elsewhere the PATH check cannot run.
+    if (existsSync("/proc")) {
+      const pathEnv = childPath(crumb.pid);
+      for (const entry of pathEnv.split(delimiter)) {
+        assert.notEqual(entry, kilnBin);
+        assert.equal(entry.endsWith(`${sep}.kiln${sep}bin`), false, entry);
+      }
+    } else {
+      t.diagnostic("skipped the yak child PATH check: no /proc on this platform");
     }
     assert.throws(() => realGitRemote.pushBranch(checkout, "main", "main"), /Refusing to push main/);
     assert.throws(() => realGitRemote.pushBranch(checkout, "feature", "main"), /only pushes yak/);

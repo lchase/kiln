@@ -56,7 +56,7 @@ export interface ServeRepoOption {
   hasTest?: boolean;
 }
 
-export type AppSection = "pipeline" | "inbox" | "hand" | "repos" | "history" | "stats" | "report" | "settings" | "job" | "triggers";
+export type AppSection = "pipeline" | "repos" | "history" | "stats" | "report" | "settings" | "job" | "triggers";
 
 export interface ServePageOptions {
   csrf: string;
@@ -68,7 +68,7 @@ export interface ServePageOptions {
   paused?: boolean;
   spend?: SpendSnapshot;
   /** Which list `renderConsole` draws. The serve shell passes this through `renderApp`. */
-  section?: "pipeline" | "inbox" | "hand" | "repos" | "history" | "settings";
+  section?: "pipeline" | "repos" | "history" | "settings";
   repo?: string;
   /** Board palette. Missing uses Kiln. */
   theme?: BoardThemeId;
@@ -195,7 +195,7 @@ function faviconLink(css: string, theme: BoardThemeId): string {
 export function renderConsole(css: string, attention: AttentionView, page?: ServePageOptions): string {
   const jobs = [...attention.needsYou, ...attention.inFlight, ...attention.doneRecently].map((item) => item.job);
   const board = buildBoard(jobs, []);
-  const section = page?.section ?? "inbox";
+  const section = page?.section ?? "pipeline";
   return renderApp({ css, section, board, attention, ...(page ? { page, ...(page.repo ? { repo: page.repo } : {}) } : {}) });
 }
 
@@ -300,10 +300,7 @@ function navHtml(model: AppModel): string {
     })
     .join("");
   return `<nav class="side" aria-label="Sections">
-${item("/", "pipeline", "Pipeline", "pipeline", "pipeline")}
-${item("/inbox", "inbox", "Inbox", "inbox", "inbox", board.inboxCount)}
-<p class="unseen" id="inbox-unseen" hidden></p>
-${item("/hand", "hand", "Needs a hand", "hand", "hand", board.handCount)}
+${item("/", "pipeline", "Pipeline", "pipeline", "pipeline", board.inboxCount)}
 ${item("/repos", "repos", "Repos", "repos", "repos")}
 ${repos}
 ${item("/history", "history", "History", "history", "history", board.history.length)}
@@ -336,7 +333,7 @@ function mainHtml(model: AppModel, page: ServePageOptions): string {
     return `${error}<main class="main">${triggersHtml(model.triggers ?? [])}</main>`;
   }
   if (model.section === "pipeline") {
-    return `${error}<main class="main">${pipelineHtml(allJobs(model.board), clockOf(page))}</main>`;
+    return `${error}<main class="main">${pipelineHtml(allJobs(model.board), clockOf(page), page.csrf)}</main>`;
   }
   return `${error}<main class="main">${listHtml(model, page.csrf, clockOf(page))}</main>`;
 }
@@ -393,12 +390,6 @@ function allJobs(board: BoardDocument): JobView[] {
 
 function listHtml(model: AppModel, csrf: string, clock: BoardClock): string {
   const board = model.board;
-  if (model.section === "inbox") {
-    return `<header class="list-head"><h2>Inbox</h2><p class="meta">Approve, reject, or revise. Approving a review posts the draft as a comment. Kiln does not approve or merge.</p></header>${jobList(board.inbox, "inbox", "Nothing is waiting on a gate.", csrf, clock)}`;
-  }
-  if (model.section === "hand") {
-    return `<header class="list-head"><h2>Needs a hand</h2><p class="meta">A breaker tripped, a cap was hit, a review could not be posted, a launch is blocked on a repo setting, or a run failed with no retry left.</p></header>${jobList(board.hand, "hand", "Nothing needs a person.", csrf, clock)}`;
-  }
   if (model.section === "history") {
     return `<header class="list-head"><h2>History</h2></header>${jobList(board.history, "history", "No finished jobs.", csrf, clock)}`;
   }
@@ -424,16 +415,37 @@ function heldChip(job: JobView): string {
   return job.held ? `<span class="chip">Held</span>` : "";
 }
 
-function pipelineHtml(jobs: readonly JobView[], clock: BoardClock): string {
+const COLUMN_ICON: Record<PipelineColumn, IconName> = {
+  queued: "hourglass",
+  running: "play",
+  "needs-you": "eye",
+  "needs-hand": "hand",
+  done: "circle-check",
+};
+
+function pipelineHtml(jobs: readonly JobView[], clock: BoardClock, csrf: string): string {
+  const titles = new Map(jobs.map((job) => [job.jobId, job.title]));
+  const counts = new Map<PipelineColumn, number>();
   const columns = PIPELINE_COLUMNS.map((column) => {
-    const cards = inColumn(jobs, column).map((job) => pipeCard(job, clock)).join("");
-    return `<section class="col" data-column="${column}">
-<header class="full"><h2>${escapeHtml(COLUMN_LABEL[column])}</h2><span class="count"></span></header>
-<div class="slim-face"><span>${escapeHtml(COLUMN_LABEL[column])}</span><span class="count"></span></div>
+    const rows = inColumn(jobs, column);
+    counts.set(column, rows.length);
+    const cards = rows.map((job) => pipeCard(job, clock, csrf, titles)).join("");
+    const sub = column === "queued" ? `<span class="col-sub">in launch order</span>` : "";
+    return `<section class="col" data-column="${column}" aria-label="${escapeHtml(COLUMN_LABEL[column])}">
+<header class="full"><h2>${icon(COLUMN_ICON[column], `icon col-icon ${column}`)}${escapeHtml(COLUMN_LABEL[column])}</h2><span class="count">${rows.length || ""}</span>${sub}</header>
+<div class="slim-face"><span>${escapeHtml(COLUMN_LABEL[column])}</span><span class="count">${rows.length}</span></div>
 ${cards}<p class="empty">${escapeHtml(emptyColumn(column))}</p>
 </section>`;
   }).join("");
-  return `<header class="list-head"><div class="head-row"><h2>Pipeline</h2><button type="button" id="compact" aria-pressed="true" aria-label="collapse empty columns"></button></div><p class="meta">Jobs moving through queued, running, needs you, needs a hand, and done.</p></header>${filtersHtml(jobs)}<div class="board-scroll"><div class="board" id="board">${columns}</div></div>`;
+  const status = boardStatusHtml(counts.get("running") ?? 0, counts.get("needs-you") ?? 0, counts.get("needs-hand") ?? 0);
+  return `<header class="list-head"><div class="head-row"><h2>Pipeline</h2>${status}<button type="button" id="compact" aria-pressed="true" aria-label="collapse empty columns"></button></div></header>${filtersHtml(jobs)}<div class="board-scroll"><div class="board" id="board">${columns}</div></div>`;
+}
+
+/** `2 running, 2 need you, 1 needs a hand`. The dot pulses only while something runs. */
+export function boardStatusHtml(running: number, needsYou: number, hand: number): string {
+  const dot = running > 0 ? `<span class="board-pulse" aria-hidden="true"></span>` : "";
+  const text = `${running} running, ${needsYou} ${needsYou === 1 ? "needs" : "need"} you, ${hand} ${hand === 1 ? "needs" : "need"} a hand`;
+  return `<p class="board-status" id="board-status">${dot}<span>${text}</span></p>`;
 }
 
 function emptyColumn(column: PipelineColumn): string {
@@ -463,16 +475,206 @@ function filtersHtml(jobs: readonly JobView[]): string {
   return `<div class="filters"><div class="filter"><span class="k">Repo</span>${repoButtons}</div><div class="filter"><span class="k">Workflow</span>${workflowButtons}</div></div>`;
 }
 
-function pipeCard(job: JobView, clock: BoardClock): string {
-  const id = encodeURIComponent(job.jobId);
-  const cost = formatCost(job.costUsd);
-  const age = job.since ? timeHtml(job.since, "rel") : "";
-  const blocked = job.launchBlock ? `<p class="reason">${escapeHtml(job.reason)}</p>${launchFixHtml(job)}` : "";
-  return `<article class="card" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}"${activityAttrs(job)}${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
-<a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a>
-<div class="job-meta"><span class="meta">${escapeHtml(job.repo)}</span><span class="chip">${escapeHtml(job.workflow)}</span>${heldChip(job)}${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}</div>
-${progressHtml(job, clock)}${blocked}
+/** One card per job, drawn the way its column needs. */
+function pipeCard(job: JobView, clock: BoardClock, csrf: string, titles: ReadonlyMap<string, string>): string {
+  switch (job.column) {
+    case "queued":
+      return queuedCard(job, titles);
+    case "running":
+      return runningCard(job, clock);
+    case "needs-you":
+      return needsYouCard(job);
+    case "needs-hand":
+      return handCard(job, csrf);
+    case "done":
+      return doneCard(job);
+  }
+}
+
+/** The `article.card` wrapper. The filters and `paintLiveness` read its data attributes. */
+function cardShell(job: JobView, cls: string, inner: string): string {
+  return `<article class="card ${cls}" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}"${activityAttrs(job)}${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
+<a class="job-title" href="/jobs/${encodeURIComponent(job.jobId)}">${escapeHtml(job.title)}</a>
+${inner}
 </article>`;
+}
+
+/** `feature` reads `Feature`. */
+export function workflowLabel(workflow: string): string {
+  return workflow ? workflow.charAt(0).toUpperCase() + workflow.slice(1) : workflow;
+}
+
+export const REPO_TONES = 6;
+
+/** A stable `--repo-N` color slot for a repo name, 1 to 6. */
+export function repoTone(repo: string): number {
+  let hash = 0;
+  for (let index = 0; index < repo.length; index += 1) hash = (hash * 31 + repo.charCodeAt(index)) >>> 0;
+  return (hash % REPO_TONES) + 1;
+}
+
+function repoHtml(repo: string): string {
+  return `<span class="card-repo repo-${repoTone(repo)}">${icon("repos")}<span>${escapeHtml(repo)}</span></span>`;
+}
+
+function cardFoot(job: JobView): string {
+  return `<div class="card-foot">${repoHtml(job.repo)}<span class="card-flow">${escapeHtml(workflowLabel(job.workflow))}</span></div>`;
+}
+
+/** Queued: the launch position and why it is there. No step track. */
+function queuedCard(job: JobView, titles: ReadonlyMap<string, string>): string {
+  const position = job.queuePosition !== undefined ? `<span class="queue-pos"><span class="sr-only">Position </span>${job.queuePosition}</span>` : "";
+  const blocked = job.launchBlock ? `<p class="card-reason">${escapeHtml(job.reason)}</p>${launchFixHtml(job)}` : "";
+  return cardShell(job, "queued", `<p class="queue-line">${position}${queueWhyHtml(job, titles)}${heldChip(job)}</p>${blocked}${cardFoot(job)}`);
+}
+
+function queueWhyHtml(job: JobView, titles: ReadonlyMap<string, string>): string {
+  if (job.held) return "";
+  const reason = job.queueReason ?? "";
+  const waits = /^waits for (.+)$/.exec(reason)?.[1] ?? (reason ? undefined : job.dependsOn.find((dep) => dep.state !== "done")?.jobId);
+  if (waits) {
+    return `<span class="queue-why waits">${icon("lock")}<span>Waits for ${escapeHtml(titles.get(waits) ?? waits)}</span></span>`;
+  }
+  const retry = /^retries at (.+)$/.exec(reason)?.[1];
+  if (retry) return `<span class="queue-why">Retries ${timeHtml(retry, "clock")}</span>`;
+  return `<span class="queue-why">${job.queuePosition === 1 ? "Next up" : "Ready"}</span>`;
+}
+
+/**
+ * One segment per `job.steps` entry. Only a running card marks `current`, and
+ * that one segment sweeps. A needs-a-hand card marks the failed step.
+ */
+export function stepTrackHtml(job: Pick<JobView, "steps">, mode: "running" | "needs-you" | "needs-hand"): string {
+  const steps = job.steps;
+  if (steps.length === 0) return "";
+  const failed = mode === "needs-hand" ? focusStep(steps) : undefined;
+  const marked = failed?.status === "failed" ? failed : undefined;
+  const segs = steps
+    .map((step) => {
+      let cls = "upcoming";
+      if (step === marked) cls = "failed";
+      else if (step.status === "done" || step.status === "skipped") cls = "done";
+      else if (step.status === "failed") cls = "failed";
+      else if (step.status === "running" && mode === "running") cls = "current sweep";
+      return `<span class="seg ${cls}" title="${escapeHtml(step.label)}"></span>`;
+    })
+    .join("");
+  return `<div class="track" role="img" aria-label="${escapeHtml(trackLabel(steps, mode, marked))}">${segs}</div>`;
+}
+
+function trackLabel(steps: readonly StepMark[], mode: "running" | "needs-you" | "needs-hand", failed: StepMark | undefined): string {
+  const total = steps.length;
+  if (failed) return `Failed at ${failed.label}`;
+  if (steps.every((step) => step.status === "done" || step.status === "skipped")) return `All ${total} steps done`;
+  const at = mode === "running" ? steps.findIndex((step) => step.status === "running") : -1;
+  const index = at >= 0 ? at : steps.findIndex((step) => step.status !== "done" && step.status !== "skipped");
+  const step = steps[index];
+  return step ? `Step ${index + 1} of ${total}: ${step.label}` : `All ${total} steps done`;
+}
+
+/** Running: the track, the live step with `step N of M` and how long it has run, and the newest note. */
+function runningCard(job: JobView, clock: BoardClock): string {
+  const index = job.steps.findIndex((step) => step.status === "running");
+  const step = job.steps[index];
+  const live = activityLiveness({
+    column: job.column,
+    ...(job.stallActivityAt ? { lastActivityAt: job.stallActivityAt } : {}),
+    ...(clock.now !== undefined ? { now: clock.now } : {}),
+    stallTimeoutMs: clock.stallTimeoutMs,
+  });
+  // The step pulse is this card's dot, so the liveness reads as words only.
+  const liveness = live.liveness === "idle" ? "" : livenessHtml(live, false);
+  let line: string;
+  if (step) {
+    const phase = [...job.phases].reverse().find((item) => item.id === step.id && item.startedAt);
+    const ran = phase?.startedAt ? elapsed(phase.startedAt, clock) : "";
+    const meta = `step ${index + 1} of ${job.steps.length}${ran ? `, ${ran}` : ""}`;
+    line = `<p class="run-line"><span class="step-pulse" aria-hidden="true"></span><span class="run-step">${escapeHtml(step.label)}</span><span class="run-meta">${escapeHtml(meta)}</span>${liveness}</p>`;
+  } else {
+    const retry = job.scheduledRetry && job.nextRetryAt ? `Retrying ${timeHtml(job.nextRetryAt, "clock")}` : escapeHtml(job.reason);
+    line = `<p class="run-line"><span class="run-meta">${retry}</span>${liveness}</p>`;
+  }
+  const note = job.latestNote ? `<p class="run-note">${escapeHtml(job.latestNote)}</p>` : "";
+  return cardShell(job, "running", `${stepTrackHtml(job, "running")}${line}${note}${cardFoot(job)}`);
+}
+
+const DECISION_SKIP: ReadonlySet<string> = new Set(["verify", "approver", "approve", "security", "ux", "ui", "code"]);
+
+/**
+ * One sentence for a job that waits on the operator: a pull request that
+ * conflicts or is ready to merge, or the step a gate asks about.
+ */
+export function needsYouSentence(job: Pick<JobView, "state" | "reason" | "prNumber" | "steps">): string {
+  const base = /^Conflicts with ([^\s:,]+)/.exec(job.reason)?.[1];
+  if (base && job.prNumber) return `Pull request #${job.prNumber} conflicts with ${base}`;
+  if (job.state === "in-review") return job.prNumber ? `Pull request #${job.prNumber} is ready to merge` : job.reason;
+  const decided = [...job.steps].reverse().find((step) => step.status === "done" && !DECISION_SKIP.has(step.id));
+  return decided ? `Waiting for your decision on the ${decided.label.toLowerCase()}` : "Waiting for your decision";
+}
+
+function costHtml(job: JobView): string {
+  const cost = formatCost(job.costUsd);
+  return cost ? `<span class="card-cost"><span class="sr-only">Cost </span>${escapeHtml(cost)}</span>` : "";
+}
+
+/** Needs you: the track, the reason, the cost, and Review (the job page holds Approve, Reject, and Revise). */
+function needsYouCard(job: JobView): string {
+  const sentence = needsYouSentence(job);
+  const glyph: IconName = job.prNumber ? "git-pull-request" : "list-checks";
+  const review = `<a class="card-btn" href="/jobs/${encodeURIComponent(job.jobId)}">Review</a>`;
+  return cardShell(
+    job,
+    "needs-you",
+    `${stepTrackHtml(job, "needs-you")}<p class="card-reason">${icon(glyph)}<span>${escapeHtml(sentence)}</span></p><div class="card-act">${costHtml(job)}${review}</div>${cardFoot(job)}`,
+  );
+}
+
+/** Needs a hand: the track with the failed step, the reason, the cost, and Retry when allowed. */
+function handCard(job: JobView, csrf: string): string {
+  const id = encodeURIComponent(job.jobId);
+  const actions: string[] = [];
+  if (job.retry) actions.push(postForm(`/api/jobs/${id}/retry`, "retry", "Retry", csrf));
+  if (job.reviewPostError) actions.push(`<a class="card-btn" href="/jobs/${id}">Review</a>`);
+  const act = actions.length ? `<div class="d-actions">${actions.join("")}</div>` : "";
+  const cost = costHtml(job);
+  return cardShell(
+    job,
+    "needs-hand",
+    `${stepTrackHtml(job, "needs-hand")}<p class="card-reason">${icon("triangle-alert")}<span>${escapeHtml(job.reason)}</span></p>${launchFixHtml(job)}${cost || act ? `<div class="card-act">${cost}${act}</div>` : ""}${cardFoot(job)}`,
+  );
+}
+
+/** `Merged #88`, `Landed`, `Rejected`, or `Cancelled`. */
+export function doneOutcome(job: Pick<JobView, "state" | "prNumber">): { label: string; glyph: IconName } {
+  if (job.state === "rejected") return { label: "Rejected", glyph: "circle-x" };
+  if (job.state === "cancelled") return { label: "Cancelled", glyph: "ban" };
+  if (job.prNumber) return { label: `Merged #${job.prNumber}`, glyph: "git-merge" };
+  return { label: "Landed", glyph: "circle-check" };
+}
+
+function metricHtml(name: string, glyph: IconName, value: string): string {
+  return `<span class="metric" title="${escapeHtml(name)}">${icon(glyph)}<span class="sr-only">${escapeHtml(name)} </span>${value}</span>`;
+}
+
+function metricsHtml(metrics: JobView["doneMetrics"]): string {
+  if (!metrics) return "";
+  const items: string[] = [];
+  const cost = formatCost(metrics.costUsd);
+  if (cost) items.push(metricHtml("Cost", "coins", escapeHtml(cost)));
+  if (metrics.runMs !== undefined) items.push(metricHtml("Run time", "clock", escapeHtml(formatDuration(metrics.runMs))));
+  if (metrics.added !== undefined && metrics.removed !== undefined) {
+    items.push(metricHtml("Lines added and removed", "file-diff", `<span class="added">+${metrics.added}</span> <span class="removed">-${metrics.removed}</span>`));
+  }
+  if (metrics.files !== undefined) items.push(metricHtml("Files changed", "files", String(metrics.files)));
+  if (metrics.fixRounds !== undefined) items.push(metricHtml("Fix rounds", "wrench", String(metrics.fixRounds)));
+  return items.length ? `<p class="metrics">${items.join("")}</p>` : "";
+}
+
+/** Done: the title on one line, the outcome with the repo, then the metrics Kiln has. */
+function doneCard(job: JobView): string {
+  const outcome = doneOutcome(job);
+  const line = `<p class="done-line"><span class="outcome-word ${escapeHtml(job.state)}">${icon(outcome.glyph)}<span>${escapeHtml(outcome.label)}</span></span><span class="done-where">${repoHtml(job.repo)}<span class="card-flow">${escapeHtml(workflowLabel(job.workflow))}</span></span></p>`;
+  return cardShell(job, "done", `${line}${metricsHtml(job.doneMetrics)}`);
 }
 
 function groupedJobs(jobs: readonly JobView[], section: "repos" | "history", csrf: string, clock: BoardClock): string {
@@ -489,7 +691,7 @@ function groupedJobs(jobs: readonly JobView[], section: "repos" | "history", csr
 
 function jobList(
   jobs: readonly BoardJob[],
-  section: "inbox" | "hand" | "repos" | "history",
+  section: "repos" | "history",
   empty: string,
   csrf: string,
   clock: BoardClock,
@@ -498,13 +700,10 @@ function jobList(
   return `<div class="jobs">${jobs.map((job) => jobRow(job, section, csrf, clock)).join("\n")}</div>`;
 }
 
-function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", csrf: string, clock: BoardClock): string {
+function jobRow(job: BoardJob, section: "repos" | "history", csrf: string, clock: BoardClock): string {
   const id = encodeURIComponent(job.jobId);
   const classes = ["job"];
-  if (section === "inbox") classes.push("decision");
   if (job.scheduledRetry) classes.push("retrying");
-  if (section === "inbox" || (section === "hand" && !job.scheduledRetry && !job.launchBlock)) classes.push("human");
-  const flag = classes.includes("human") ? `<span class="flag">Needs a decision</span>` : "";
   const repo = section === "repos" ? "" : `<span class="meta">${escapeHtml(job.repo)}</span>`;
   const sandbox = job.sandboxed ? `<span class="meta">sandbox · docker</span>` : "";
   const pr = section === "repos" && job.state === "in-review" ? `<span class="meta">PR review</span>` : "";
@@ -512,25 +711,23 @@ function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", 
     job.scheduledRetry && job.nextRetryAt
       ? `<div class="meta">retrying <time datetime="${escapeHtml(job.nextRetryAt)}" data-time="clock">${escapeHtml(formatRelative(job.nextRetryAt))}</time>${job.attemptLine ? ` · ${escapeHtml(job.attemptLine)}` : ""}</div>`
       : "";
-  const attempt = !retrying && job.attemptLine && (section === "hand" || section === "inbox") ? `<div class="meta">${escapeHtml(job.attemptLine)}</div>` : "";
   const history = job.historyLine ? `<div class="meta">${escapeHtml(job.historyLine)}</div>` : "";
   const unsafe = job.prUrl && !safeUrl(job.prUrl) ? `<div class="branch">${escapeHtml(job.prUrl)}</div>` : "";
   const deps = dependsHtml(job);
-  const body = section === "inbox" ? decisionBody(job) : "";
-  const reason = section === "inbox" && !showReason(job) ? "" : `<p class="reason">${escapeHtml(job.reason)}</p>`;
+  const reason = `<p class="reason">${escapeHtml(job.reason)}</p>`;
   const fix = launchFixHtml(job);
   const feedback = feedbackHtml(job);
-  const tail = section !== "inbox" && job.logTail ? logDisclosure(job.logTail) : "";
-  const notes = visibleNotes(job, section);
+  const tail = job.logTail ? logDisclosure(job.logTail) : "";
+  const notes = visibleNotes(job);
   const unseen = `<p class="unseen" data-unseen-for="${escapeHtml(job.jobId)}" hidden></p>`;
   const links = fileLinks(job);
   const age = job.since ? timeHtml(job.since, "rel") : "";
   const cost = formatCost(job.costUsd);
   return `<article class="${classes.join(" ")}" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}" data-deps="${escapeHtml(job.dependsOn.map((dep) => dep.jobId).join(" "))}"${activityAttrs(job)}${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
 <div class="job-main">
-<div class="job-top">${flag}<a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a></div>
+<div class="job-top"><a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a></div>
 <div class="job-meta"><span class="num">${escapeHtml(job.jobId)}</span>${repo}<span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span>${heldChip(job)}<span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}${sandbox}${pr}</div>
-${progressHtml(job, clock)}${reason}${fix}${section === "inbox" ? ranHtml(job) : ""}${history}${unsafe}${retrying}${attempt}${deps}${feedback}${body}${notes}${tail}${unseen}${links}
+${progressHtml(job, clock)}${reason}${fix}${history}${unsafe}${retrying}${deps}${feedback}${notes}${tail}${unseen}${links}
 </div>
 ${actionsHtml(job, section, csrf)}
 </article>`;
@@ -544,8 +741,8 @@ function showReason(job: JobView): boolean {
   return reason !== ask && !reason.endsWith(ask);
 }
 
-function visibleNotes(job: JobView, section: "inbox" | "hand" | "repos" | "history"): string {
-  const lines = job.notes.filter((line) => section === "inbox" || !looksLikeLog(line));
+function visibleNotes(job: JobView): string {
+  const lines = job.notes.filter((line) => !looksLikeLog(line));
   if (lines.length === 0) return "";
   return `<div class="note">${lines.map((line) => escapeHtml(line)).join("<br>")}</div>`;
 }
@@ -557,17 +754,6 @@ function decisionBody(job: JobView): string {
       ? `<p class="meta">Approving posts this draft as a pull request comment. Kiln does not approve the pull request or merge it.</p>`
       : "";
   return `${ask}${policy}${deliverableHtml(job)}`;
-}
-
-function ranHtml(job: JobView): string {
-  if (job.phases.length === 0 && job.costUsd === null) return "";
-  const bits = [job.workflow];
-  if (job.phases.length > 0) bits.push(job.phases.map((phase) => `${phase.label} ${phase.status}`).join(", "));
-  const durations = job.phases.flatMap((phase) => (phase.durationMs === undefined ? [] : [phase.durationMs]));
-  if (durations.length > 0) bits.push(formatDuration(durations.reduce((sum, ms) => sum + ms, 0)));
-  const cost = formatCost(job.costUsd);
-  if (cost) bits.push(cost);
-  return `<p class="ran">${escapeHtml(bits.join(" · "))}</p>`;
 }
 
 function activityAttrs(job: JobView): string {
@@ -614,8 +800,8 @@ function focusStep(steps: readonly StepMark[]): StepMark | undefined {
   );
 }
 
-function livenessHtml(live: ActivityRead): string {
-  const dot = live.liveness === "stalled" ? "" : `<span class="live-dot" aria-hidden="true"></span>`;
+function livenessHtml(live: ActivityRead, withDot = true): string {
+  const dot = !withDot || live.liveness === "stalled" ? "" : `<span class="live-dot" aria-hidden="true"></span>`;
   return `<span class="liveness ${live.liveness}">${dot}<span class="liveness-label">${escapeHtml(live.label ?? "")}</span></span>`;
 }
 
@@ -741,12 +927,12 @@ function dependsHtml(job: BoardJob): string {
 
 function actionsHtml(
   job: BoardJob,
-  section: "inbox" | "hand" | "repos" | "history" | "job",
+  section: "repos" | "history" | "job",
   csrf: string,
   parts: { gate?: boolean; retry?: boolean } = {},
 ): string {
-  const showGate = parts.gate !== false && (section === "inbox" || section === "job" || (section === "hand" && Boolean(job.reviewPostError)));
-  const showRetry = parts.retry !== false && (section === "hand" || section === "repos" || section === "job");
+  const showGate = parts.gate !== false && section === "job";
+  const showRetry = parts.retry !== false && (section === "repos" || section === "job");
   const id = encodeURIComponent(job.jobId);
   const forms: string[] = showGate ? gateForms(job, id, csrf) : [];
   if (showRetry && job.retry) forms.push(postForm(`/api/jobs/${id}/retry`, "retry", "Retry", csrf));
@@ -805,15 +991,13 @@ function detailHtml(
   const nowing = !deciding && !failing && job.column === "running";
   const middle = deciding ? decisionCardHtml(job, csrf) : failing ? failureCardHtml(job, csrf) : nowing ? nowCardHtml(job, feed, clock) : "";
   const result = !deciding && job.deliverable ? `<details class="job-more" id="result"><summary>Result</summary>${deliverableHtml(job)}</details>` : "";
-  const back = job.inbox ? "/inbox" : "/";
-  const backLabel = job.inbox ? "Inbox" : "Pipeline";
   const ask = !deciding && job.ask ? `<p class="ask">${escapeHtml(job.ask)}</p>` : "";
   // The Now card names the running step, and the failure card carries the reason.
   const reason = !failing && !nowing && showReason(job) ? `<p class="reason">${escapeHtml(job.reason)}</p>` : "";
   const targetAttr = target ? ` data-target="${target}"` : "";
   return `<div class="job-page"${activityAttrs(job)}${targetAttr}>
 <header class="job-head">
-<a class="back" href="${back}">${backLabel}</a>
+<a class="back" href="/">Pipeline</a>
 <div class="job-top"><h1>${escapeHtml(job.title)}</h1><span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span>${heldChip(job)}</div>
 ${jobMetaHtml(job)}
 ${ask}${reason}${launchFixHtml(job)}
@@ -843,8 +1027,6 @@ function stepPageHtml(detail: JobDetail, step: StepPage, clock: BoardClock, acti
   const phase = job.phases.find((item) => item.id === step.id);
   const label = phase?.label ?? job.steps.find((item) => item.id === step.id)?.label ?? step.id;
   const id = encodeURIComponent(job.jobId);
-  const back = job.inbox ? "/inbox" : "/";
-  const backLabel = job.inbox ? "Inbox" : "Pipeline";
   const events = feed.events.filter((event) => event.phase === step.id);
   const open = step.id === runningId;
   const bits = phase ? stepStateBits(phase, clock, open) : [];
@@ -865,7 +1047,7 @@ function stepPageHtml(detail: JobDetail, step: StepPage, clock: BoardClock, acti
       : liveRootHtml("step-live", { running: open && feed.running, cursor: feed.cursor, phase: step.id, pin: true }, liveFeedHtml(label, events));
   return `<div class="job-page"${activityAttrs(job)}>
 <header class="job-head">
-<a class="back" href="${back}">${backLabel}</a>
+<a class="back" href="/">Pipeline</a>
 <div class="job-top"><h1><a class="title-link" href="/jobs/${id}">${escapeHtml(job.title)}</a></h1><span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span>${heldChip(job)}</div>
 ${jobMetaHtml(job)}
 </header>

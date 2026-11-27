@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import type { KilnEvent } from "./events.js";
 import type { FailureClass } from "./failure.js";
-import { isFinished, isHand, isInbox, projectJob, type JobView } from "./job-view.js";
+import { doneMetrics, isFinished, isHand, isInbox, projectJob, type JobView } from "./job-view.js";
 import { ledgerRows, type LedgerRow } from "./ledger.js";
 import { localDay, spendSnapshot, type SpendSnapshot } from "./rails.js";
 import type { StatusJobView } from "./report.js";
@@ -177,8 +177,20 @@ export function parseSeenQuery(values: readonly string[]): Record<string, string
   return seen;
 }
 
-export function buildBoard(jobs: readonly StatusJobView[], events: readonly KilnEvent[]): BoardDocument {
-  const rows = jobs.map((job) => projectJob(job, events));
+/**
+ * `diffFilesOf` reads a finished job's numstat for its Done card metrics.
+ * Missing, or returning undefined, leaves the diff and file count out.
+ */
+export function buildBoard(
+  jobs: readonly StatusJobView[],
+  events: readonly KilnEvent[],
+  diffFilesOf?: (job: StatusJobView) => DiffFile[] | undefined,
+): BoardDocument {
+  const rows = jobs.map((job) => {
+    const view = projectJob(job, events);
+    if (view.column !== "done") return view;
+    return { ...view, doneMetrics: doneMetrics(view, events, diffFilesOf?.(job)) };
+  });
   const inbox = rows.filter((job) => job.inbox);
   const hand = rows.filter((job) => job.hand);
   const history = rows.filter((job) => job.finished);

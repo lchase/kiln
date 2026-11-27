@@ -629,9 +629,9 @@ describe("pull request feedback", { concurrency: 1 }, () => {
     assert.ok(ledger && ledger !== "corrupt");
     writeFeedbackLedger(box.config.kilnDir, { ...ledger, exhausted: true });
     const closed = readStatus(box.config, box.jobId, box.host);
-    const closedHtml = renderConsole("", buildAttention(closed.jobs), { csrf: "", repos: [], workflows: [], section: "hand" });
+    const closedHtml = renderConsole("", buildAttention(closed.jobs), { csrf: "", repos: [], workflows: [], section: "pipeline" });
     assert.equal(closed.jobs[0]?.state, "needs-human");
-    assert.match(closedHtml, /Needs a decision/);
+    assert.match(closedHtml, /class="card needs-hand"/);
     assert.match(closedHtml, /data-state="needs-human"/);
     assert.match(closedHtml, /Fix round cap/);
   });
@@ -859,7 +859,7 @@ describe("pull request conflicts with the base", { concurrency: 1 }, () => {
     assert.equal(view.column, "needs-hand");
     assert.equal(view.reason, "Conflicts with main: widget.txt");
     assert.equal(view.retry, true);
-    const hand = renderConsole("", buildAttention(status.jobs), { csrf: "", repos: [], workflows: [], section: "hand" });
+    const hand = renderConsole("", buildAttention(status.jobs), { csrf: "", repos: [], workflows: [], section: "pipeline" });
     assert.match(hand, /Conflicts with main: widget\.txt/);
     const needsHuman = eventsNamed(box, "needs-human");
     assert.equal(needsHuman.length, 1);

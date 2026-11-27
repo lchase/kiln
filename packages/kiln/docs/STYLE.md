@@ -65,15 +65,20 @@ State colors (say the word as well as the color):
 | `--state-failed` | Failed |
 | `--state-cancelled` | Cancelled |
 
+Repo colors, `--repo-1` to `--repo-6`, tint the small repo icon on a board card. `repoTone` hashes the repo name to
+one of them, so a repo keeps its color. Each theme picks six from its own palette. The repo name is always beside
+the icon: the color only helps the eye group cards.
+
 ## Layout
 
 - Page gutter is `--gutter` (`--space-5`). Bottom padding is `--space-8`.
 - Content stops at `--content-max`. Do not stretch a form or a list across an ultrawide window.
 - Drawer padding is `--drawer-pad` on the head, the body, and the footer. Labels and inputs do not touch the drawer edge.
 - Card anatomy: `--card` fill, `--hairline` border, `--radius-lg`, padding `--space-4`. One surface. Actions sit in a footer row on that same surface.
-- State is a labeled chip. It is not a bar, a stripe, or a fill on the card.
-- A card that needs a person says `Needs a decision` in `--muted`. Sentence case.
-- The pipeline tray may scroll sideways. Chip rows and form controls may not.
+- State is a labeled chip, or on the board the column, the step track, and the words. It is not a bar, a stripe, or
+  a fill on the card.
+- Above the narrow breakpoint the pipeline tray may scroll sideways. Below it the columns stack and nothing scrolls
+  sideways. Chip rows and form controls never scroll sideways.
 
 ## Chips
 
@@ -83,16 +88,67 @@ State colors (say the word as well as the color):
 
 ## Steps
 
-- A job shows the workflow's step list. The card does not show the current step as plain text.
+- A job shows the workflow's step list.
 - Done steps are `--muted` with a check. The current step is `--primary` and weight 500. Upcoming steps are `--faint`. A failed step uses `--state-failed`.
 - Names are separated by `›`.
 - Each step is named once. The approver agent step (`approver`) is "Approver". The human gate (`approve`) is
   "Your decision".
 - A loop (or map) container is not a step. Its body steps appear in the list and the container does not. In
   `feature`, the `revise` loop is not shown; Build, Verify, and the reviews are.
-- A pipeline card is narrow. It uses a segmented bar (one segment per step) plus the current step name. Done segments are `--muted`. The current segment is `--primary`. Upcoming segments are `--line`.
-- Inbox, repo, and history rows use the same stepper. Wide rows show the names. The job page uses its own progress
-  row (see Job page), not this stepper.
+- A pipeline card uses the step track (see Pipeline board), not this stepper.
+- Repo and history rows use the stepper. Wide rows show the names. The job page uses its own progress row (see Job
+  page), not this stepper.
+
+## Pipeline board
+
+`/` is the board: Queued, Running, Needs you, Needs a hand, and Done. `/inbox` and `/hand` redirect to it.
+
+- Header: `Pipeline`, then one status line, `2 running, 2 need you, 1 needs a hand`. A dot in `--state-running`
+  pulses before it only while something runs.
+- Column header: a Lucide icon in that column's state color, the column name, and the count. Queued adds the
+  subtitle `in launch order`. Icons: Queued `hourglass`, Running `play`, Needs you `eye`, Needs a hand
+  `hand-helping`, Done `circle-check`.
+- Every card is `article.card`, one surface with gap `--space-2`. The title is an `<a>` to `/jobs/<id>`. The card
+  itself is not a link, because a card can hold a form. The footer row has the repo (the `folder-git-2` icon in its
+  `--repo-N` color, then the name) and the workflow in words (`Feature`).
+- Queued: the launch position in a mono badge, then why it is there: `Next up` (position 1), `Ready`, `Waits for
+  <job title>` with a `lock` icon, or the Held chip. No step track. A blocked launch shows its reason and the
+  Settings link. Cards follow launch order.
+- Running: the step track, then one row: a pulsing dot, the step name in `--primary` weight 500, and `step N of M,
+  <elapsed>` in `--muted`. Then the newest note on one line, mono, ellipsized, or nothing when there is none.
+  Liveness is words after the row: `quiet for Nm` or `stalled`. Working shows no words.
+- Needs you: the full track, one sentence with an icon (`Pull request #91 conflicts with main`, `Pull request #92 is
+  ready to merge`, `Waiting for your decision on the build`), then the cost and a Review link to the job page, which
+  holds Approve, Reject, and Revise.
+- Needs a hand: the track with the failed step in `--state-failed`, the reason with a `triangle-alert` icon in
+  `--state-needs-hand`, then the cost and Retry (a CSRF form) when the job can be retried.
+- Done: three tight lines. The title clamped to one line. The outcome (`Merged #88` with `git-merge`, `Landed`,
+  `Rejected`, `Cancelled`) with the repo on the right. Then the metrics Kiln has, each an icon and a number with a
+  hidden name: cost `coins`, run time `clock`, lines `file-diff` (`+412 -38`), files `files`, fix rounds `wrench`.
+  A metric Kiln cannot derive is left out, not shown as zero. No metric, no line.
+
+### Step track
+
+- One segment per `job.steps` entry, `--space-1` tall, `--radius-sm`, gap `--space-2xs`.
+- Done segments are `--muted`. Upcoming segments are `--line`. A failed segment is `--state-failed`.
+- Only a Running card has a current segment. It is three times as wide, `--primary`, and carries the sweep.
+- The track is `role="img"` with `aria-label`: `Step N of M: <step>`, `Failed at <step>`, or `All M steps done`.
+  Each segment's `title` is the step name.
+
+### Motion
+
+- Three things move: the sweep on the current segment, the dot beside the running step, and the dot on the header
+  status line. Nothing else on the board animates.
+- The step dot stops while the job is quiet or stalled.
+- One `prefers-reduced-motion: reduce` block sets `animation: none` on each. The style test fails if an animation
+  has no off switch there.
+- Motion never carries state alone: the words say running, quiet, or stalled.
+
+### One-sided edges
+
+- No card, and nothing inside a card, sets `border-left`, `border-right`, `border-top`, `border-bottom`, or
+  `border-inline-*`. A card's border is the same hairline on all four sides. The style test checks every rule whose
+  selector has `.card`.
 
 ## Job page
 
@@ -155,11 +211,12 @@ The running step's activity log:
 
 - `lastActivityAt` is the timestamp stall detection already uses: the later of the run's journal activity, the launch log mtime, and the mtime of the newest file under the run's `sessions/` directory.
 - A running job with activity inside 2 minutes (`QUIET_AFTER_MS`) shows a slow pulsing dot in `--state-running`. The word `Working` is in the page for a screen reader and is not a second label.
-- No activity for longer than 2 minutes, while still inside `stallTimeoutMs`, shows a static dot and `quiet Nm` (whole minutes).
+- No activity for longer than 2 minutes, while still inside `stallTimeoutMs`, shows a static dot and `quiet for Nm` (whole minutes).
 - Past `stallTimeoutMs`, the label is `stalled` and the dot does not pulse. The driver still kills and retries that run. `stallTimeoutMs` of 0 or below does not mark a job stalled.
 - Queued, needs you, needs a hand, and done do not pulse and do not show quiet or stalled.
 - `prefers-reduced-motion: reduce` leaves the dot static.
-- No glow, no shimmer bar, and no left accent bar. The dot is the only motion.
+- No glow and no left accent bar. On the job page the dot is the only motion. The board's motion is listed under
+  Pipeline board.
 
 ## Links
 
@@ -180,10 +237,18 @@ The running step's activity log:
 
 Official Lucide, inlined (`src/icons.ts`). Do not add a React icon package. Do not vendor a doubled-stroke set: at 16px those paths read as mud.
 
-- One icon on each nav row: Pipeline `columns-3`, Inbox `inbox`, Needs a hand `hand-helping`, Repos `folder-git-2`, History `history`, Stats `chart-column`, Today `calendar`, Triggers `zap`, Settings `settings`.
+- One icon on each nav row: Pipeline `columns-3`, Repos `folder-git-2`, History `history`, Stats `chart-column`,
+  Today `calendar`, Triggers `zap`, Settings `settings`.
+- Board column headers: Queued `hourglass`, Running `play`, Needs you `eye`, Needs a hand `hand-helping`, Done
+  `circle-check`. Board cards: `folder-git-2` (repo), `lock` (waits for), `git-pull-request` and `list-checks`
+  (needs-you reason), `triangle-alert` (needs-a-hand reason), `git-merge`, `circle-check`, `circle-x`, `ban`
+  (outcome), and `coins`, `clock`, `file-diff`, `files`, `wrench` (done metrics).
+- Every board icon is `aria-hidden` and sits beside words. A metric's name is visually hidden text (`.sr-only`)
+  and its `title`.
 - Repo sublinks (`api`, `web`) stay text.
 - Footer: `pause` / `play`, and `bell` / `bell-off` for notify.
-- Add job stays a labeled button. Do not icon-spam cards, chips, or meta rows. The exceptions are the step check and the spec, log, and findings buttons.
+- Add job stays a labeled button. Do not icon-spam cards, chips, or meta rows. The exceptions are the step check,
+  the spec, log, and findings buttons, and the board card icons listed above.
 - Draw with `.icon`: `var(--icon)`, `var(--icon-stroke)`, `currentColor`, `fill: none`. No fill except a Lucide mark that is meant to be filled. These marks are not.
 - Active nav: `--ink` icon and label, on the existing selected background (`--card-hover`). Inactive: `--muted`. Hover may use `--ink`. Do not paint nav icons, the footer, or other chrome with `--primary`.
 - Icon-only hit targets use `--hit` (44px). A nav row can stay compact when the whole row is the target. Pause and notify include a label, so they stay on `--control-h`.
@@ -206,7 +271,7 @@ Kiln notifies only when the needs-you count grows, and only while sending is on.
 
 ## Don't
 
-- No left or top accent bar on a card, and no thicker colored border in its place.
+- No left or top accent bar on a card, no one-sided border of any color, and no thicker colored border in its place.
 - No glow, and no gradient or tinted wash on a card.
 - No pill shapes on tags, status, filter chips, or count badges.
 - No all-caps marketing eyebrows.
@@ -294,7 +359,12 @@ Kiln adapts published palettes onto the tokens above. It does not vendor theme s
 - **Gruvbox Dark and Gruvbox Light.** Official Gruvbox (`morhetz/gruvbox`): dark uses the bright accents, light uses the faded accents. MIT/X11.
 - **Catppuccin** Mocha, Macchiato, Frappé, and Latte. Official palette 1.8.0. Mauve is the accent. MIT, copyright Catppuccin. https://catppuccin.com/palette
 - **Monospace Dark and Monospace Light.** Published UI colors from Keksi's Monospace theme (`keksiqc/monospace-theme`, MIT, copyright 2024 Keksi), as carried in the Orca port `faisalmuhammad/orca-monospace-themes`. The upstream theme is a modification of the Google IDX theme. This board uses the palette only.
-- **Lucide.** Nav, footer, file, and step icons are the official Lucide 1.70.0 paths (`columns-3`, `inbox`, `hand-helping`, `folder-git-2`, `history`, `chart-column`, `calendar`, `zap`, `settings`, `pause`, `play`, `bell`, `bell-off`, `check`, `file-text`, `scroll-text`, `list-checks`), inlined. ISC, copyright Lucide Icons and Contributors. https://lucide.dev https://github.com/lucide-icons/lucide
+- **Lucide.** Nav, footer, file, step, and board icons are the official Lucide 1.70.0 paths (`columns-3`,
+  `hand-helping`, `folder-git-2`, `history`, `chart-column`, `calendar`, `zap`, `settings`, `pause`, `play`, `bell`,
+  `bell-off`, `check`, `file-text`, `scroll-text`, `list-checks`, `hourglass`, `eye`, `circle-check`, `circle-x`,
+  `ban`, `lock`, `triangle-alert`, `git-pull-request`, `git-merge`, `coins`, `clock`, `file-diff`, `files`,
+  `wrench`), inlined. ISC, copyright Lucide Icons and Contributors. https://lucide.dev
+  https://github.com/lucide-icons/lucide
 
 ## Tables and lists
 
@@ -323,7 +393,7 @@ Kiln adapts published palettes onto the tokens above. It does not vendor theme s
 - Spacing, type, radius, and color come from tokens. Colors come from the active theme. The style guard passes.
 - The screen follows the Don't list: no card bars, glow, washes, pills, or all-caps eyebrows.
 - Tags, status, filter chips, and count badges share `--radius-md` and `--space-2` padding.
-- A running card shows the step bar and liveness. The job page shows the progress row and the open step's log.
+- A running card shows the step track and liveness. The job page shows the progress row and the open step's log.
 - Links have no underline. Focus rings stay. Spec, log, and findings are `.text-btn`.
 - The screen uses the page gutter and stays within `--content-max`.
 - Drawer content is padded on all sides. The footer is sticky. The primary action is on the right, Cancel on its left.

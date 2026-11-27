@@ -182,13 +182,16 @@ describe("job view", () => {
     assert.equal(view.evidence.filter((line) => line.includes("title:")).length, 0);
     assert.equal(view.evidence.filter((line) => line === raw).length, 0);
 
-    const html = renderConsole("", buildAttention([reviewJob]), {
-      csrf: "token",
-      repos: [],
-      workflows: [],
-      section: "inbox",
+    // The gate's draft, findings, and forms are on the job page. The board card links there.
+    const html = renderApp({
+      css: "",
+      section: "job",
+      board: buildBoard([reviewJob], []),
+      attention: buildAttention([reviewJob]),
+      detail: jobDetail({ job: reviewJob, events: [], maxFixRounds: 2 }),
+      page: { csrf: "token", repos: [], workflows: [] },
     });
-    const card = html.slice(html.indexOf('id="job-SAMPLE-1"'), html.indexOf("</article>"));
+    const card = html.slice(html.indexOf('id="decision"'), html.indexOf("\n</section>", html.indexOf('id="decision"')));
     const ask = "Draft review for &quot;SAMPLE-1&quot;?";
     assert.equal(card.split(ask).length - 1, 1);
     assert.equal(card.split("Approving posts this draft").length - 1, 1);
@@ -292,7 +295,7 @@ describe("job view", () => {
       repos: [{ name: "web", path: "/tmp/web", hasTest: false }],
       workflows: ["feature", "investigation"],
       workflowsNeedingTest: ["feature"],
-      section: "hand",
+      section: "pipeline",
     });
     assert.match(html, /Blocked: web has no test command/);
     assert.match(html, /href="\/settings\/repos\?repo=web&amp;field=test"/);
@@ -319,11 +322,11 @@ describe("activity liveness", () => {
       });
     assert.deepEqual(running(new Date(now - 30_000).toISOString()), { liveness: "working", label: "Working" });
     assert.deepEqual(running(new Date(now - QUIET_AFTER_MS).toISOString()), { liveness: "working", label: "Working" });
-    assert.deepEqual(running(new Date(now - QUIET_AFTER_MS - 1).toISOString()), { liveness: "quiet", label: "quiet 2m" });
-    assert.deepEqual(running(new Date(now - 4 * 60_000).toISOString()), { liveness: "quiet", label: "quiet 4m" });
-    assert.deepEqual(running(new Date(now - stall).toISOString()), { liveness: "quiet", label: "quiet 15m" });
+    assert.deepEqual(running(new Date(now - QUIET_AFTER_MS - 1).toISOString()), { liveness: "quiet", label: "quiet for 2m" });
+    assert.deepEqual(running(new Date(now - 4 * 60_000).toISOString()), { liveness: "quiet", label: "quiet for 4m" });
+    assert.deepEqual(running(new Date(now - stall).toISOString()), { liveness: "quiet", label: "quiet for 15m" });
     assert.deepEqual(running(new Date(now - stall - 1).toISOString()), { liveness: "stalled", label: "stalled" });
-    assert.deepEqual(running(new Date(now - 60 * 60_000).toISOString(), 0), { liveness: "quiet", label: "quiet 60m" });
+    assert.deepEqual(running(new Date(now - 60 * 60_000).toISOString(), 0), { liveness: "quiet", label: "quiet for 60m" });
     assert.equal(running(undefined).liveness, "idle");
     assert.equal(running("not-a-time").liveness, "idle");
     const fresh = new Date(now - 5_000).toISOString();
@@ -404,20 +407,20 @@ describe("activity liveness", () => {
     const html = renderApp({ css: "", section: "pipeline", board, attention, page });
     const slice = (id: string) => html.slice(html.indexOf(`id="job-${id}"`), html.indexOf("</article>", html.indexOf(`id="job-${id}"`)));
     const workingCard = slice("WEB-118");
-    assert.match(workingCard, /class="steps"/);
-    assert.doesNotMatch(workingCard, /steps-full/);
-    assert.match(workingCard, /class="step-now current"/);
-    assert.match(workingCard, />Build</);
+    assert.match(workingCard, /<div class="track" role="img" aria-label="Step 2 of 4: Build">/);
+    assert.match(workingCard, /<span class="seg current sweep" title="Build">/);
+    assert.match(workingCard, /<span class="run-step">Build<\/span>/);
+    assert.match(workingCard, /step 2 of 4/);
     assert.match(workingCard, /class="liveness working"/);
     assert.match(workingCard, /data-activity="2026-11-15T17:59:15.000Z"/);
-    assert.match(slice("API-22"), /class="liveness quiet"[\s\S]*quiet 4m/);
+    assert.match(slice("API-22"), /class="liveness quiet"[\s\S]*quiet for 4m/);
     const stalledCard = slice("API-23");
     assert.match(stalledCard, /class="liveness stalled"/);
     assert.match(stalledCard, />stalled</);
     assert.doesNotMatch(stalledCard, /live-dot/);
     assert.doesNotMatch(slice("WEB-104"), /liveness/);
     assert.match(html, /class="repo-f"/);
-    assert.match(html, /class="chip"/);
+    assert.match(html, /<span class="card-flow">Feature<\/span>/);
 
     const detail = jobDetail({ job: working, events: [], maxFixRounds: 2 });
     const jobHtml = renderApp({ css: "", section: "job", board, attention, page, detail });
@@ -558,10 +561,13 @@ describe("step list", () => {
     const card = pipeline.slice(pipeline.indexOf('id="job-SAMPLE-1"'), pipeline.indexOf("</article>", pipeline.indexOf('id="job-SAMPLE-1"')));
     const detail = jobDetail({ job: featured, events, maxFixRounds: 2 });
     const jobHtml = renderApp({ css: "", section: "job", board, attention, page, detail });
-    const lists = {
-      card: between(card, 'class="steps"'),
-      page: between(jobHtml, 'class="prog"'),
-    };
+    // The card's track names each step once, in segment titles.
+    const track = card.slice(card.indexOf('class="track"'), card.indexOf("</div>", card.indexOf('class="track"')));
+    assert.equal(track.split('title="Approver"').length - 1, 1);
+    assert.equal(track.split('title="Your decision"').length - 1, 1);
+    assert.equal(track.split('title="Approve"').length - 1, 0);
+    assert.doesNotMatch(track, /Revise/);
+    const lists = { page: between(jobHtml, 'class="prog"') };
     for (const [name, html] of Object.entries(lists)) {
       assert.equal(count(html, "Approver"), 1, `${name} Approver`);
       assert.equal(count(html, "Your decision"), 1, `${name} Your decision`);

@@ -2605,7 +2605,7 @@
       } else if (age > quietAfter) {
         var minutes = Math.max(2, Math.floor(age / 60000));
         live.classList.add("quiet");
-        if (label) label.textContent = "quiet " + minutes + "m";
+        if (label) label.textContent = "quiet for " + minutes + "m";
         if (dot) dot.hidden = false;
       } else {
         live.classList.add("working");
@@ -2618,6 +2618,74 @@
   var actionPending = false;
   var PENDING_LABEL = { approve: "Approving", reject: "Rejecting", revise: "Sending back", retry: "Retrying" };
 
+  var swapping = false;
+
+  function boardFocused() {
+    var active = document.activeElement;
+    return Boolean(active && board && active !== body && board.contains(active));
+  }
+
+  function sameCard(old, fresh) {
+    var hidden = old.hidden;
+    old.hidden = false;
+    var same = old.outerHTML === fresh.outerHTML;
+    old.hidden = hidden;
+    return same;
+  }
+
+  // The pipeline updates in place: fetch the board, swap each column's cards
+  // by id, then the counts, the status line, the sidebar badge, and the title.
+  function swapBoard(rev) {
+    if (swapping || !board || typeof DOMParser === "undefined") return;
+    swapping = true;
+    fetch("/", { cache: "no-store", headers: { Accept: "text/html" } })
+      .then(function (response) {
+        if (!response.ok) throw new Error("status");
+        return response.text();
+      })
+      .then(function (html) {
+        swapping = false;
+        if (actionPending || boardFocused()) return;
+        var next = new DOMParser().parseFromString(html, "text/html");
+        var nextBoard = next.getElementById("board");
+        if (!nextBoard) return;
+        var columns = nextBoard.querySelectorAll(".col");
+        for (var i = 0; i < columns.length; i++) {
+          var col = board.querySelector('.col[data-column="' + columns[i].getAttribute("data-column") + '"]');
+          if (!col) continue;
+          var fresh = columns[i].querySelectorAll(".card");
+          var keep = {};
+          var anchor = col.querySelector(".empty");
+          for (var c = 0; c < fresh.length; c++) {
+            keep[fresh[c].id] = true;
+            var old = document.getElementById(fresh[c].id);
+            var node = old && sameCard(old, fresh[c]) ? old : document.importNode(fresh[c], true);
+            if (old && old !== node && old.parentNode) old.parentNode.removeChild(old);
+            col.insertBefore(node, anchor);
+          }
+          var stale = col.querySelectorAll(".card");
+          for (var k = 0; k < stale.length; k++) if (!keep[stale[k].id]) col.removeChild(stale[k]);
+        }
+        var status = document.getElementById("board-status");
+        var nextStatus = next.getElementById("board-status");
+        if (status && nextStatus) status.innerHTML = nextStatus.innerHTML;
+        var link = document.querySelector('.nav-link[href="/"]');
+        var nextLink = next.querySelector('.nav-link[href="/"]');
+        if (link && nextLink) link.innerHTML = nextLink.innerHTML;
+        var n = Number(next.body.getAttribute("data-needs-you") || "0");
+        body.setAttribute("data-needs-you", String(n));
+        var nextRev = next.body.getAttribute("data-revision") || rev;
+        if (nextRev) body.setAttribute("data-revision", nextRev);
+        count = n;
+        document.title = "(" + n + ") Kiln";
+        note(n);
+        applyRepo();
+        paintLiveness();
+        localizeTimes(document);
+      })
+      .catch(function () { swapping = false; });
+  }
+
   function poll() {
     fetch("/api/jobs", { cache: "no-store", headers: { Accept: "application/json" } })
       .then(function (response) {
@@ -2628,11 +2696,18 @@
         applyLiveConfig(data);
         var rev = data && data.attention && data.attention.revision;
         var current = body.getAttribute("data-revision");
+        var onBoard = body.getAttribute("data-section") === "pipeline";
         if (rev && current && rev !== current) {
           // A reload here would cancel the form post that is still on its way.
           if (actionPending) return;
-          location.reload();
-          return;
+          if (!onBoard) {
+            location.reload();
+            return;
+          }
+          swapBoard(rev);
+        } else if (onBoard && board && board.querySelector('.col[data-column="running"] .card')) {
+          // Running cards carry elapsed time and the newest note, so they refresh each poll.
+          swapBoard(rev);
         }
         var toggle = document.getElementById("pause-toggle");
         var form = document.getElementById("pause-form");
@@ -2786,7 +2861,6 @@
         for (var i = 0; i < jobs.length; i++) counts[jobs[i].jobId] = jobs[i].count;
         var nodes = document.querySelectorAll("[data-unseen-for]");
         for (var n = 0; n < nodes.length; n++) paintCount(nodes[n], counts[nodes[n].getAttribute("data-unseen-for")] || 0);
-        paintCount(document.getElementById("inbox-unseen"), data.inbox || 0);
       })
       .catch(function () { /* the list still works without the badge */ });
   }
