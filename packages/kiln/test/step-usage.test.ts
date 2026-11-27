@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -12,7 +12,7 @@ import { packageRoot } from "../src/paths.js";
 import type { Observation, ObservedJob } from "../src/reconcile.js";
 import { renderStatus, statusView, type StatusJobView } from "../src/report.js";
 import { renderApp, type StepPage } from "../src/serve-page.js";
-import { readStepUsage, stepUsageReads, type StepUsage } from "../src/step-usage.js";
+import { readStepUsage, stepUsageReads, type StepPlanEntry, type StepUsage } from "../src/step-usage.js";
 
 const FIXTURES = join(packageRoot(), "test", "fixtures", "usage");
 const FAKE_TOKEN = "ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE0000";
@@ -63,7 +63,7 @@ function runDir(sessions: readonly string[]): string {
 }
 
 /** Everything through `approver` has run. */
-function finishedPlan(): { id: string; phase: string }[] {
+function finishedPlan(): StepPlanEntry[] {
   return PLAN.map((id) => ({ id, phase: id === "approve" || id === "land" ? "pending" : "done" }));
 }
 
@@ -142,7 +142,7 @@ describe("readStepUsage", () => {
 
   it("does not read an unchanged session again, and reads only appended bytes after it grows", () => {
     const dir = runDir(["spec"]);
-    const plan = [{ id: "spec", phase: "done" }];
+    const plan: StepPlanEntry[] = [{ id: "spec", phase: "done" }];
     const first = stepUsageReads();
     readStepUsage(dir, plan);
     const second = stepUsageReads();
@@ -170,12 +170,43 @@ describe("readStepUsage", () => {
 
   it("rescans a session that shrank", () => {
     const dir = runDir(["build"]);
-    const plan = [{ id: "build", phase: "done" }];
+    const plan: StepPlanEntry[] = [{ id: "build", phase: "done" }];
     assert.equal(byId(readStepUsage(dir, plan)).get("build")?.rounds.length, 2);
     copyFileSync(join(FIXTURES, "ux.jsonl"), join(dir, "sessions", "build.jsonl"));
     const build = byId(readStepUsage(dir, plan)).get("build");
     assert.equal(build?.rounds.length, 1);
     assert.equal(build?.model, "claude-sonnet-4-6");
+  });
+
+  it("rescans a session rewritten in place to the same size", () => {
+    const dir = runDir(["spec"]);
+    const plan: StepPlanEntry[] = [{ id: "spec", phase: "done" }];
+    const file = join(dir, "sessions", "spec.jsonl");
+    assert.equal(byId(readStepUsage(dir, plan)).get("spec")?.model, "claude-opus-5-5");
+    const text = readFileSync(file, "utf8");
+    writeFileSync(file, text.replace("claude-opus-5-5", "claude-opus-5-6"));
+    assert.equal(statSync(file).size, Buffer.byteLength(text));
+    const later = new Date(Date.now() + 5000);
+    utimesSync(file, later, later);
+    assert.equal(byId(readStepUsage(dir, plan)).get("spec")?.model, "claude-opus-5-6");
+  });
+
+  it("does not follow a session that is a symlink", () => {
+    const dir = runDir([]);
+    symlinkSync(join(FIXTURES, "spec.jsonl"), join(dir, "sessions", "spec.jsonl"));
+    const spec = byId(readStepUsage(dir, [{ id: "spec", phase: "done" }])).get("spec");
+    assert.equal(spec?.modelSource, "workflow");
+    assert.equal(spec?.rounds.length, 0);
+  });
+
+  it("skips a line too long to hold and still reads the lines after it", () => {
+    const dir = runDir([]);
+    const file = join(dir, "sessions", "spec.jsonl");
+    const result = `${JSON.stringify({ type: "result", total_cost_usd: 0.25, usage: { input_tokens: 1, output_tokens: 2 } })}\n`;
+    writeFileSync(file, `{"type":"result","pad":"${"x".repeat(9 << 20)}"}\n${result}`);
+    const spec = byId(readStepUsage(dir, [{ id: "spec", phase: "done" }])).get("spec");
+    assert.equal(spec?.rounds.length, 1);
+    assert.equal(spec?.usd, 0.25);
   });
 });
 
@@ -218,7 +249,7 @@ function finishedJob(stepUsage: StepUsage[]): StatusJobView {
     jobId: "SAMPLE-1",
     state: "needs-human",
     logPath: "/k/log.txt",
-    steps: finishedPlan().map((step) => ({ id: step.id, phase: step.phase === "done" ? ("done" as const) : ("pending" as const) })),
+    steps: finishedPlan(),
     stepUsage,
   });
 }

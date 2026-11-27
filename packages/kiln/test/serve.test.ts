@@ -1095,7 +1095,9 @@ describe("reap launches", () => {
     await reapLaunches(dir);
     await exited(child);
     assert.throws(() => process.kill(pid, 0));
-    rmSync(dir, { recursive: true, force: true });
+    // Without /proc (macOS) the reaper finds nothing and the fallback SIGKILLs bash alone, so a
+    // `mkdir` it had already forked can finish after bash is gone. Retry over that one last write.
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 });
 

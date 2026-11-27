@@ -1,6 +1,7 @@
-import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, lstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { redact } from "./redact.js";
+import type { StepPhase } from "./report.js";
 import { STEP_NAME, findStep, planOf } from "./step-result.js";
 
 /**
@@ -33,7 +34,7 @@ export interface StepUsage {
 /** Where a step stands, from the journal. `pending` means it has not started. */
 export interface StepPlanEntry {
   id: string;
-  phase: string;
+  phase: StepPhase;
 }
 
 /** Letters, digits, `.`, `-`, `_`, `[`, `]`, `:`. Anything else is not shown. */
@@ -41,6 +42,8 @@ const MODEL_ID = /^[A-Za-z0-9._:[\]-]{1,100}$/;
 const RESULT_LINE = /"type"\s*:\s*"result"/;
 const ASSISTANT_LINE = /"type"\s*:\s*"assistant"/;
 const CHUNK = 1 << 20;
+/** A line longer than this is skipped rather than held in memory. */
+const MAX_LINE = 8 << 20;
 const NEWLINE = 0x0a;
 
 interface Scan {
@@ -116,15 +119,16 @@ function totals(rounds: readonly UsageRound[]): Pick<StepUsage, "usd" | "tokens"
 function scanSession(file: string): Scan | undefined {
   let stat;
   try {
-    stat = statSync(file);
+    stat = lstatSync(file);
   } catch {
     scans.delete(file);
     return undefined;
   }
+  // A symlink or anything else that is not a regular file is not read.
   if (!stat.isFile()) return undefined;
   const hit = scans.get(file);
   if (hit && hit.ino === stat.ino && hit.size === stat.size && hit.mtimeMs === stat.mtimeMs) return hit;
-  const resume = hit && hit.ino === stat.ino && stat.size >= hit.size;
+  const resume = hit && hit.ino === stat.ino && stat.size > hit.size;
   const scan: Scan = resume
     ? { ...hit, rounds: [...hit.rounds], size: stat.size, mtimeMs: stat.mtimeMs }
     : { size: stat.size, mtimeMs: stat.mtimeMs, ino: stat.ino, offset: 0, rounds: [] };
@@ -146,6 +150,7 @@ function readFrom(file: string, scan: Scan, size: number): void {
   try {
     let position = scan.offset;
     let carry = Buffer.alloc(0);
+    let skipping = false;
     while (position < size) {
       const buffer = Buffer.alloc(Math.min(CHUNK, size - position));
       const read = readSync(fd, buffer, 0, buffer.length, position);
@@ -157,9 +162,17 @@ function readFrom(file: string, scan: Scan, size: number): void {
       const end = chunk.lastIndexOf(NEWLINE);
       if (end === -1) {
         carry = chunk;
+        if (carry.length > MAX_LINE) {
+          skipping = true;
+          carry = Buffer.alloc(0);
+        }
         continue;
       }
-      for (const line of chunk.subarray(0, end).toString("utf8").split("\n")) take(line, scan);
+      const lines = chunk.subarray(0, end).toString("utf8").split("\n");
+      // The head of an over-long line was dropped; its tail is not a line.
+      if (skipping) lines.shift();
+      skipping = false;
+      for (const line of lines) take(line, scan);
       carry = Buffer.from(chunk.subarray(end + 1));
     }
     scan.offset = position - carry.length;
