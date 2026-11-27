@@ -21,7 +21,11 @@ import {
   formatDay,
   formatLocal,
   formatRelative,
+  isReviewStep,
   progressSegments,
+  runningPhaseId,
+  startedPhaseIds,
+  stepAgent,
   shortSha,
   stateTone,
   type ActivityRead,
@@ -35,6 +39,7 @@ import {
 import type { ActivityEvent, ActivityFeed } from "./activity.js";
 import { icon, type IconName } from "./icons.js";
 import { renderMarkdown } from "./markdown.js";
+import type { StepRead } from "./step-result.js";
 import { kilnVersion } from "./project.js";
 import type { StatusJobView } from "./report.js";
 import { formatSpend, type SpendSnapshot } from "./rails.js";
@@ -77,6 +82,13 @@ interface BoardClock {
   now?: number;
 }
 
+/** The step page: one step of a job, `/jobs/<id>/steps/<step>`. */
+export interface StepPage {
+  id: string;
+  view: "activity" | "result";
+  result: StepRead;
+}
+
 export interface AppModel {
   css: string;
   section: AppSection;
@@ -89,6 +101,8 @@ export interface AppModel {
   detail?: JobDetail;
   tab?: "overview" | "live" | "changes" | "timeline";
   activity?: ActivityFeed;
+  /** Set on the step page. `section` is still "job". */
+  step?: StepPage;
   triggers?: TriggerRow[];
 }
 
@@ -276,6 +290,9 @@ function mainHtml(model: AppModel, page: ServePageOptions): string {
   }
   if (model.section === "report" && model.report) {
     return `${error}<main class="main">${reportHtml(model.report)}</main>`;
+  }
+  if (model.section === "job" && model.detail && model.step) {
+    return `${error}<main class="main detail">${stepPageHtml(model.detail, model.step, clockOf(page), model.activity)}</main>`;
   }
   if (model.section === "job" && model.detail) {
     return `${error}<main class="main detail">${detailHtml(model.detail, model.tab, page.csrf, clockOf(page), model.activity)}</main>`;
@@ -768,7 +785,7 @@ ${ask}${reason}${launchFixHtml(job)}
 <p class="unseen" data-unseen-for="${escapeHtml(job.jobId)}" hidden></p>
 ${actionsHtml(job, "job", csrf, { gate: !deciding, retry: false })}
 </header>
-${progressRowHtml(job)}
+${progressRowHtml(job, startedPhaseIds(job, feed))}
 <div class="job-body">
 <div class="job-main">
 ${middle}
@@ -780,6 +797,142 @@ ${result}
 ${sideHtml(detail)}
 </div>
 </div>`;
+}
+
+/** `/jobs/<id>/steps/<step>`: the job header, the step list as navigation, and the selected step. */
+function stepPageHtml(detail: JobDetail, step: StepPage, clock: BoardClock, activity?: ActivityFeed): string {
+  const job = detail.job;
+  const feed = activity ?? { running: job.column === "running", cursor: "", events: [], raw: "" };
+  const started = startedPhaseIds(job, feed);
+  const runningId = runningPhaseId(job, feed);
+  const phase = job.phases.find((item) => item.id === step.id);
+  const label = phase?.label ?? job.steps.find((item) => item.id === step.id)?.label ?? step.id;
+  const id = encodeURIComponent(job.jobId);
+  const back = job.inbox ? "/inbox" : "/";
+  const backLabel = job.inbox ? "Inbox" : "Pipeline";
+  const events = feed.events.filter((event) => event.phase === step.id);
+  const open = step.id === runningId;
+  const bits = phase ? stepStateBits(phase, clock, open) : [];
+  const agent = stepAgent(step.id) ?? step.result.stepKind;
+  const who = [agent, step.result.model].filter(Boolean).join(", ");
+  const commands = events.filter((event) => event.kind === "command").length;
+  const files = editedFiles(events);
+  const here = stepHref(job, step.id);
+  const viewLink = (href: string, text: string, current: boolean) => `<a href="${href}"${current ? ` aria-current="page"` : ""}>${text}</a>`;
+  const views = [
+    viewLink(here, "Activity", step.view === "activity"),
+    viewLink(`${here}?view=result`, "Result", step.view === "result"),
+    ...(job.log ? [`<a href="/jobs/${id}/log">Raw log</a>`] : []),
+  ].join("");
+  const body =
+    step.view === "result"
+      ? `<div class="step-result">${stepResultHtml(step.result.result)}</div>`
+      : liveRootHtml("step-live", { running: open && feed.running, cursor: feed.cursor, phase: step.id, pin: true }, liveFeedHtml(label, events));
+  return `<div class="job-page"${activityAttrs(job)}>
+<header class="job-head">
+<a class="back" href="${back}">${backLabel}</a>
+<div class="job-top"><h1><a class="title-link" href="/jobs/${id}">${escapeHtml(job.title)}</a></h1><span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span>${heldChip(job)}</div>
+${jobMetaHtml(job)}
+</header>
+<div class="step-page">
+${stepNavHtml(detail, step.id, started, runningId, clock)}
+<section class="step-view" aria-labelledby="step-title">
+<header class="step-view-head"><h2 id="step-title">${escapeHtml(label)}</h2><span class="meta">${escapeHtml(bits.join(", "))}</span>${who ? `<span class="step-agent">${escapeHtml(who)}</span>` : ""}</header>
+<dl class="step-counts"><div><dt>Commands run</dt><dd>${commands}</dd></div><div><dt>Files edited</dt><dd>${files}</dd></div></dl>
+<nav class="step-views" aria-label="${escapeHtml(label)} views">${views}</nav>
+${body}
+</section>
+</div>
+</div>`;
+}
+
+function elapsed(since: string, clock: BoardClock): string {
+  const ms = (clock.now ?? Date.now()) - Date.parse(since);
+  return Number.isFinite(ms) && ms >= 0 ? formatDuration(ms) : "";
+}
+
+/** Distinct paths the step's Edit and Write events touched. */
+function editedFiles(events: readonly ActivityEvent[]): number {
+  const paths = new Set<string>();
+  for (const event of events) {
+    if (event.kind !== "edit") continue;
+    paths.add(event.summary.replace(/^\S+\s+/, "").replace(/\s+\+\d+\s+-\d+$/, ""));
+  }
+  return paths.size;
+}
+
+function stepNavHtml(detail: JobDetail, selected: string, started: ReadonlySet<string>, runningId: string | undefined, clock: BoardClock): string {
+  const job = detail.job;
+  const row = (mark: StepMark): string => {
+    const phase = job.phases.find((item) => item.id === mark.id);
+    const status = mark.id === runningId ? "running" : mark.status;
+    const glyph =
+      status === "done"
+        ? icon("check", "icon mark")
+        : status === "running"
+          ? `<span class="step-dot" aria-hidden="true"></span>`
+          : `<span class="step-ring" aria-hidden="true"></span>`;
+    const note =
+      status === "failed"
+        ? "failed"
+        : status === "skipped"
+          ? "skipped"
+          : status === "running" && phase?.startedAt
+            ? elapsed(phase.startedAt, clock)
+            : phase?.durationMs !== undefined
+              ? formatDuration(phase.durationMs)
+              : "";
+    const inner = `${glyph}<span class="step-row-name">${escapeHtml(mark.label)}</span><span class="step-row-note">${escapeHtml(note)}</span>`;
+    const cls = `step-row ${stepClass(status)}`;
+    if (!started.has(mark.id)) return `<li><span class="${cls}">${inner}</span></li>`;
+    const current = mark.id === selected ? ` aria-current="page"` : "";
+    return `<li><a class="${cls}" href="${stepHref(job, mark.id)}"${current}>${inner}</a></li>`;
+  };
+  const items: string[] = [];
+  const steps = job.steps;
+  for (let index = 0; index < steps.length; ) {
+    const mark = steps[index] as StepMark;
+    if (!isReviewStep(mark.id)) {
+      items.push(row(mark));
+      index += 1;
+      continue;
+    }
+    const group: string[] = [];
+    while (index < steps.length && isReviewStep(steps[index]?.id ?? "")) {
+      group.push(row(steps[index] as StepMark));
+      index += 1;
+    }
+    items.push(`<li class="step-group"><span class="step-group-label" id="step-group-reviews">Reviews</span><ol class="step-list" aria-labelledby="step-group-reviews">${group.join("")}</ol></li>`);
+  }
+  const id = encodeURIComponent(job.jobId);
+  const count = detail.changes.files?.length ?? 0;
+  return `<nav class="step-nav" aria-label="Steps">
+<ol class="step-list">${items.join("")}</ol>
+<p class="step-nav-foot"><a href="/jobs/${id}#changes">Changes so far, ${count === 1 ? "1 file" : `${count} files`}</a><a href="/jobs/${id}#timeline">Event history</a></p>
+</nav>`;
+}
+
+function stepResultHtml(result: StepRead["result"]): string {
+  const fact = (term: string, value: string) => `<dl class="verdicts"><div><dt>${escapeHtml(term)}</dt><dd>${escapeHtml(value)}</dd></div></dl>`;
+  const prose = (heading: string, text: string) =>
+    `<h3>${escapeHtml(heading)}</h3>${text.trim() ? `<div class="prose">${renderMarkdown(text)}</div>` : `<p class="empty">Empty.</p>`}`;
+  switch (result.kind) {
+    case "spec":
+      return `${prose("Goal", result.goal)}${prose("Design", result.design)}${prose("Acceptance", result.acceptance)}`;
+    case "build":
+      return `${fact("Status", result.status)}${prose("Summary", result.summary)}`;
+    case "verify": {
+      const exit = result.exitCode === null ? "killed, no exit code" : result.exitCode === 0 ? "passed, exit 0" : `failed, exit ${result.exitCode}`;
+      const tail = result.tail ? `<pre class="text">${escapeHtml(result.tail)}</pre>` : `<p class="empty">No output.</p>`;
+      return `${fact("Result", exit)}<h3>Output, last 40 lines</h3>${tail}`;
+    }
+    case "review":
+      return `${fact("Verdict", result.verdict)}${prose("Findings", result.findings)}`;
+    case "approver":
+      return `${fact("Decision", result.decision)}${prose("Reason", result.reason)}`;
+    default:
+      return `<p class="empty">This step has no result to show.</p>`;
+  }
 }
 
 function shortJobId(id: string): string {
@@ -799,17 +952,20 @@ function jobMetaHtml(job: JobView): string {
   return `<div class="job-meta">${bits.join("")}</div>`;
 }
 
-function progressRowHtml(job: JobView): string {
+function progressRowHtml(job: JobView, started: ReadonlySet<string>): string {
   const segments = progressSegments(job);
   if (segments.length === 0) return "";
   const items = segments
     .map((segment) => {
+      // The Reviews segment opens the first review that has started.
+      const target = segment.id === "reviews" ? job.steps.find((step) => isReviewStep(step.id) && started.has(step.id))?.id : started.has(segment.id) ? segment.id : undefined;
+      const name = target ? `<a href="${stepHref(job, target)}">${escapeHtml(segment.label)}</a>` : escapeHtml(segment.label);
       const cls = stepClass(segment.status);
       const current = segment.status === "running" || segment.status === "failed" ? ` aria-current="step"` : "";
       const mark = segment.status === "done" ? icon("check", "icon mark") : "";
       const failed = segment.status === "failed" ? `<span class="prog-note">failed</span>` : "";
       const duration = segment.durationMs !== undefined ? `<span class="prog-note">${escapeHtml(formatDuration(segment.durationMs))}</span>` : "";
-      return `<li class="prog-step ${cls}"${current}><span class="prog-bar" aria-hidden="true"></span><span class="prog-name">${mark}${escapeHtml(segment.label)}</span>${failed}${duration}</li>`;
+      return `<li class="prog-step ${cls}"${current}><span class="prog-bar" aria-hidden="true"></span><span class="prog-name">${mark}${name}</span>${failed}${duration}</li>`;
     })
     .join("");
   return `<section class="job-progress" aria-label="Progress"><ol class="prog">${items}</ol></section>`;
@@ -878,37 +1034,54 @@ ${reason}${klass}${where}${detail}${retry}
 }
 
 function stepSectionsHtml(job: JobView, feed: ActivityFeed, clock: BoardClock): string {
-  // A step has started when its phase.started event is in the log, or when the run wrote output for it.
-  // Open the current step only while a run is live: a job waiting out a retry backoff sits in the running column too.
-  const live = job.state === "running" || job.state === "approved";
-  const running = live && job.column === "running" ? (job.phases.find((phase) => phase.status === "running") ?? job.phases.find((phase) => phase.id === feed.phase)) : undefined;
+  // Open the current step only while a run is live (see runningPhaseId).
+  const openId = runningPhaseId(job, feed);
+  const startedIds = startedPhaseIds(job, feed);
   const firstOutput = (id: string) => feed.events.find((event) => event.phase === id)?.at;
   const startOf = (phase: PhaseView) => {
     const at = Date.parse(phase.startedAt ?? firstOutput(phase.id) ?? "");
-    return Number.isFinite(at) ? at : phase.id === running?.id ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+    return Number.isFinite(at) ? at : phase.id === openId ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
   };
-  const started = job.phases
-    .filter((phase) => phase.startedAt || firstOutput(phase.id) || phase.id === running?.id)
-    .sort((left, right) => startOf(right) - startOf(left));
-  const openId = running?.id;
+  const started = job.phases.filter((phase) => startedIds.has(phase.id)).sort((left, right) => startOf(right) - startOf(left));
   const sections = started.map((phase) => stepSectionHtml(job, phase, feed, clock, phase.id === openId)).join("");
   const body = sections || `<p class="empty">No step has started yet.</p>`;
-  const phaseAttr = openId ? ` data-phase="${escapeHtml(openId)}"` : feed.phase ? ` data-phase="${escapeHtml(feed.phase)}"` : "";
-  const polling = Boolean(openId) && feed.running;
-  return `<div class="step-sections" id="live" data-running="${polling ? "true" : "false"}" data-cursor="${escapeHtml(feed.cursor)}"${phaseAttr}>
+  const phase = openId ?? feed.phase;
+  return liveRootHtml("step-sections", { running: Boolean(openId) && feed.running, cursor: feed.cursor, ...(phase ? { phase } : {}) }, body);
+}
+
+/**
+ * The `#live` wrapper `startLive` in assets/serve.js reads. The job page and the step page both use it.
+ * `pin` keeps the step page on its step: an event from another phase is dropped instead of reloading.
+ */
+function liveRootHtml(cls: string, live: { running: boolean; cursor: string; phase?: string; pin?: boolean }, body: string): string {
+  const phaseAttr = live.phase ? ` data-phase="${escapeHtml(live.phase)}"` : "";
+  const pin = live.pin ? ` data-pin="true"` : "";
+  return `<div class="${cls}" id="live" data-running="${live.running ? "true" : "false"}" data-cursor="${escapeHtml(live.cursor)}"${phaseAttr}${pin}>
 <p class="field-error" id="live-error" role="alert" hidden></p>
 ${body}
 </div>`;
 }
 
-function stepSectionHtml(job: JobView, phase: PhaseView, feed: ActivityFeed, clock: BoardClock, open: boolean): string {
-  const events = feed.events.filter((event) => event.phase === phase.id);
-  const commands = events.filter((event) => event.kind === "command").length;
+/** One step's scrolling, following activity log and its follow bar. The job page's open step and the step page share it. */
+function liveFeedHtml(label: string, events: readonly ActivityEvent[]): string {
+  const items = events.length > 0 ? events.map((event) => eventHtml(event)).join("") : `<li class="empty">No session output yet.</li>`;
+  return `<ol id="live-feed" class="activity" tabindex="0" aria-label="${escapeHtml(label)} activity, scrolls">${items}</ol>
+<div class="follow-bar"><span id="follow-status" role="status">Following the latest line</span><button type="button" class="btn" id="jump-latest">Jump to latest</button><button type="button" class="btn" id="expand-log" aria-pressed="false" aria-controls="live-feed">Expand</button></div>`;
+}
+
+function stepHref(job: JobView, stepId: string): string {
+  return `/jobs/${encodeURIComponent(job.jobId)}/steps/${encodeURIComponent(stepId)}`;
+}
+
+/** Round, then running Nm, done in, failed after, or skipped. */
+function stepStateBits(phase: PhaseView, clock: BoardClock, open: boolean): string[] {
   const bits: string[] = [];
   if (phase.iteration !== undefined) bits.push(`round ${phase.iteration}`);
   if (open && phase.startedAt) {
     const ms = (clock.now ?? Date.now()) - Date.parse(phase.startedAt);
     bits.push(Number.isFinite(ms) && ms >= 0 ? `running ${formatDuration(ms)}` : "running");
+  } else if (open) {
+    bits.push("running");
   } else if (phase.status === "failed") {
     bits.push(phase.durationMs !== undefined ? `failed after ${formatDuration(phase.durationMs)}` : "failed");
   } else if (phase.status === "skipped") {
@@ -916,16 +1089,25 @@ function stepSectionHtml(job: JobView, phase: PhaseView, feed: ActivityFeed, clo
   } else if (phase.durationMs !== undefined) {
     bits.push(`done in ${formatDuration(phase.durationMs)}`);
   }
+  return bits;
+}
+
+function stepSectionHtml(job: JobView, phase: PhaseView, feed: ActivityFeed, clock: BoardClock, open: boolean): string {
+  const events = feed.events.filter((event) => event.phase === phase.id);
+  const commands = events.filter((event) => event.kind === "command").length;
+  const bits = stepStateBits(phase, clock, open && Boolean(phase.startedAt));
   bits.push(commands === 1 ? "1 command" : `${commands} commands`);
   const headId = `step-${escapeHtml(phase.id)}`;
+  // fix-N and other phases outside the workflow's leaf plan have no step page.
+  const title = job.steps.some((step) => step.id === phase.id)
+    ? `<a href="${stepHref(job, phase.id)}">${escapeHtml(phase.label)}</a>`
+    : escapeHtml(phase.label);
   const verdict = phase.verdict ? `<span class="verdict">${escapeHtml(phase.verdict)}</span>` : "";
   const line = `<span class="meta">${escapeHtml(bits.join(", "))}</span>`;
   if (open) {
-    const items = events.length > 0 ? events.map((event) => eventHtml(event)).join("") : `<li class="empty">No session output yet.</li>`;
     return `<section class="step-section open" aria-labelledby="${headId}" data-phase="${escapeHtml(phase.id)}">
-<header class="step-head"><h2 id="${headId}">${escapeHtml(phase.label)}</h2>${line}</header>
-<ol id="live-feed" class="activity" tabindex="0" aria-label="${escapeHtml(phase.label)} activity, scrolls">${items}</ol>
-<div class="follow-bar"><span id="follow-status" role="status">Following the latest line</span><button type="button" class="btn" id="jump-latest">Jump to latest</button><button type="button" class="btn" id="expand-log" aria-pressed="false" aria-controls="live-feed">Expand</button></div>
+<header class="step-head"><h2 id="${headId}">${title}</h2>${line}</header>
+${liveFeedHtml(phase.label, events)}
 </section>`;
   }
   const output = producedLink(job, phase);
@@ -933,7 +1115,7 @@ function stepSectionHtml(job: JobView, phase: PhaseView, feed: ActivityFeed, clo
     ? `<details class="step-activity"><summary>Show activity</summary><ol class="activity">${events.map((event) => eventHtml(event)).join("")}</ol></details>`
     : "";
   return `<section class="step-section" aria-labelledby="${headId}" data-phase="${escapeHtml(phase.id)}">
-<header class="step-head"><h2 id="${headId}">${escapeHtml(phase.label)}</h2>${line}${verdict}${output}</header>
+<header class="step-head"><h2 id="${headId}">${title}</h2>${line}${verdict}${output}</header>
 ${shown}
 </section>`;
 }

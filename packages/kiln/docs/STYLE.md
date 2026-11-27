@@ -108,7 +108,8 @@ State colors (say the word as well as the color):
    done job has none.
 4. One section per started step, newest first. The running step is open and shows its activity. A finished step is
    one line (round, duration, command count, a link to what it produced) and a native "Show activity" disclosure.
-   A step's name and state appear once outside the progress row.
+   A step's name and state appear once outside the progress row. A started step's name, here and in the progress
+   row, links to its step view.
 5. The diff and the event history are disclosures at the end of the main column (`#changes`, `#timeline`).
 6. Side column (`aria-label="Job facts"`): changes so far (file, `+added -removed`, "Open the diff"), what happens
    next, links to the spec, the raw log, and the event history, and a short list of other facts. Under the narrow
@@ -125,6 +126,30 @@ The running step's activity log:
 - Scrolling up stops following ("Paused. Jump to latest to follow."). Only "Jump to latest" turns it back on.
 - "Expand" (`aria-pressed`) removes the max height so the log opens at full height.
 - No smooth scrolling, so `prefers-reduced-motion: reduce` stays still.
+
+### Step view
+
+`/jobs/<id>/steps/<step>` is the job page with one step selected.
+
+- The job header stays: back link, the title as a link back to `/jobs/<id>`, the state chip, and the meta line.
+  The job actions stay on the job page.
+- Below it, two columns. The step list (`.step-nav`, `aria-label="Steps"`) is on the left. The selected step
+  (`.step-view`) fills the right.
+- The step list has every step of the workflow's plan, in order, with the progress row's marks: a check when done,
+  a dot while running, an empty ring otherwise. A done step shows its duration; a failed or skipped step says so in
+  words. The four reviews sit under a "Reviews" label, which is not a link. `revise` and `fix-N` are not listed.
+- A started step (the same rule as the job page's sections) is an `<a href>`. A step that has not started is
+  plain text with no `href`, so it cannot be opened. The selected step has `aria-current="page"`.
+- Under the list: "Changes so far, N files" and "Event history", both links into the job page.
+- The step: its name, then one line (round, then running, done in, failed after, or skipped), and "agent, model" on
+  the right. Two small cards count the commands it ran and the files it edited.
+- Activity, Result, and Raw log are links, not ARIA tabs. The active view has `aria-current="page"`. There is no
+  Prompt view.
+- Activity is the job page's activity log markup and rules (see above), filtered to this step. `data-pin` keeps it
+  on this step: it does not reload when the run moves to the next step.
+- Result shows what the step produced. Verdicts, decisions, and exit codes are words, never color alone. A step with
+  nothing to show says "This step has no result to show."
+- Under the narrow breakpoint the grid is one column and the step list comes first, above the step.
 
 ## Liveness
 

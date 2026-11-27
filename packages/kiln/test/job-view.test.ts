@@ -568,7 +568,7 @@ describe("step list", () => {
       assert.equal(count(html, "Approve"), 0, `${name} Approve`);
       assert.doesNotMatch(html, /Revise/, `${name} Revise`);
     }
-    assert.match(jobHtml, /<h2 id="step-build">Build<\/h2><span class="meta">round 2, /);
+    assert.match(jobHtml, /<h2 id="step-build"><a href="\/jobs\/SAMPLE-1\/steps\/build">Build<\/a><\/h2><span class="meta">round 2, /);
   });
 
   it("leaves a local overlay workflow's loop out of the step list", () => {
@@ -750,8 +750,8 @@ describe("job page", () => {
     assert.match(main, /<ol id="live-feed" class="activity" tabindex="0" aria-label="Build activity, scrolls">/);
     assert.match(main, /id="jump-latest">Jump to latest</);
     assert.match(main, /id="expand-log" aria-pressed="false"/);
-    assert.match(main, /<h2 id="step-build">Build<\/h2><span class="meta">round 2, running 2m, 1 command<\/span>/);
-    assert.match(main, /<h2 id="step-spec">Spec<\/h2><span class="meta">done in 1m, 1 command<\/span><a href="\/jobs\/SAMPLE-1\/spec">Read the spec<\/a>/);
+    assert.match(main, /<h2 id="step-build"><a href="\/jobs\/SAMPLE-1\/steps\/build">Build<\/a><\/h2><span class="meta">round 2, running 2m, 1 command<\/span>/);
+    assert.match(main, /<h2 id="step-spec"><a href="\/jobs\/SAMPLE-1\/steps\/spec">Spec<\/a><\/h2><span class="meta">done in 1m, 1 command<\/span><a href="\/jobs\/SAMPLE-1\/spec">Read the spec<\/a>/);
     assert.match(main, /<details class="step-activity"><summary>Show activity<\/summary>[\s\S]*Ran ls/);
     assert.ok(main.indexOf('id="step-build"') < main.indexOf('id="step-spec"'), "newest step first");
     assert.match(main, /data-running="true" data-cursor="c1" data-phase="build"/);
@@ -762,7 +762,7 @@ describe("job page", () => {
     for (const label of ["Spec", "Build"]) assert.equal(outside.split(`>${label}<`).length - 1, 1, label);
     assert.doesNotMatch(main, /pending/i);
     assert.match(section(main, "Progress"), /class="prog-step upcoming"><span class="prog-bar" aria-hidden="true"><\/span><span class="prog-name">Verify<\/span><\/li>/);
-    assert.match(section(main, "Progress"), /class="prog-step done"><span class="prog-bar" aria-hidden="true"><\/span><span class="prog-name"><svg[^]*?<\/svg>Spec<\/span><span class="prog-note">1m<\/span>/);
+    assert.match(section(main, "Progress"), /class="prog-step done"><span class="prog-bar" aria-hidden="true"><\/span><span class="prog-name"><svg[^]*?<\/svg><a href="\/jobs\/SAMPLE-1\/steps\/spec">Spec<\/a><\/span><span class="prog-note">1m<\/span>/);
 
     const side = sideOf(html);
     assert.match(side, /src\/a\.ts<\/span><span class="mono file-count">\+84 -12</);

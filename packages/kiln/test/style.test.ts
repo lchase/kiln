@@ -357,6 +357,21 @@ describe("job page style", () => {
     assert.doesNotMatch(css, /\.tabs\b/);
   });
 
+  it("puts the step list above the step at narrow width and scrolls the step's log in its own box", () => {
+    assert.match(rules(".step-page"), /grid-template-columns:\s*var\(--step-nav\) minmax\(0, 1fr\)/);
+    assert.match(css.slice(css.indexOf("/* tokens:start */"), css.indexOf("/* tokens:end */")), /--step-nav:/);
+    const narrow = css.slice(css.indexOf("@media (max-width: 960px)"));
+    const block = narrow.slice(0, narrow.indexOf("\n}\n"));
+    assert.match(block, /\.step-page \{ grid-template-columns: 1fr; \}/);
+    // Single column keeps DOM order, and the nav comes first in the markup (see step-page.test.ts). Nothing reorders it.
+    assert.doesNotMatch(css, /\.step-(?:nav|view|page)[^{]*\{[^}]*(?:^|[\s;])order\s*:/m);
+    const box = rules(".step-live .activity");
+    assert.match(box, /overflow-y:\s*auto/);
+    assert.match(box, /max-height:\s*var\(--log-max-height\)/);
+    assert.match(rules(".step-live .activity.expanded"), /max-height:\s*none/);
+    assert.match(rules(".step-row"), /overflow-wrap:\s*anywhere/);
+  });
+
   it("follows new activity in the feed and never scrolls the page", () => {
     const start = script.indexOf("function startLive()");
     assert.ok(start >= 0);
