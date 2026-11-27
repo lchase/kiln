@@ -424,7 +424,9 @@ remote or is an ancestor of the base branch (the pull request base, else the che
 commit found nowhere else stays, and so does a branch a not-yet-launched `--stack` job will be cut from. A failed
 snapshot or `git worktree remove` (a locked worktree, for example) keeps the worktree. Each outcome is recorded once
 in the event log as `worktree.cleaned` or `worktree.kept`, with the reason, the snapshot sha, and whether the
-branch was deleted. Once a branch is gone, the job page says its changes are no longer available locally.
+branch was deleted. A snapshot keeps every untracked, non-ignored file the agent left, so a stray `.env` or
+credentials file can end up in a kept local branch; check snapshot branches before sharing them. Once a branch is
+gone, the job page says its changes are no longer available locally.
 
 ```bash
 npm run kiln -- clean                  # list every worktree, its size, job, state, and what would happen

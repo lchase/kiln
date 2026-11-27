@@ -205,7 +205,8 @@ function deleteBranchIfSafe(checkout: string, entry: WorktreeEntry): "deleted" |
     const result = git(checkout, ["branch", "-r", "--contains", tip]);
     return result.status === 0 && result.stdout.trim().length > 0;
   })();
-  const bases = [entry.base, "HEAD"].filter((value): value is string => Boolean(value));
+  // Delivery base is a branch name from a Kiln-written file; refuse anything git could read as an option.
+  const bases = [entry.base, "HEAD"].filter((value): value is string => typeof value === "string" && value.length > 0 && !value.startsWith("-"));
   const inBase = bases.some((base) => git(checkout, ["merge-base", "--is-ancestor", tip, base]).status === 0);
   if (!onRemote && !inBase) return "kept";
   return git(checkout, ["branch", "-D", `yak/${entry.runId}`]).status === 0 ? "deleted" : "kept";
@@ -238,7 +239,7 @@ export function renderCleanPlan(entries: readonly WorktreeEntry[]): string {
     const sizeText = size === undefined ? "?" : formatKb(size);
     return `${entry.runId}  ${entry.repo}  ${entry.jobId ?? "-"}  ${entry.state ?? "-"}  ${sizeText}  ${entry.action}: ${entry.reason}`;
   });
-  return `${lines.join("\n")}\n`;
+  return `run  repo  job  state  size  action: reason\n${lines.join("\n")}\n`;
 }
 
 function formatKb(kb: number): string {

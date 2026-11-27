@@ -511,6 +511,7 @@ describe("kiln clean", () => {
 
     const listed = cli([]);
     assert.equal(listed.status, 0, listed.stderr);
+    assert.match(listed.stdout, /^run  repo  job  state  size  action: reason$/m);
     assert.match(listed.stdout, new RegExp(`${runId}  web  ${jobId}  done  \\S+  remove: job done`));
     assert.equal(existsSync(tree), true);
     const unknown = cli(["--repo", "nope"]);

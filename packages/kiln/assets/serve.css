@@ -1127,6 +1127,7 @@ body.open .drawer { transform: none; }
   padding: var(--space-2) var(--space-3);
 }
 .field textarea, .intake-form textarea { resize: vertical; min-height: var(--field-min); }
+.field input[type="checkbox"] { align-self: start; }
 .combo { position: relative; display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
 .combo-list {
   list-style: none;
