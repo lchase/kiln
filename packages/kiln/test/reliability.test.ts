@@ -9,6 +9,7 @@ import { loadKilnConfig } from "../src/config.js";
 import { readStatus, runStatus, runTick, startupRecovery } from "../src/driver.js";
 import { readEvents } from "../src/events.js";
 import { defaultHost } from "../src/host.js";
+import { activityLiveness, projectJob } from "../src/job-view.js";
 import { KilnConfigError } from "../src/errors.js";
 import { writeJob } from "../src/jobs.js";
 import { packageRoot } from "../src/paths.js";
@@ -285,6 +286,133 @@ describe("run reliability", () => {
     assert.equal(readStatus(disabled, other).jobs[0]?.state, "running");
     killGroup(tree.parentPid);
     await waitForExit(tree.parent);
+  });
+
+  it("counts a fresh agent session file as activity on the stall clock and the board", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiln-rel-session-"));
+    keep.push(dir);
+    const checkout = join(dir, "web");
+    initRepo(checkout);
+    const stall = 15 * 60_000;
+    const config = load(dir, checkout, { stallTimeoutMs: stall, maxAttempts: 3 });
+    const id = add(config, "Busy agent");
+    const tree = await spawnTree();
+    const runId = "2000-01-01T00-00-00Z-session";
+    // Whole seconds, so mtimes round-trip through utimes without sub-millisecond drift.
+    const now = new Date(Math.floor(Date.now() / 1000) * 1000);
+    const stale = new Date(now.getTime() - 60 * 60_000);
+    journal(checkout, runId, [
+      { t: "run.started", at: stale.toISOString(), runId, tag: `kiln:${id}`, pid: tree.parentPid },
+      { t: "step.started", at: stale.toISOString(), stepId: "build", pid: tree.parentPid },
+    ]);
+    const runDir = join(checkout, ".runs", runId);
+    utimesSync(join(runDir, "journal.jsonl"), stale, stale);
+    mkdirSync(join(runDir, "sessions"), { recursive: true });
+    const session = join(runDir, "sessions", "build.jsonl");
+    writeFileSync(session, "not json {\n");
+    const fresh = new Date(now.getTime() - 60_000);
+    utimesSync(session, fresh, fresh);
+
+    try {
+      const tick = runTick(config, undefined, { startup: true, now });
+      assert.doesNotMatch(tick, new RegExp(`stall ${id}`), tick);
+      assert.equal(isPidAlive(tree.parentPid), true);
+      assert.equal(tree.parent.exitCode, null);
+      assert.equal(readAttemptLedger(config.kilnDir, id), undefined);
+
+      const board = (at: Date) => {
+        const job = readStatus(config, id).jobs[0];
+        assert.ok(job);
+        const view = projectJob(job, []);
+        return {
+          stallActivityAt: view.stallActivityAt,
+          live: activityLiveness({
+            column: view.column,
+            ...(view.stallActivityAt ? { lastActivityAt: view.stallActivityAt } : {}),
+            now: at.getTime(),
+            stallTimeoutMs: stall,
+          }),
+        };
+      };
+      const working = board(now);
+      assert.equal(working.stallActivityAt, fresh.toISOString());
+      assert.equal(working.live.liveness, "working");
+
+      const quietAt = new Date(now.getTime() - 5 * 60_000);
+      utimesSync(session, quietAt, quietAt);
+      const quiet = board(now);
+      assert.equal(quiet.stallActivityAt, quietAt.toISOString());
+      assert.deepEqual(quiet.live, { liveness: "quiet", label: "quiet 5m" });
+
+    } finally {
+      killGroup(tree.parentPid);
+      await waitForExit(tree.parent);
+    }
+  });
+
+  it("stalls a run whose session file is older than the stall timeout", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiln-rel-session-stale-"));
+    keep.push(dir);
+    const checkout = join(dir, "web");
+    initRepo(checkout);
+    const stall = 15 * 60_000;
+    const config = load(dir, checkout, { stallTimeoutMs: stall, maxAttempts: 3 });
+    const id = add(config, "Silent agent");
+    const tree = await spawnTree();
+    const runId = "2000-01-01T00-00-00Z-session-stale";
+    const now = new Date();
+    const stale = new Date(now.getTime() - 60 * 60_000);
+    journal(checkout, runId, [
+      { t: "run.started", at: stale.toISOString(), runId, tag: `kiln:${id}`, pid: tree.parentPid },
+      { t: "step.started", at: stale.toISOString(), stepId: "build", pid: tree.parentPid },
+    ]);
+    const runDir = join(checkout, ".runs", runId);
+    utimesSync(join(runDir, "journal.jsonl"), stale, stale);
+    mkdirSync(join(runDir, "sessions"), { recursive: true });
+    const session = join(runDir, "sessions", "build.jsonl");
+    writeFileSync(session, "not json {\n");
+    const old = new Date(now.getTime() - stall - 60_000);
+    utimesSync(session, old, old);
+
+    try {
+      const tick = runTick(config, undefined, { startup: true, now });
+      assert.match(tick, new RegExp(`stall ${id}  stalled  attempt 1`), tick);
+    } finally {
+      killGroup(tree.parentPid);
+      await waitForExit(tree.parent);
+    }
+  });
+
+  it("does not stall on stale session output when stall detection is disabled", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiln-rel-session-off-"));
+    keep.push(dir);
+    const checkout = join(dir, "web");
+    initRepo(checkout);
+    const config = load(dir, checkout, { stallTimeoutMs: 0 });
+    const id = add(config, "Disabled with a session");
+    const tree = await spawnTree();
+    const runId = "2000-01-01T00-00-00Z-session-off";
+    const now = new Date();
+    const stale = new Date(now.getTime() - 60 * 60_000);
+    journal(checkout, runId, [
+      { t: "run.started", at: stale.toISOString(), runId, tag: `kiln:${id}`, pid: tree.parentPid },
+    ]);
+    const runDir = join(checkout, ".runs", runId);
+    utimesSync(join(runDir, "journal.jsonl"), stale, stale);
+    mkdirSync(join(runDir, "sessions"), { recursive: true });
+    const session = join(runDir, "sessions", "build.jsonl");
+    writeFileSync(session, "not json {\n");
+    utimesSync(session, stale, stale);
+
+    try {
+      const tick = runTick(config, undefined, { startup: true, now });
+      assert.doesNotMatch(tick, new RegExp(`stall ${id}`), tick);
+      assert.equal(readAttemptLedger(config.kilnDir, id), undefined);
+      assert.equal(tree.parent.exitCode, null);
+    } finally {
+      killGroup(tree.parentPid);
+      await waitForExit(tree.parent);
+    }
   });
 
   it("marks an orphan at startup, cleans only safe worktrees, and a second pass does not retry twice", () => {
