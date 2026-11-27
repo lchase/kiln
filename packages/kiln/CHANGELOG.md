@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.21.1](https://github.com/lchase/kiln/compare/kiln-v0.21.0...kiln-v0.21.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* stop agent steps from loading the operator's user Claude setup ([#98](https://github.com/lchase/kiln/issues/98)) ([a10c81f](https://github.com/lchase/kiln/commit/a10c81ff4f39fdedac173d9bd0e5b860b929e727))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @lchase/yak bumped from 0.10.1 to 0.10.2
+
 ## [0.21.0](https://github.com/lchase/kiln/compare/kiln-v0.20.1...kiln-v0.21.0) (2026-11-27)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.2](https://github.com/lchase/kiln/compare/yak-v0.10.1...yak-v0.10.2) (2026-11-27)
+
+
+### Bug Fixes
+
+* stop agent steps from loading the operator's user Claude setup ([#98](https://github.com/lchase/kiln/issues/98)) ([a10c81f](https://github.com/lchase/kiln/commit/a10c81ff4f39fdedac173d9bd0e5b860b929e727))
+
 ## [0.10.1](https://github.com/lchase/kiln/compare/yak-v0.10.0...yak-v0.10.1) (2026-11-26)
 
 
