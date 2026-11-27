@@ -16,6 +16,25 @@ import { join } from "node:path";
 
 const FP = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
 
+describe("newest note", () => {
+  it("carries the newest note for a running job and omits it otherwise", () => {
+    const note = { latestNote: "Tests pass. The token [redacted] is not needed.", latestNoteAt: "2026-11-26T21:40:11.000Z" };
+    const running = projectJob(job({ jobId: "WEB-1", state: "running", ...note }), []);
+    assert.equal(running.column, "running");
+    assert.equal(running.latestNote, note.latestNote);
+    assert.equal(running.latestNoteAt, note.latestNoteAt);
+
+    const silent = projectJob(job({ jobId: "WEB-2", state: "running" }), []);
+    assert.equal("latestNote" in silent, false);
+    assert.equal("latestNoteAt" in silent, false);
+
+    const done = projectJob(job({ jobId: "WEB-3", state: "done", ...note }), []);
+    assert.notEqual(done.column, "running");
+    assert.equal("latestNote" in done, false);
+    assert.equal("latestNoteAt" in done, false);
+  });
+});
+
 function job(overrides: Partial<StatusJobView> & Pick<StatusJobView, "jobId" | "state">): StatusJobView {
   return {
     title: overrides.jobId,
