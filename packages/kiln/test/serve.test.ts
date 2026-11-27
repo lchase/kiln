@@ -730,9 +730,18 @@ describe("kiln serve", () => {
       assert.match(repos.body, new RegExp(`Waiting on ${upstream} \\(needs-human\\)`));
       const detail = await text(`${server.url}/jobs/${upstream}`);
       assert.equal(detail.status, 200);
-      assert.match(detail.body, /Overview/);
-      assert.match(detail.body, /Timeline/);
+      assert.doesNotMatch(detail.body, /class="tabs"/);
+      assert.match(detail.body, /aria-label="Progress"/);
+      assert.match(detail.body, /aria-label="Job facts"/);
       assert.match(detail.body, /Show the weekly summary/);
+      for (const tab of ["live", "changes", "timeline"]) {
+        const linked = await text(`${server.url}/jobs/${upstream}?tab=${tab}`);
+        assert.equal(linked.status, 200, tab);
+        assert.match(linked.body, new RegExp(`data-target="${tab}"`));
+        assert.match(linked.body, new RegExp(`id="${tab}"`));
+        if (tab !== "live") assert.match(linked.body, new RegExp(`<details class="job-more" id="${tab}" open>`));
+      }
+      assert.equal((await text(`${server.url}/jobs/${upstream}?tab=bogus`)).status, 400);
 
       const listed = JSON.parse((await text(`${server.url}/api/jobs`)).body) as {
         jobs: { jobId: string; state: string; dependsOn: { jobId: string; state: string }[]; stack: boolean }[];

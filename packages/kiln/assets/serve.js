@@ -2503,6 +2503,11 @@
   startLive();
 
   function startLive() {
+    var targetRoot = document.querySelector ? document.querySelector("[data-target]") : null;
+    if (targetRoot && !location.hash) {
+      var target = targetRoot.getAttribute("data-target") || "";
+      if (target && document.getElementById(target)) location.replace("#" + target);
+    }
     var root = document.getElementById("live");
     var feed = document.getElementById("live-feed");
     if (!root || !feed) return;
@@ -2510,35 +2515,54 @@
     if (!jobId) return;
     var cursor = root.getAttribute("data-cursor") || "";
     var running = root.getAttribute("data-running") === "true";
+    var phase = root.getAttribute("data-phase") || "";
     var stick = running;
     var ignoreScroll = true;
+    var reloading = false;
     var timer = 0;
-    var note = document.getElementById("live-note");
-    var raw = document.getElementById("live-raw");
-    var toggle = document.getElementById("live-raw-toggle");
     var error = document.getElementById("live-error");
-    var phases = {
-      spec: "Spec", build: "Build", verify: "Verify", security: "Security", ux: "UX", ui: "UI",
-      code: "Code", approver: "Approve", approve: "Approve", land: "Land", explore: "Explore",
-      draft: "Draft", fix: "Fix",
-    };
+    var followStatus = document.getElementById("follow-status");
+    var jump = document.getElementById("jump-latest");
+    var expand = document.getElementById("expand-log");
+    var nowNote = document.getElementById("now-note");
+    var nowCommand = document.getElementById("now-command");
 
-    function phaseLabel(id) {
-      if (phases[id]) return phases[id];
-      return String(id || "Phase").replace(/[-_]/g, " ").replace(/\b\w/g, function (ch) { return ch.toUpperCase(); });
+    function showFollow() {
+      if (followStatus) followStatus.textContent = stick ? "Following the latest line" : "Paused. Jump to latest to follow.";
     }
 
+    // Scrolls the activity list only. The page stays where the operator left it.
     function follow() {
       if (!stick) return;
-      var el = document.scrollingElement || document.documentElement;
-      el.scrollTop = el.scrollHeight;
+      ignoreScroll = true;
+      feed.scrollTop = feed.scrollHeight;
+      requestAnimationFrame(function () { ignoreScroll = false; });
     }
 
-    window.addEventListener("scroll", function () {
-      if (ignoreScroll) return;
-      var el = document.scrollingElement || document.documentElement;
-      stick = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+    feed.addEventListener("scroll", function () {
+      if (ignoreScroll || !stick) return;
+      if (feed.scrollHeight - feed.scrollTop - feed.clientHeight > 48) {
+        stick = false;
+        showFollow();
+      }
     });
+
+    if (jump) {
+      jump.addEventListener("click", function () {
+        stick = true;
+        showFollow();
+        follow();
+      });
+    }
+
+    if (expand) {
+      expand.addEventListener("click", function () {
+        var on = expand.getAttribute("aria-pressed") !== "true";
+        expand.setAttribute("aria-pressed", on ? "true" : "false");
+        feed.classList.toggle("expanded", on);
+        follow();
+      });
+    }
 
     feed.addEventListener("click", function (event) {
       var button = event.target && event.target.closest ? event.target.closest("button.live-summary") : null;
@@ -2547,16 +2571,6 @@
       button.setAttribute("aria-expanded", open ? "false" : "true");
       button.textContent = open ? button.getAttribute("data-summary") || "" : button.getAttribute("data-detail") || "";
     });
-
-    if (toggle && raw) {
-      toggle.addEventListener("click", function () {
-        var on = toggle.getAttribute("aria-pressed") !== "true";
-        toggle.setAttribute("aria-pressed", on ? "true" : "false");
-        raw.hidden = !on;
-        feed.hidden = on;
-        if (on && stick) follow();
-      });
-    }
 
     function timeEl(iso, mode) {
       var node = document.createElement("time");
@@ -2591,7 +2605,28 @@
       return li;
     }
 
+    function showNow(event) {
+      if (nowNote && (event.role === "note" || event.kind === "message")) {
+        nowNote.textContent = event.summary;
+        nowNote.hidden = false;
+      }
+      if (nowCommand && event.kind === "command") {
+        // Same strip as commandText in src/serve-page.ts; change both together.
+        nowCommand.textContent = event.summary.replace(/^Ran\s+/, "");
+        nowCommand.hidden = false;
+      }
+    }
+
     function place(event) {
+      if (phase && event.phase && event.phase !== phase) {
+        // A new step started: reload so its section opens. The page scroll is kept by the browser.
+        if (!reloading && !actionPending) {
+          reloading = true;
+          location.reload();
+        }
+        return;
+      }
+      showNow(event);
       var empty = feed.querySelector(".empty");
       if (empty) empty.remove();
       if (event.kind === "command" || event.kind === "edit") {
@@ -2606,23 +2641,7 @@
           break;
         }
       }
-      var blocks = feed.querySelectorAll(".live-phase");
-      var block = blocks.length ? blocks[blocks.length - 1] : null;
-      if (!block || block.getAttribute("data-phase") !== event.phase) {
-        block = document.createElement("section");
-        block.className = "live-phase";
-        block.setAttribute("data-phase", event.phase);
-        var heading = document.createElement("h3");
-        heading.appendChild(document.createTextNode(phaseLabel(event.phase) + " "));
-        heading.appendChild(timeEl(event.at, "date"));
-        var list = document.createElement("ol");
-        list.className = "live-events";
-        block.appendChild(heading);
-        block.appendChild(list);
-        feed.appendChild(block);
-      }
-      var listNode = block.querySelector(".live-events");
-      if (listNode) listNode.appendChild(renderEvent(event));
+      feed.appendChild(renderEvent(event));
     }
 
     function apply(data) {
@@ -2638,14 +2657,8 @@
         cursor = data.cursor;
         root.setAttribute("data-cursor", cursor);
       }
-      if (raw && typeof data.raw === "string") raw.textContent = data.raw;
       running = data.running === true;
       root.setAttribute("data-running", running ? "true" : "false");
-      if (note) {
-        if (running && data.phase) note.textContent = "Watching " + phaseLabel(data.phase);
-        else if (running) note.textContent = "Watching this run";
-        else note.textContent = "Last session";
-      }
       follow();
       if (!running && timer) {
         clearInterval(timer);
@@ -2672,11 +2685,9 @@
         });
     }
 
+    showFollow();
     if (running) {
-      requestAnimationFrame(function () {
-        follow();
-        requestAnimationFrame(function () { ignoreScroll = false; });
-      });
+      requestAnimationFrame(follow);
       pull();
       timer = setInterval(pull, 2000);
       document.addEventListener("visibilitychange", function () {

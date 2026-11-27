@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildAttention } from "../src/attention.js";
-import { QUIET_AFTER_MS, activityLiveness, projectJob, type PipelineColumn } from "../src/job-view.js";
+import { QUIET_AFTER_MS, activityLiveness, progressSegments, projectJob, type PipelineColumn } from "../src/job-view.js";
+import type { ActivityFeed } from "../src/activity.js";
 import { buildBoard, jobDetail } from "../src/board-view.js";
 import { renderApp } from "../src/serve-page.js";
 import { renderMarkdown } from "../src/markdown.js";
@@ -419,17 +420,17 @@ describe("activity liveness", () => {
     assert.match(html, /class="chip"/);
 
     const detail = jobDetail({ job: working, events: [], maxFixRounds: 2 });
-    const jobHtml = renderApp({ css: "", section: "job", board, attention, page, detail, tab: "overview" });
-    const stepper = jobHtml.slice(jobHtml.indexOf('class="steps steps-full"'), jobHtml.indexOf("</ol>"));
-    assert.match(stepper, /Spec/);
-    assert.match(stepper, /aria-current="step"[\s\S]*Build/);
-    assert.match(stepper, /Verify/);
-    assert.match(stepper, /Land/);
+    const jobHtml = renderApp({ css: "", section: "job", board, attention, page, detail });
+    const progress = jobHtml.slice(jobHtml.indexOf('aria-label="Progress"'), jobHtml.indexOf("</section>", jobHtml.indexOf('aria-label="Progress"')));
+    assert.match(progress, /Spec/);
+    assert.match(progress, /aria-current="step"[\s\S]*Build/);
+    assert.match(progress, /Verify/);
+    assert.match(progress, /Land/);
     assert.match(jobHtml, /class="liveness working"/);
     assert.match(jobHtml, /class="text-btn" href="\/jobs\/WEB-118\/spec"/);
     assert.match(jobHtml, /class="text-btn" href="\/jobs\/WEB-118\/log"/);
-    assert.match(jobHtml, />Spec</);
-    assert.match(jobHtml, />Log</);
+    assert.match(jobHtml, /<span>Spec<\/span>/);
+    assert.match(jobHtml, /<span>Raw log<\/span>/);
     assert.doesNotMatch(jobHtml, />spec</);
   });
 });
@@ -556,11 +557,10 @@ describe("step list", () => {
     const pipeline = renderApp({ css: "", section: "pipeline", board, attention, page });
     const card = pipeline.slice(pipeline.indexOf('id="job-SAMPLE-1"'), pipeline.indexOf("</article>", pipeline.indexOf('id="job-SAMPLE-1"')));
     const detail = jobDetail({ job: featured, events, maxFixRounds: 2 });
-    const jobHtml = renderApp({ css: "", section: "job", board, attention, page, detail, tab: "overview" });
+    const jobHtml = renderApp({ css: "", section: "job", board, attention, page, detail });
     const lists = {
       card: between(card, 'class="steps"'),
-      page: between(jobHtml, 'class="steps steps-full"'),
-      overview: between(jobHtml, 'class="phases"'),
+      page: between(jobHtml, 'class="prog"'),
     };
     for (const [name, html] of Object.entries(lists)) {
       assert.equal(count(html, "Approver"), 1, `${name} Approver`);
@@ -568,7 +568,7 @@ describe("step list", () => {
       assert.equal(count(html, "Approve"), 0, `${name} Approve`);
       assert.doesNotMatch(html, /Revise/, `${name} Revise`);
     }
-    assert.match(lists.overview, /Build<\/span> <span class="meta">#2<\/span>/);
+    assert.match(jobHtml, /<h2 id="step-build">Build<\/h2><span class="meta">round 2, /);
   });
 
   it("leaves a local overlay workflow's loop out of the step list", () => {
@@ -615,5 +615,243 @@ describe("step list", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("progress segments", () => {
+  const steps = (marks: [string, "done" | "current" | "failed" | "pending"][]) => marks.map(([id, phase]) => ({ id, phase }));
+  const timed = (step: string, minutes: number): KilnEvent[] => [
+    event({ id: `${step}-s`, event: "phase.started", step, properties: {}, ts: "2026-11-09T04:00:00.000Z" }),
+    event({
+      id: `${step}-f`,
+      event: "phase.finished",
+      step,
+      properties: { outcome: "completed" },
+      ts: new Date(Date.parse("2026-11-09T04:00:00.000Z") + minutes * 60_000).toISOString(),
+    }),
+  ];
+
+  it("folds security, ux, ui, and code into one Reviews segment", () => {
+    const plan = workflowStepPlan("feature");
+    const view = projectJob(featureJob("verify"), []);
+    const segments = progressSegments(view);
+    assert.deepEqual(
+      segments.map((segment) => segment.label),
+      ["Spec", "Build", "Verify", "Reviews", "Approver", "Your decision", "Land"],
+    );
+    assert.equal(segments.find((segment) => segment.id === "reviews")?.status, "pending");
+    assert.ok(plan.includes("security"));
+
+    const fold = (marks: ("done" | "current" | "failed" | "pending")[]) =>
+      progressSegments(
+        projectJob(
+          job({
+            jobId: "SAMPLE-1",
+            state: "running",
+            steps: steps([
+              ["security", marks[0] ?? "pending"],
+              ["ux", marks[1] ?? "pending"],
+              ["ui", marks[2] ?? "pending"],
+              ["code", marks[3] ?? "pending"],
+            ]),
+          }),
+          [],
+        ),
+      );
+    assert.equal(fold(["done", "failed", "current", "pending"])[0]?.status, "failed");
+    assert.equal(fold(["done", "current", "pending", "pending"])[0]?.status, "running");
+    assert.equal(fold(["done", "done", "done", "done"])[0]?.status, "done");
+    assert.equal(fold(["done", "done", "pending", "pending"])[0]?.status, "pending");
+    assert.equal(fold(["done", "done", "done", "done"]).length, 1);
+  });
+
+  it("sets a duration only once a segment is done or failed", () => {
+    const events = [...timed("spec", 1), ...timed("security", 2), ...timed("ux", 3), ...timed("build", 4)];
+    const view = projectJob(
+      job({
+        jobId: "SAMPLE-1",
+        state: "running",
+        steps: steps([
+          ["spec", "done"],
+          ["build", "current"],
+          ["security", "done"],
+          ["ux", "done"],
+          ["ui", "done"],
+          ["code", "done"],
+          ["land", "failed"],
+          ["after", "pending"],
+        ]),
+      }),
+      events,
+    );
+    const byId = new Map(progressSegments(view).map((segment) => [segment.id, segment]));
+    assert.equal(byId.get("spec")?.durationMs, 60_000);
+    assert.equal(byId.get("build")?.status, "running");
+    assert.equal(byId.get("build")?.durationMs, undefined);
+    assert.equal(byId.get("reviews")?.status, "done");
+    assert.equal(byId.get("reviews")?.durationMs, 5 * 60_000);
+    assert.equal(byId.get("land")?.status, "failed");
+    assert.equal(byId.get("land")?.durationMs, undefined);
+    assert.equal(byId.get("after")?.durationMs, undefined);
+  });
+});
+
+describe("job page", () => {
+  const page = { csrf: "token", repos: [{ name: "web", path: "/repos/web" }], workflows: ["feature"], now: Date.parse("2026-11-09T04:12:00.000Z") };
+  const render = (status: StatusJobView, events: KilnEvent[], activity?: ActivityFeed, extra: Partial<Parameters<typeof jobDetail>[0]> = {}) => {
+    const detail = jobDetail({ job: status, events, maxFixRounds: 2, ...extra });
+    return renderApp({
+      css: "",
+      section: "job",
+      board: buildBoard([status], events),
+      attention: buildAttention([status]),
+      page,
+      detail,
+      ...(activity ? { activity } : {}),
+    });
+  };
+  const section = (html: string, label: string) => {
+    const at = html.indexOf(`aria-label="${label}"`);
+    assert.ok(at >= 0, `missing ${label}`);
+    return html.slice(at, html.indexOf("</section>", at));
+  };
+  const sideOf = (html: string) => html.slice(html.indexOf('aria-label="Job facts"'), html.indexOf("</aside>", html.indexOf('aria-label="Job facts"')));
+  const mainOf = (html: string) => html.slice(html.indexOf('<main class="main detail">'), html.indexOf("</main>"));
+  const loopFeed: ActivityFeed = {
+    running: true,
+    phase: "build",
+    cursor: "c1",
+    raw: "",
+    events: [
+      { at: "2026-11-09T04:00:10.000Z", phase: "spec", kind: "command", role: "action", summary: "Ran ls" },
+      { at: "2026-11-09T04:10:05.000Z", phase: "build", kind: "message", role: "note", summary: "Reading the helper." },
+      { at: "2026-11-09T04:10:20.000Z", phase: "build", kind: "command", role: "action", summary: "Ran npm test" },
+    ],
+  };
+
+  it("reads top to bottom for a running job, with no tabs and the current step open", () => {
+    const status = { ...featureJob("build"), specPath: "/k/spec.md", logPath: "/k/log.txt", attemptCount: 1, maxAttempts: 5, startedAt: "2026-11-09T04:00:00.000Z" };
+    const html = render(status, loopEvents(), loopFeed, { diffFiles: [{ path: "src/a.ts", added: 84, removed: 12 }], diffStat: "1 file changed" });
+    const main = mainOf(html);
+    assert.doesNotMatch(main, /class="tabs"/);
+    assert.doesNotMatch(main, /progress-meta|step-now/);
+    assert.match(main, /aria-label="Progress"/);
+    assert.match(main, /class="step-section open"/);
+    assert.match(main, /aria-label="Now"/);
+    assert.match(main, /aria-label="Job facts"/);
+    assert.match(main, /attempt 1 of 5/);
+    assert.match(main, /started <time/);
+
+    const now = section(main, "Now");
+    assert.match(now, /Now, in Build/);
+    assert.match(now, /<code class="now-command" id="now-command">npm test<\/code>/);
+    assert.match(now, /id="now-note"/);
+
+    assert.match(main, /<ol id="live-feed" class="activity" tabindex="0" aria-label="Build activity, scrolls">/);
+    assert.match(main, /id="jump-latest">Jump to latest</);
+    assert.match(main, /id="expand-log" aria-pressed="false"/);
+    assert.match(main, /<h2 id="step-build">Build<\/h2><span class="meta">round 2, running 2m, 1 command<\/span>/);
+    assert.match(main, /<h2 id="step-spec">Spec<\/h2><span class="meta">done in 1m, 1 command<\/span><a href="\/jobs\/SAMPLE-1\/spec">Read the spec<\/a>/);
+    assert.match(main, /<details class="step-activity"><summary>Show activity<\/summary>[\s\S]*Ran ls/);
+    assert.ok(main.indexOf('id="step-build"') < main.indexOf('id="step-spec"'), "newest step first");
+    assert.match(main, /data-running="true" data-cursor="c1" data-phase="build"/);
+
+    const progressAt = main.indexOf('aria-label="Progress"');
+    // The side column's "Spec" is the spec file link, not the step.
+    const outside = main.slice(0, progressAt) + main.slice(main.indexOf("</section>", progressAt), main.indexOf('aria-label="Job facts"'));
+    for (const label of ["Spec", "Build"]) assert.equal(outside.split(`>${label}<`).length - 1, 1, label);
+    assert.doesNotMatch(main, /pending/i);
+    assert.match(section(main, "Progress"), /class="prog-step upcoming"><span class="prog-bar" aria-hidden="true"><\/span><span class="prog-name">Verify<\/span><\/li>/);
+    assert.match(section(main, "Progress"), /class="prog-step done"><span class="prog-bar" aria-hidden="true"><\/span><span class="prog-name"><svg[^]*?<\/svg>Spec<\/span><span class="prog-note">1m<\/span>/);
+
+    const side = sideOf(html);
+    assert.match(side, /src\/a\.ts<\/span><span class="mono file-count">\+84 -12</);
+    assert.match(side, /href="#changes">Open the diff</);
+    assert.match(side, /href="\/jobs\/SAMPLE-1\/spec"/);
+    assert.match(side, /href="\/jobs\/SAMPLE-1\/log"/);
+    assert.match(side, /href="#timeline"/);
+    assert.match(side, /Verify, then Reviews, then Approver, then Your decision, then Land\./);
+    assert.match(main, /<details class="job-more" id="changes">/);
+    assert.match(main, /<details class="job-more" id="timeline">/);
+    assert.match(main, /action="\/api\/jobs\/SAMPLE-1\/cancel"/);
+    assert.doesNotMatch(main, /\/approve"|\/reject"|\/revise"|\/retry"/);
+  });
+
+  it("says No changes yet without a diff", () => {
+    const html = render(featureJob("build"), loopEvents(), loopFeed);
+    assert.match(sideOf(html), /No changes yet\./);
+  });
+
+  it("shows the decision with verdicts and the three gate actions for a needs-you job", () => {
+    const status = { ...featureJob("approve"), state: "needs-human" as const, canApprove: true, canReject: true, canRevise: true };
+    const verdict = (step: string, text: string) =>
+      event({ id: `${step}-v`, event: "phase.finished", step, properties: { outcome: "completed", verdict: text } });
+    const events = [
+      ...loopEvents(),
+      verdict("security", "No must-fix findings"),
+      verdict("ux", "Pass"),
+      verdict("ui", "Pass with nits"),
+      verdict("code", "Pass"),
+      verdict("approver", "APPROVE"),
+    ];
+    const html = render(status, events, { ...loopFeed, running: false });
+    const main = mainOf(html);
+    assert.doesNotMatch(main, /aria-label="Now"/);
+    const decision = main.slice(main.indexOf('aria-label="Your decision"'), main.indexOf("</section>", main.indexOf('aria-label="Your decision"')));
+    for (const [label, text] of [
+      ["Approver", "APPROVE"],
+      ["Security", "No must-fix findings"],
+      ["UX", "Pass"],
+      ["UI", "Pass with nits"],
+      ["Code", "Pass"],
+    ]) {
+      assert.match(decision, new RegExp(`<dt>${label}</dt><dd>${text}</dd>`));
+    }
+    for (const action of ["approve", "reject", "revise"]) {
+      assert.match(decision, new RegExp(`<form method="post" action="/api/jobs/SAMPLE-1/${action}" class="act ${action}"><input type="hidden" name="csrf" value="token">`));
+      assert.equal(main.split(`action="/api/jobs/SAMPLE-1/${action}"`).length - 1, 1, action);
+    }
+    assert.match(decision, /<input name="note" type="text" required/);
+    assert.doesNotMatch(main, /id="live-feed"/);
+  });
+
+  it("shows the failure and Retry for a failed job", () => {
+    const status = { ...featureJob("build"), state: "failed" as const, steps: featureJob("build").steps.map((step) => (step.id === "build" ? { ...step, phase: "failed" as const } : step)) };
+    const events = [
+      event({ id: "b1", event: "phase.started", step: "build", properties: {}, ts: "2026-11-09T04:01:00.000Z" }),
+      event({ id: "b2", event: "phase.finished", step: "build", properties: { outcome: "failed", detail: "npm test exited 1" }, ts: "2026-11-09T04:03:00.000Z" }),
+      event({ id: "f1", event: "run.failed", properties: { class: "deterministic", fingerprint: FP, detail: "npm test exited 1" } }),
+    ];
+    const main = mainOf(render(status, events));
+    assert.doesNotMatch(main, /aria-label="Now"/);
+    const failure = section(main, "What went wrong");
+    assert.match(failure, /deterministic · abcdef123456/);
+    assert.match(failure, /Failed in Build/);
+    assert.match(failure, /npm test exited 1/);
+    assert.match(failure, /<form method="post" action="\/api\/jobs\/SAMPLE-1\/retry" class="act retry"><input type="hidden" name="csrf" value="token">/);
+    assert.equal(main.split('action="/api/jobs/SAMPLE-1/retry"').length - 1, 1);
+    assert.match(main, /Remove job/);
+  });
+
+  it("shows no middle card and no gate or retry actions for a done job", () => {
+    const plan = workflowStepPlan("feature");
+    const status = job({ jobId: "SAMPLE-1", state: "done", steps: plan.map((id) => ({ id, phase: "done" as const })) });
+    const main = mainOf(render(status, loopEvents()));
+    assert.doesNotMatch(main, /aria-label="Now"|aria-label="Your decision"|aria-label="What went wrong"/);
+    assert.doesNotMatch(main, /\/approve"|\/reject"|\/revise"|\/retry"/);
+    assert.doesNotMatch(main, /Stop job/);
+    assert.match(main, /action="\/api\/jobs\/SAMPLE-1\/remove"/);
+    assert.doesNotMatch(main, /class="step-section open"/);
+    assert.match(sideOf(main), /Nothing\. This job is finished\./);
+  });
+
+  it("keeps Run next, Hold, Release, Stop job, and Remove job for a queued job", () => {
+    const queued = job({ jobId: "SAMPLE-1", state: "queued", queuePosition: 2 });
+    const main = mainOf(render(queued, []));
+    for (const action of ["next", "hold", "cancel", "remove"]) {
+      assert.match(main, new RegExp(`action="/api/jobs/SAMPLE-1/${action}"`), action);
+    }
+    const held = mainOf(render({ ...queued, held: true }, []));
+    assert.match(held, /action="\/api\/jobs\/SAMPLE-1\/release"/);
   });
 });

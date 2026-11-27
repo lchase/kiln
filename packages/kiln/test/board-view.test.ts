@@ -12,10 +12,12 @@ import {
   isHand,
   isInbox,
   jobDetail,
+  parseNumstat,
   parseSeenQuery,
   parseStatsWindow,
   phaseFeed,
   readBranchCommits,
+  readDiffFiles,
   statsFor,
   unseenChanges,
 } from "../src/board-view.js";
@@ -390,6 +392,28 @@ describe("commit trailers", () => {
     assert.equal(commits[0]?.round, 2);
     assert.equal(commits[0]?.subject, "kiln: Show the summary");
     assert.equal(readBranchCommits(dir, "missing-branch").length, 0);
+  });
+});
+
+describe("per-file diff counts", () => {
+  it("parses numstat, counts a binary file as 0, and reads a fixture repo", () => {
+    assert.deepEqual(parseNumstat("84\t12\tsrc/reliability.ts\n-\t-\tlogo.png\n\nnot a line\n"), [
+      { path: "src/reliability.ts", added: 84, removed: 12 },
+      { path: "logo.png", added: 0, removed: 0 },
+    ]);
+    const dir = remember(mkdtempSync(join(tmpdir(), "kiln-numstat-")));
+    git(dir, ["init", "-q", "-b", "main"]);
+    git(dir, ["config", "user.email", "kiln-test@example.com"]);
+    git(dir, ["config", "user.name", "Kiln Test"]);
+    writeFileSync(join(dir, "readme.md"), "one\ntwo\n");
+    git(dir, ["add", "readme.md"]);
+    git(dir, ["commit", "-q", "-m", "initial"]);
+    git(dir, ["checkout", "-q", "-b", "feature"]);
+    writeFileSync(join(dir, "readme.md"), "one\nthree\nfour\n");
+    git(dir, ["commit", "-q", "-am", "change"]);
+    assert.deepEqual(readDiffFiles(dir, "main", "feature"), [{ path: "readme.md", added: 2, removed: 1 }]);
+    assert.equal(readDiffFiles(dir, "main", "--output=/tmp/x"), undefined);
+    assert.equal(readDiffFiles(dir, "main", "missing"), undefined);
   });
 });
 
