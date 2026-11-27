@@ -295,7 +295,7 @@ describe("job view", () => {
       section: "hand",
     });
     assert.match(html, /Blocked: web has no test command/);
-    assert.match(html, /href="\/settings\?repo=web&amp;field=test"/);
+    assert.match(html, /href="\/settings\/repos\?repo=web&amp;field=test"/);
     assert.match(html, /Edit web in Settings/);
     assert.match(html, /id="intake-warn"/);
     assert.match(html, /data-workflow="feature"[^>]*data-needs-test="true"/);

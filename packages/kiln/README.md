@@ -340,7 +340,12 @@ Two triggers are built in. `review-requests` is a schedule, cron `0 * * * *` (mi
 }
 ```
 
-`every` defaults to `5m` (`30s`, `5m`, `1h`). `label` and `status` compile to JQL. A `jql` string replaces them. `enabled` defaults to true. Settings edits triggers, routes, Jira, overlay paths, and the rest of the file. The Triggers page shows each trigger's schedule, whether it is enabled, and, for `review-requests`, the label and the two caps. Times on that page are the browser's local time.
+`every` defaults to `5m` (`30s`, `5m`, `1h`). `label` and `status` compile to JQL. A `jql` string replaces them. `enabled` defaults to true. The Triggers page shows each trigger's schedule, whether it is enabled, and, for `review-requests`, the label and the two caps. Times on that page are the browser's local time.
+
+Settings (`/settings`) edits triggers, routes, Jira, overlay paths, and the rest of the file. Its sections are listed
+down the side: Repos, Limits and retries, Sandbox, Triggers (with routes under them), Jira, Local workflows and skills,
+Appearance, and Edit the file. Each has its own address, such as `/settings/triggers`. A bar at the bottom lists unsaved
+changes and has Discard and Save changes.
 
 A cron fires once per slot. While serve was down, startup fires the latest missed slot once and does not replay the ones behind it. A Jira poll that was missed does the same: one search, not one per skipped interval. The router writes `trigger.routed` with a `dedupe` property (`review:<repo>:<number>:<head sha>`, `jira:<trigger>:<issue>`, `pr:<job>:<comment>`). A later tick that sees that value does not create another job. Comments and commits from `kiln`, a `[bot]` login, a `kiln:` subject, or a `Kiln-Job` trailer are ignored.
 

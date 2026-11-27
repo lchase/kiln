@@ -506,7 +506,7 @@ describe("kiln tick", { concurrency: 1 }, () => {
     const board = buildBoard(status.jobs, events);
     const jobHtml = renderApp({ css: "", section: "job", board, attention: status.attention, detail, page });
     assert.match(jobHtml, /Blocked: web has no test command/);
-    assert.match(jobHtml, /href="\/settings\?repo=web&amp;field=test"/);
+    assert.match(jobHtml, /href="\/settings\/repos\?repo=web&amp;field=test"/);
     assert.match(jobHtml, /Edit web in Settings/);
     const pipeline = renderApp({ css: "", section: "pipeline", board, attention: status.attention, page });
     const handColumn = pipeline.slice(pipeline.indexOf('data-column="needs-hand"'), pipeline.indexOf('data-column="done"'));

@@ -83,6 +83,37 @@ interface BoardClock {
 }
 
 /** The step page: one step of a job, `/jobs/<id>/steps/<step>`. */
+/** Settings sections, in nav order. `/settings/<id>` opens one. Server and script share this list. */
+export const SETTINGS_SECTIONS = [
+  { id: "repos", title: "Repos" },
+  { id: "limits", title: "Limits and retries" },
+  { id: "sandbox", title: "Sandbox" },
+  { id: "triggers", title: "Triggers" },
+  { id: "jira", title: "Jira" },
+  { id: "workflows", title: "Local workflows and skills" },
+  { id: "appearance", title: "Appearance" },
+  { id: "file", title: "Edit the file" },
+] as const;
+
+export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];
+
+export function isSettingsSection(value: string): value is SettingsSectionId {
+  return SETTINGS_SECTIONS.some((section) => section.id === value);
+}
+
+/** Short facts beside the nav links. Only counts and a word, never a secret. */
+export interface SettingsFacts {
+  repos?: number;
+  triggers?: number;
+  jira?: "connected" | "not set up";
+}
+
+/** Jira is connected when a base URL, an email, and a token (file or env) are all present. */
+export function jiraFact(jira: { baseUrl?: string; email?: string; apiToken?: string } | undefined, envToken?: string): "connected" | "not set up" {
+  const present = (value: string | undefined) => Boolean(value && value.trim());
+  return present(jira?.baseUrl) && present(jira?.email) && (present(jira?.apiToken) || present(envToken)) ? "connected" : "not set up";
+}
+
 export interface StepPage {
   id: string;
   view: "activity" | "result";
@@ -104,6 +135,9 @@ export interface AppModel {
   /** Set on the step page. `section` is still "job". */
   step?: StepPage;
   triggers?: TriggerRow[];
+  /** Open Settings section. Missing is `repos`. */
+  settingsSection?: SettingsSectionId;
+  settingsFacts?: SettingsFacts;
 }
 
 const LIVE_SCRIPT = readFileSync(join(packageRoot(), "assets", "serve.js"), "utf8");
@@ -283,7 +317,8 @@ ${item("/settings", "open-settings", "Settings", "settings", "settings")}
 function mainHtml(model: AppModel, page: ServePageOptions): string {
   const error = `<p class="meta config-error" id="config-error" role="status"${page.configError ? "" : " hidden"}>${escapeHtml(page.configError ?? "")}</p>`;
   if (model.section === "settings") {
-    return `${error}<main class="main"><h2>Settings</h2><section id="settings" aria-label="Settings">${settingsForm(page.theme ?? DEFAULT_BOARD_THEME)}</section></main>`;
+    const facts = model.settingsFacts ?? { repos: page.repos.length };
+    return `${error}<main class="main"><section id="settings" aria-label="Settings"><header class="settings-header"><h2>Settings</h2><p class="meta settings-path" id="settings-path"></p></header>${settingsForm(page.theme ?? DEFAULT_BOARD_THEME, model.settingsSection ?? "repos", facts)}</section></main>`;
   }
   if (model.section === "stats" && model.stats) {
     return `${error}<main class="main">${statsHtml(model.stats)}</main>`;
@@ -318,7 +353,7 @@ function triggersHtml(rows: readonly TriggerRow[]): string {
     rows.length === 0
       ? `<p class="empty">No triggers.</p>`
       : rows.map((row) => triggerCard(row)).join("\n");
-  return `<header class="list-head"><h2>Triggers</h2><p class="meta">The clock, Jira, and pull request activity can start work. A review is posted only after you approve it. Kiln does not approve or merge. <a href="/settings">Edit triggers in Settings.</a></p></header>${body}`;
+  return `<header class="list-head"><h2>Triggers</h2><p class="meta">The clock, Jira, and pull request activity can start work. A review is posted only after you approve it. Kiln does not approve or merge. <a href="/settings/triggers">Edit triggers in Settings.</a></p></header>${body}`;
 }
 
 function triggerCard(row: TriggerRow): string {
@@ -662,7 +697,7 @@ function clipTail(text: string): string {
 function launchFixHtml(job: JobView): string {
   const fix = job.launchBlock?.fix;
   if (!fix) return "";
-  const href = `/settings?${new URLSearchParams({ repo: fix.repo, field: fix.field }).toString()}`;
+  const href = `/settings/repos?${new URLSearchParams({ repo: fix.repo, field: fix.field }).toString()}`;
   return `<p class="links"><a href="${escapeHtml(href)}">Edit ${escapeHtml(fix.repo)} in Settings</a></p>`;
 }
 
@@ -1361,34 +1396,43 @@ function themePicker(selected: BoardThemeId): string {
   return `<div class="themes" id="theme-pick" role="group" aria-label="Theme">${buttons}</div>`;
 }
 
-function settingsTabs(): string {
-  const sections = [
-    ["repos", "Repos"],
-    ["global", "Global"],
-    ["triggers", "Triggers"],
-    ["routes", "Routes"],
-    ["jira", "Jira"],
-    ["overlay", "Overlay"],
-    ["appearance", "Appearance"],
-    ["advanced", "Advanced"],
-  ];
-  const buttons = sections
-    .map(
-      ([id, label], index) =>
-        `<button type="button" data-settings-tab="${id}" aria-pressed="${index === 0 ? "true" : "false"}">${label}</button>`,
-    )
-    .join("");
-  return `<div class="seg" role="tablist" aria-label="Settings sections">${buttons}</div>`;
+function settingsNav(active: SettingsSectionId, facts: SettingsFacts): string {
+  const links = SETTINGS_SECTIONS.map(({ id, title }) => {
+    const current = id === active ? ` aria-current="page"` : "";
+    return `<a href="/settings/${id}"${current}><span>${escapeHtml(title)}</span>${settingsFact(id, facts)}</a>`;
+  }).join("");
+  return `<nav class="settings-nav" id="settings-nav" aria-label="Settings sections">${links}</nav>`;
 }
 
-function settingsForm(theme: BoardThemeId): string {
-  return `<form id="settings-form" class="intake-form">
-<p class="meta" id="settings-path"></p>
-<p class="saved" id="settings-saved" role="status" hidden>Saved</p>
-<p class="form-error" id="settings-error" role="alert" hidden></p>
-${settingsTabs()}
-<div id="settings-repos">
-<div id="repo-editor" hidden>
+function settingsFact(id: SettingsSectionId, facts: SettingsFacts): string {
+  if (id === "repos" || id === "triggers") {
+    const value = facts[id];
+    return `<span class="settings-fact" data-settings-fact="${id}">${value === undefined ? "" : String(value)}</span>`;
+  }
+  if (id === "jira") {
+    const state = facts.jira === "connected" ? ` data-state="connected"` : "";
+    return `<span class="settings-fact" data-settings-fact="jira"${state}>${facts.jira ?? ""}</span>`;
+  }
+  return "";
+}
+
+/** Section heading and one line on what it holds. */
+function settingsPane(id: SettingsSectionId, active: SettingsSectionId, description: string, body: string, extraClass = ""): string {
+  const title = SETTINGS_SECTIONS.find((section) => section.id === id)?.title ?? id;
+  const hidden = id === active ? "" : " hidden";
+  const cls = extraClass ? `settings-pane ${extraClass}` : "settings-pane";
+  return `<section class="${cls}" id="settings-${id}" aria-labelledby="settings-${id}-title"${hidden}>
+<header class="settings-pane-head"><h2 id="settings-${id}-title">${escapeHtml(title)}</h2><p class="meta">${escapeHtml(description)}</p></header>
+${body}</section>`;
+}
+
+function settingsForm(theme: BoardThemeId, active: SettingsSectionId, facts: SettingsFacts): string {
+  const panes = [
+    settingsPane(
+      "repos",
+      active,
+      "Checkouts Kiln may run jobs in. A job works in its own worktree and leaves your files alone.",
+      `<div id="repo-editor" hidden>
 <label class="field"><span class="k">Name</span><input id="repo-name" type="text" autocomplete="off" spellcheck="false"></label>
 <p class="field-error" data-error="name" hidden></p>
 <div class="field"><span class="k">Path</span><div class="path-row"><input id="repo-path" type="text" autocomplete="off" spellcheck="false" placeholder="~/code/web"><button type="button" class="pick" id="repo-browse">Browse</button></div></div>
@@ -1418,19 +1462,13 @@ ${settingsTabs()}
 <div class="d-actions"><button type="button" id="repo-done">Done</button></div>
 </div>
 <div id="repo-list"></div>
-<div class="d-actions"><button type="button" id="repo-add">Add repo</button></div>
-</div>
-<div id="settings-global" hidden>
-<div class="field"><span class="k">Sandbox</span><div class="seg" id="sandbox-mode" role="group" aria-label="Sandbox mode">
-<button type="button" data-sandbox="off" aria-pressed="true">Off</button>
-<button type="button" data-sandbox="docker" aria-pressed="false">Docker</button>
-</div>
-<p class="hint">Off leaves the agent unsandboxed. Docker runs agent steps in the sandbox.</p>
-<p class="field-error" data-error="sandbox.mode" hidden></p></div>
-<label class="field"><span class="k">Allow domains</span><textarea id="sandbox-domains" rows="3" placeholder="example.com" spellcheck="false"></textarea></label>
-<p class="hint">One hostname per line. When set, this replaces the built-in host list.</p>
-<p class="field-error" data-error="sandbox.allowDomains" hidden></p>
-<label class="field"><span class="k">Max attempts</span><input id="max-attempts" type="number" min="1" step="1"></label>
+<div class="d-actions"><button type="button" id="repo-add">Add repo</button></div>`,
+    ),
+    settingsPane(
+      "limits",
+      active,
+      "How many times a job is tried, when it counts as stalled, and how much may run at once.",
+      `<label class="field"><span class="k">Max attempts</span><input id="max-attempts" type="number" min="1" step="1"></label>
 <p class="hint" id="hint-attempts"></p>
 <p class="field-error" data-error="maxAttempts" hidden></p>
 <label class="field"><span class="k">Stall timeout (ms)</span><input id="stall-timeout" type="number" step="1"></label>
@@ -1456,10 +1494,27 @@ ${settingsTabs()}
 <button type="button" data-adapter="mock" aria-pressed="false">mock</button>
 </div>
 <p class="hint" id="hint-adapter"></p>
-<p class="field-error" data-error="adapter" hidden></p></div>
+<p class="field-error" data-error="adapter" hidden></p></div>`,
+    ),
+    settingsPane(
+      "sandbox",
+      active,
+      "Whether agent steps run in a container, and which hosts they may reach.",
+      `<div class="field"><span class="k">Sandbox</span><div class="seg" id="sandbox-mode" role="group" aria-label="Sandbox mode">
+<button type="button" data-sandbox="off" aria-pressed="true">Off</button>
+<button type="button" data-sandbox="docker" aria-pressed="false">Docker</button>
 </div>
-<div id="settings-triggers" hidden>
-<div id="trigger-editor" hidden>
+<p class="hint">Off leaves the agent unsandboxed. Docker runs agent steps in the sandbox.</p>
+<p class="field-error" data-error="sandbox.mode" hidden></p></div>
+<label class="field"><span class="k">Allow domains</span><textarea id="sandbox-domains" rows="3" placeholder="example.com" spellcheck="false"></textarea></label>
+<p class="hint">One hostname per line. When set, this replaces the built-in host list.</p>
+<p class="field-error" data-error="sandbox.allowDomains" hidden></p>`,
+    ),
+    settingsPane(
+      "triggers",
+      active,
+      "What starts work on its own, and where that work goes.",
+      `<div id="trigger-editor" hidden>
 <label class="field"><span class="k">Id</span><input id="trigger-id" type="text" autocomplete="off" spellcheck="false"></label>
 <p class="field-error" data-error="trigger.id" hidden></p>
 <div class="field"><span class="k">Enabled</span><div class="seg" id="trigger-enabled" role="group" aria-label="Enabled">
@@ -1497,8 +1552,7 @@ ${settingsTabs()}
 </div>
 <div id="trigger-list"></div>
 <div class="d-actions"><button type="button" data-row-add="triggers">Add trigger</button></div>
-</div>
-<div id="settings-routes" hidden>
+<h3>Routes</h3>
 <div id="route-editor" hidden>
 <label class="field"><span class="k">Id</span><input id="route-id" type="text" autocomplete="off" spellcheck="false"></label>
 <p class="field-error" data-error="route.id" hidden></p>
@@ -1514,10 +1568,13 @@ ${settingsTabs()}
 <div class="d-actions"><button type="button" data-row-done="routes">Done</button></div>
 </div>
 <div id="route-list"></div>
-<div class="d-actions"><button type="button" data-row-add="routes">Add route</button></div>
-</div>
-<div id="settings-jira" class="stack" hidden>
-<div class="field"><label class="k" for="jira-base">Base URL</label><input id="jira-base" type="text" autocomplete="off" spellcheck="false" placeholder="https://example.atlassian.net">
+<div class="d-actions"><button type="button" data-row-add="routes">Add route</button></div>`,
+    ),
+    settingsPane(
+      "jira",
+      active,
+      "The Jira site Kiln reads issues from.",
+      `<div class="field"><label class="k" for="jira-base">Base URL</label><input id="jira-base" type="text" autocomplete="off" spellcheck="false" placeholder="https://example.atlassian.net">
 <p class="field-error" data-error="jira.baseUrl" hidden></p></div>
 <div class="field"><label class="k" for="jira-email">Email</label><input id="jira-email" type="text" autocomplete="off" spellcheck="false" placeholder="dev@example.com">
 <p class="field-error" data-error="jira.email" hidden></p></div>
@@ -1526,10 +1583,14 @@ ${settingsTabs()}
 <p class="field-error" data-error="jira.acceptanceField" hidden></p></div>
 <div class="field"><span class="k">API token</span><p class="meta" id="jira-token">not set</p>
 <p class="hint">Set JIRA_API_TOKEN in the environment. This page does not store a token.</p>
-<p class="field-error" data-error="jira.apiToken" hidden></p></div>
-</div>
-<div id="settings-overlay" hidden>
-<label class="field"><span class="k">Workflows</span><input id="overlay-workflows" type="text" autocomplete="off" spellcheck="false" placeholder="workflows"></label>
+<p class="field-error" data-error="jira.apiToken" hidden></p></div>`,
+      "stack",
+    ),
+    settingsPane(
+      "workflows",
+      active,
+      "Your own workflow, prompt, and skill directories.",
+      `<label class="field"><span class="k">Workflows</span><input id="overlay-workflows" type="text" autocomplete="off" spellcheck="false" placeholder="workflows"></label>
 <p class="hint">Directory of local workflow files. Empty uses the kiln home workflows directory.</p>
 <p class="field-error" data-error="overlay.workflows" hidden></p>
 <label class="field"><span class="k">Prompts</span><input id="overlay-prompts" type="text" autocomplete="off" spellcheck="false" placeholder="prompts"></label>
@@ -1540,19 +1601,34 @@ ${settingsTabs()}
 <p class="field-error" data-error="overlay.skills" hidden></p>
 <label class="field"><span class="k">Skill paths</span><textarea id="overlay-skill-paths" rows="3" spellcheck="false" placeholder="/home/dev/skills"></textarea></label>
 <p class="hint">One extra skill directory per line.</p>
-<p class="field-error" data-error="overlay.skillPaths" hidden></p>
-</div>
-<div id="settings-appearance" hidden>
-<p class="hint">Color palette for this board. The choice applies immediately and is saved here.</p>
+<p class="field-error" data-error="overlay.skillPaths" hidden></p>`,
+    ),
+    settingsPane("appearance", active, "How this board looks.", `<p class="hint">Color palette for this board. The choice applies immediately and is saved here.</p>
 ${themePicker(theme)}
-<p class="field-error" data-error="board.theme" hidden></p>
-</div>
-<div id="settings-advanced" hidden>
-<label class="field"><span class="k">kiln.config.json</span><textarea id="settings-json" rows="18" spellcheck="false" aria-describedby="advanced-hint advanced-errors"></textarea></label>
+<p class="field-error" data-error="board.theme" hidden></p>`),
+    settingsPane(
+      "file",
+      active,
+      "The whole config file as JSON.",
+      `<label class="field"><span class="k">kiln.config.json</span><textarea id="settings-json" rows="18" spellcheck="false" aria-describedby="advanced-hint advanced-errors"></textarea></label>
 <p class="hint" id="advanced-hint">Saving this section writes the JSON below. A secret is shown as ${escapeHtml(SECRET_PLACEHOLDER)}. Saving that placeholder keeps the current value. Set JIRA_API_TOKEN in the environment. Invalid JSON is not written.</p>
-<p class="field-error" id="advanced-errors" data-error="file" hidden></p>
+<p class="field-error" id="advanced-errors" data-error="file" hidden></p>`,
+    ),
+  ];
+  return `<form id="settings-form" class="intake-form settings-form">
+<div class="settings-layout">
+${settingsNav(active, facts)}
+${panes.join("\n")}
 </div>
-<div class="form-footer"><button type="submit" class="btn primary">Save</button></div>
+<div class="settings-foot">
+<p class="form-error" id="settings-error" role="alert" hidden></p>
+<p class="saved" id="settings-saved" role="status" hidden>Saved</p>
+<div class="settings-unsaved" id="settings-unsaved" role="status" hidden>
+<p class="settings-unsaved-text"><span class="settings-unsaved-count" id="settings-unsaved-count"></span><span class="settings-unsaved-list" id="settings-unsaved-list"></span></p>
+<button type="button" class="btn" id="settings-discard">Discard</button>
+<button type="submit" class="btn primary" id="settings-save">Save changes</button>
+</div>
+</div>
 </form>`;
 }
 

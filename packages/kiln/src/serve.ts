@@ -44,13 +44,24 @@ import { intakeJobs } from "./intake-http.js";
 import { isJobId, jobBasename, packageRoot } from "./paths.js";
 import { SANDBOX_PREFLIGHT_PREFIX, sandboxIsEnabled } from "./sandbox.js";
 import type { StatusJobView } from "./report.js";
-import { renderApp, type AppSection, type ServePageOptions, type StepPage, renderMessagePage, renderTextPage } from "./serve-page.js";
+import {
+  isSettingsSection,
+  jiraFact,
+  renderApp,
+  type AppSection,
+  type ServePageOptions,
+  type SettingsFacts,
+  type SettingsSectionId,
+  type StepPage,
+  renderMessagePage,
+  renderTextPage,
+} from "./serve-page.js";
 import { startedPhaseIds } from "./job-view.js";
 import { STEP_NAME, readStepResult } from "./step-result.js";
 import { isPaused, pauseFactory, resumeFactory, spendFor } from "./rails.js";
 import { readSettings, saveSettings } from "./settings.js";
 import type { TickReply, TickRequest } from "./tick-worker.js";
-import { triggerRows } from "./triggers.js";
+import { effectiveTriggers, triggerRows } from "./triggers.js";
 import { formatServeStartup } from "./version.js";
 import { listWorkflowNames, overlayLoadCounts, workflowNamesNeedingTest } from "./workflow.js";
 
@@ -443,6 +454,12 @@ async function handle(
       return;
     }
     sendHtml(res, 200, renderShell(state, css, csrf, listed), secrets);
+    return;
+  }
+
+  const settingsPage = /^\/settings\/([^/]+)$/.exec(path);
+  if (settingsPage?.[1] && isSettingsSection(settingsPage[1])) {
+    sendHtml(res, 200, renderShell(state, css, csrf, "settings", { settingsSection: settingsPage[1] }), secrets);
     return;
   }
 
@@ -1095,6 +1112,7 @@ function renderShell(
     tab?: "overview" | "live" | "changes" | "timeline";
     activity?: ActivityFeed;
     step?: StepPage;
+    settingsSection?: SettingsSectionId;
   } = {},
 ): string {
   const status = readStatus(state.config, undefined, pageHost());
@@ -1111,10 +1129,22 @@ function renderShell(
     ...(section === "stats" && extra.window ? { stats: statsDocument(state, extra.window) } : {}),
     ...(section === "report" ? { report: reportDocument(state) } : {}),
     ...(extra.detail ? { detail: extra.detail, ...(extra.tab ? { tab: extra.tab } : {}), ...(extra.activity ? { activity: extra.activity } : {}), ...(extra.step ? { step: extra.step } : {}) } : {}),
+    ...(section === "settings"
+      ? { settingsSection: extra.settingsSection ?? "repos", settingsFacts: settingsFacts(state.config) }
+      : {}),
     ...(section === "triggers"
       ? { triggers: triggerRows(state.config, readEvents(state.config.kilnDir, { warn: () => {} })) }
       : {}),
   });
+}
+
+/** Nav facts for Settings: counts and a word. The Jira token is only checked for presence. */
+function settingsFacts(config: LoadedKilnConfig): SettingsFacts {
+  return {
+    repos: Object.keys(config.repos).length,
+    triggers: effectiveTriggers(config.triggers).length,
+    jira: jiraFact(config.jira, process.env.JIRA_API_TOKEN),
+  };
 }
 
 function boardPayload(state: LiveConfig): unknown {
