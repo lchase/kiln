@@ -12,7 +12,10 @@ import {
   answerJob,
   cancelJob,
   cancelQueuedJobs,
+  holdJob,
+  prioritizeJob,
   readStatus,
+  releaseJob,
   removeJob,
   retryJob,
   reviseJob,
@@ -300,7 +303,7 @@ async function handle(
       redirect(res, redirectTarget(req));
       return;
     }
-    const action = /^\/api\/jobs\/([^/]+)\/(approve|reject|retry|revise|cancel|remove)$/.exec(path);
+    const action = /^\/api\/jobs\/([^/]+)\/(approve|reject|retry|revise|cancel|remove|next|hold|release)$/.exec(path);
     if (!action?.[1] || !action[2]) {
       sendJson(res, 404, { error: "Not found." }, secrets);
       return;
@@ -316,6 +319,10 @@ async function handle(
     }
     if (action[2] === "cancel" || action[2] === "remove") {
       stopOrRemove(req, res, config, css, secrets, jobId, action[2]);
+      return;
+    }
+    if (action[2] === "next" || action[2] === "hold" || action[2] === "release") {
+      queueAction(req, res, config, css, secrets, jobId, action[2]);
       return;
     }
     if (action[2] === "revise") {
@@ -678,6 +685,34 @@ function stopOrRemove(
     return;
   }
   redirect(res, kind === "remove" ? "/" : redirectTarget(req));
+}
+
+/** Run next, Hold, and Release. A refusal is `changed: false` with a message, not an error. */
+function queueAction(
+  req: IncomingMessage,
+  res: ServerResponse,
+  config: LoadedKilnConfig,
+  css: string,
+  secrets: string[],
+  jobId: string,
+  kind: "next" | "hold" | "release",
+): void {
+  let result: { changed: boolean; message: string };
+  try {
+    const run = kind === "next" ? prioritizeJob : kind === "hold" ? holdJob : releaseJob;
+    result = run(config, jobId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = message.startsWith("No job ") ? 404 : 409;
+    if (wantsJson(req)) sendJson(res, status, { error: message }, secrets);
+    else sendHtml(res, status, renderMessagePage(css, "Could not change the queue", message, config.boardTheme), secrets);
+    return;
+  }
+  if (wantsJson(req)) {
+    sendJson(res, 200, { ok: true, changed: result.changed, message: result.message, job: findJob(config, jobId) }, secrets);
+    return;
+  }
+  redirect(res, redirectTarget(req));
 }
 
 function sendFindings(

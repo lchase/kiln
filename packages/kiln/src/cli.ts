@@ -1,7 +1,20 @@
 #!/usr/bin/env node
 import { addRepo, renderRepoList, resolveKilnConfig } from "./config.js";
 import { renderSandboxStatus, runSandboxBuild } from "./sandbox.js";
-import { answerJob, cancelJob, cancelQueuedJobs, removeJob, retryJob, reviseJob, runStatus, runTick } from "./driver.js";
+import {
+  answerJob,
+  cancelJob,
+  cancelQueuedJobs,
+  holdJob,
+  prioritizeJob,
+  releaseJob,
+  removeJob,
+  renderQueue,
+  retryJob,
+  reviseJob,
+  runStatus,
+  runTick,
+} from "./driver.js";
 import { productionHost } from "./host.js";
 import { pauseFactory, resumeFactory } from "./rails.js";
 import { parseSince, renderLedgerFile } from "./ledger.js";
@@ -30,6 +43,10 @@ function usage(): never {
       "       kiln cancel --queued [--repo <name>] [--workflow <name>] [--config <file>]",
       "       kiln cancel <jobId> [--config <file>]",
       "       kiln remove <jobId> [--config <file>]",
+      "       kiln next <jobId> [--config <file>]",
+      "       kiln hold <jobId> [--config <file>]",
+      "       kiln release <jobId> [--config <file>]",
+      "       kiln queue [--config <file>]",
       "       kiln pause [--config <file>]",
       "       kiln resume [--config <file>]",
       "       kiln ledger [--since 7d] [--repo <name>] [--config <file>]",
@@ -122,6 +139,13 @@ function usage(): never {
       "kiln remove <jobId> deletes Kiln's records for a job that is not running,",
       "gated, or in review and that no other job depends on. The event log keeps",
       "its history plus job.removed. Git is untouched; the branch name is printed.",
+      "kiln next <jobId> moves a job that has not started to the front of the queue;",
+      "the most recent move goes first. A blocked job keeps its place and launches",
+      "first once its dependencies are done. kiln hold <jobId> keeps a job that has",
+      "not started from launching or retrying, across restarts, without taking a",
+      "slot, until kiln release <jobId>. A running or finished job is refused, and a",
+      "repeat writes nothing. kiln queue prints the jobs that have not started in",
+      "launch order: position, id, repo, title, and why it is there.",
       "",
       "serve listens on 127.0.0.1. The page is a board of workflow stages:",
       "queued, spec, build, review, approve, land, PR review, Done (landed locally),",
@@ -527,6 +551,29 @@ function removeCommand(argv: string[]): void {
   process.stdout.write(`removed ${jobId}\n${branch}\n`);
 }
 
+function queueActionCommand(action: "next" | "hold" | "release", argv: string[]): void {
+  const flags = parseFlags(argv);
+  rejectServeFlags(flags);
+  const jobId = flags.positionals[0];
+  if (!jobId || flags.positionals.length !== 1 || flags.test || flags.note || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.queued) {
+    usage();
+  }
+  assertJobId(jobId);
+  const config = resolveKilnConfig({ configPath: flags.configPath });
+  const run = action === "next" ? prioritizeJob : action === "hold" ? holdJob : releaseJob;
+  process.stdout.write(`${run(config, jobId).message}\n`);
+}
+
+function queueCommand(argv: string[]): void {
+  const flags = parseFlags(argv);
+  rejectServeFlags(flags);
+  if (flags.positionals.length !== 0 || flags.test || flags.note || hasIntakeFlags(flags) || flags.deliver || flags.base || flags.queued) {
+    usage();
+  }
+  const config = resolveKilnConfig({ configPath: flags.configPath });
+  process.stdout.write(renderQueue(config));
+}
+
 function retryCommand(argv: string[]): void {
   const flags = parseFlags(argv);
   rejectServeFlags(flags);
@@ -698,6 +745,14 @@ async function main(): Promise<void> {
   }
   if (command === "remove") {
     removeCommand(argv.slice(1));
+    return;
+  }
+  if (command === "next" || command === "hold" || command === "release") {
+    queueActionCommand(command, argv.slice(1));
+    return;
+  }
+  if (command === "queue") {
+    queueCommand(argv.slice(1));
     return;
   }
   if (command === "revise") {
