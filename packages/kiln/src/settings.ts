@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { assertBranchName, assertCheckoutDirectory } from "./config.js";
+import { assertBranchName, assertCheckoutDirectory, overlaySkillReport, type OverlaySkillReport } from "./config.js";
 import { DEFAULT_BRANCH_TEMPLATE, DEFAULT_PR_TITLE } from "./pr-names.js";
 import {
   DEFAULT_MAX_ATTEMPTS,
@@ -63,6 +63,11 @@ export interface SettingsDocument {
     skills?: string;
     skillPaths?: string[];
   };
+  /**
+   * Skill folders and skill names agents get from the saved overlay. Read-only:
+   * a PUT that echoes it writes nothing.
+   */
+  skillCheck: OverlaySkillReport;
   /** Resolved board theme. Unknown or missing file values are `kiln`. */
   board: { theme: BoardThemeId };
   /** Shown when a field is omitted. Not written back. */
@@ -140,12 +145,16 @@ const TRIGGER_KEYS = ["kind", "enabled", "cron", "every", "repo", "jql", "label"
 const ROUTE_KEYS = ["trigger", "action", "workflow", "repo"] as const;
 const SECRET_KEY = /token|secret|password|credential|api[-_]?key/i;
 
-export function readSettings(configPath: string, env: NodeJS.ProcessEnv = process.env): SettingsSuccess | SettingsFailure {
+export function readSettings(
+  configPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+  home = homedir(),
+): SettingsSuccess | SettingsFailure {
   const read = readConfigFile(configPath);
   if ("error" in read) return fail(409, read.error);
   const parsed = KilnConfigFileSchema.safeParse(read.raw);
   if (!parsed.success) return fail(409, `Kiln config ${configPath} is invalid.`);
-  return { ok: true, document: project(configPath, read.revision, parsed.data, read.raw, env) };
+  return { ok: true, document: project(configPath, read.revision, parsed.data, read.raw, env, home) };
 }
 
 /**
@@ -154,15 +163,17 @@ export function readSettings(configPath: string, env: NodeJS.ProcessEnv = proces
  * bytes on disk is a 409 and writes nothing. `{ revision, file }` replaces
  * the file after the same schema check. Invalid JSON never reaches this
  * function. A secret value other than {@link SECRET_PLACEHOLDER} is rejected
- * and the placeholder keeps the bytes already on disk.
+ * and the placeholder keeps the bytes already on disk. The read-only
+ * `skillCheck` a page echoes back is dropped.
  */
 export function saveSettings(
   configPath: string,
-  body: unknown,
+  input: unknown,
   home = homedir(),
   env: NodeJS.ProcessEnv = process.env,
 ): SettingsSuccess | SettingsFailure {
-  if (!isRecord(body)) return fail(400, "Request body must be a JSON object.");
+  if (!isRecord(input)) return fail(400, "Request body must be a JSON object.");
+  const { skillCheck: _skillCheck, ...body } = input;
   const read = readConfigFile(configPath);
   if ("error" in read) return fail(409, "The settings file changed on disk. Reload and try again.");
 
@@ -187,7 +198,7 @@ export function saveSettings(
 
   const contents = `${JSON.stringify(prepared.next, null, 2)}\n`;
   writeAtomic(configPath, contents);
-  return { ok: true, document: project(configPath, hashContents(contents), prepared.parsed, prepared.next, env) };
+  return { ok: true, document: project(configPath, hashContents(contents), prepared.parsed, prepared.next, env, home) };
 }
 
 function project(
@@ -196,6 +207,7 @@ function project(
   file: KilnConfigFile,
   raw: Record<string, unknown>,
   env: NodeJS.ProcessEnv,
+  home: string,
 ): SettingsDocument {
   const sandbox = editableSandbox(file.sandbox);
   const overlay = file.overlay;
@@ -216,6 +228,7 @@ function project(
     routes: effectiveRoutes(file.routes).map((route) => routeView(route)),
     jira: jiraView(raw.jira, file.jira, env),
     ...(overlay ? { overlay } : {}),
+    skillCheck: overlaySkillReport(dirname(path), home, overlay),
     board: { theme: resolveBoardTheme(file.board?.theme) },
     defaults: DEFAULTS,
     file: redactFile(raw),

@@ -343,6 +343,53 @@ describe("serve settings", () => {
     }
   });
 
+  it("round-trips every overlay setting byte for byte, and ignores an echoed skills report", async () => {
+    const { cwd, home, configPath } = workDir("kiln-settings-overlay-");
+    mkdirSync(join(home, "plug", "skills", "foo"), { recursive: true });
+    writeFileSync(join(home, "plug", "skills", "foo", "SKILL.md"), "# foo\n");
+    const config = {
+      ...seedConfig(),
+      overlay: {
+        workflows: "my-workflows",
+        prompts: "my-prompts",
+        skills: "~/my-skills",
+        skillPaths: ["~/plug/skills", join(home, "missing")],
+      },
+    };
+    const contents = `${JSON.stringify(config, null, 2)}\n`;
+    writeFileSync(configPath, contents);
+    const server = await startServe({ cwd, home });
+    try {
+      const csrf = csrfFrom((await text(`${server.url}/settings/workflows`)).body);
+      const loaded = await text(`${server.url}/api/settings`);
+      assert.equal(loaded.status, 200, loaded.body);
+      const doc = JSON.parse(loaded.body) as SettingsDoc & {
+        overlay: Record<string, unknown>;
+        skillCheck: { skills: string[]; folders: { typed: string; exists: boolean }[] };
+      };
+      assert.deepEqual(doc.overlay, config.overlay);
+      assert.deepEqual(doc.skillCheck.skills, ["foo"]);
+      assert.deepEqual(
+        doc.skillCheck.folders.map((folder) => [folder.typed, folder.exists]),
+        [["~/my-skills", false], ["~/plug/skills", true], [join(home, "missing"), false]],
+      );
+      const saved = await putSettings(server.url, csrf, {
+        revision: doc.revision,
+        repos: doc.repos,
+        adapter: "mock",
+        maxConcurrent: 2,
+        sandbox: { mode: "off", allowDomains: ["example.com"] },
+        jira: { baseUrl: "https://example.atlassian.net", email: "dev@example.com", acceptanceField: "" },
+        overlay: doc.overlay,
+        skillCheck: doc.skillCheck,
+      });
+      assert.equal(saved.status, 200, saved.body);
+      assert.equal(readFileSync(configPath, "utf8"), contents);
+    } finally {
+      await stop(server.child);
+    }
+  });
+
   it("rejects an invalid save with field errors and leaves the file unchanged", async () => {
     const { cwd, home, configPath } = workDir("kiln-settings-bad-");
     const server = await startServe({ cwd, home });

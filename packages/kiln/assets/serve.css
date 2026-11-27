@@ -55,6 +55,8 @@
   --after-max: 160px;
   --preview-max: 200px;
   --field-min: 88px;
+  --setting-text-min: 320px;
+  --setting-control-min: 240px;
   --prose-max: 220px;
   --log-max-height: 280px;
   --seg-min: 72px;
@@ -1300,6 +1302,8 @@ body.open .drawer { transform: none; }
 .field input[type="number"],
 .field textarea,
 .field select,
+.setting-control input[type="text"],
+.setting-control textarea,
 .combo-input {
   width: 100%;
   font: var(--text-sm)/var(--leading-sm) var(--font-sans);
@@ -1486,6 +1490,30 @@ body.open .drawer { transform: none; }
 .settings-unsaved-text { flex: 999 1 0; min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .settings-unsaved-count { font-weight: 500; }
 .settings-unsaved-list { color: var(--muted); }
+/* Setting rows: label and one line of explanation, the control beside it, wrapping under it when narrow. */
+.setting-rows { background: var(--card); border: var(--hairline) solid var(--line); border-radius: var(--radius-lg); }
+.setting-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-5);
+  padding: var(--space-4);
+}
+.setting-row + .setting-row { border-top: var(--hairline) solid var(--line); }
+.setting-text { flex: 999 1 var(--setting-text-min); min-width: 0; display: flex; flex-direction: column; gap: var(--space-2xs); }
+.setting-label { margin: 0; font-weight: 500; color: var(--ink); }
+.setting-explain, .setting-warn-line { margin: 0; font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--muted); overflow-wrap: anywhere; }
+.setting-warn-line { color: var(--state-needs-hand); }
+.setting-control { flex: 1 1 var(--setting-control-min); min-width: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.setting-control .empty { margin: 0; }
+.setting-skills { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.setting-skills li {
+  font: var(--text-xs)/var(--leading-xs) var(--font-mono);
+  background: var(--code-bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-2xs) var(--space-2);
+  overflow-wrap: anywhere;
+}
 
 /* Settings > Repos: a table, then one repo's form under it. */
 .settings-pane-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }

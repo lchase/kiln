@@ -1607,6 +1607,35 @@ function settingsFact(id: SettingsSectionId, facts: SettingsFacts): string {
   return "";
 }
 
+interface SettingRow {
+  /** The control's id. The explanation, error, and warning ids derive from it. */
+  id: string;
+  label: string;
+  /** One line on what the setting does and what blank means. Trusted markup. */
+  explain: string;
+  /** `data-error` key for server validation errors. */
+  error: string;
+  /** Add a warning slot the script fills when the saved value is a problem. */
+  warn?: boolean;
+  /** A second muted line, such as how to fill the control. */
+  hint?: string;
+  /** Control markup, given the `aria-describedby` value to put on it. */
+  control: (describedBy: string) => string;
+}
+
+/** A setting row: label, one line of explanation, warning and error slots, then the control. */
+function settingRow(row: SettingRow): string {
+  const ids = [`${row.id}-explain`, ...(row.hint ? [`${row.id}-hint`] : []), ...(row.warn ? [`${row.id}-warn`] : []), `${row.id}-error`];
+  return `<div class="setting-row">
+<div class="setting-text"><label class="setting-label" for="${row.id}">${escapeHtml(row.label)}</label>
+<p class="setting-explain" id="${row.id}-explain">${row.explain}</p>${row.hint ? `
+<p class="setting-explain" id="${row.id}-hint">${escapeHtml(row.hint)}</p>` : ""}${row.warn ? `
+<div class="setting-warn" id="${row.id}-warn" hidden></div>` : ""}
+<p class="field-error" id="${row.id}-error" data-error="${row.error}" hidden></p></div>
+<div class="setting-control">${row.control(ids.join(" "))}</div>
+</div>`;
+}
+
 /** Section heading and one line on what it holds. */
 function settingsPane(id: SettingsSectionId, active: SettingsSectionId, description: string, body: string, extraClass = "", action = ""): string {
   const title = SETTINGS_SECTIONS.find((section) => section.id === id)?.title ?? id;
@@ -1805,19 +1834,49 @@ function settingsForm(theme: BoardThemeId, active: SettingsSectionId, facts: Set
     settingsPane(
       "workflows",
       active,
-      "Your own workflow, prompt, and skill directories.",
-      `<label class="field"><span class="k">Workflows</span><input id="overlay-workflows" type="text" autocomplete="off" spellcheck="false" placeholder="workflows"></label>
-<p class="hint">Directory of local workflow files. Empty uses the kiln home workflows directory.</p>
-<p class="field-error" data-error="overlay.workflows" hidden></p>
-<label class="field"><span class="k">Prompts</span><input id="overlay-prompts" type="text" autocomplete="off" spellcheck="false" placeholder="prompts"></label>
-<p class="hint">Directory of prompt overrides. Empty uses the kiln home prompts directory.</p>
-<p class="field-error" data-error="overlay.prompts" hidden></p>
-<label class="field"><span class="k">Skills</span><input id="overlay-skills" type="text" autocomplete="off" spellcheck="false" placeholder="skills"></label>
-<p class="hint">Directory of skills. Empty uses the kiln home skills directory.</p>
-<p class="field-error" data-error="overlay.skills" hidden></p>
-<label class="field"><span class="k">Skill paths</span><textarea id="overlay-skill-paths" rows="3" spellcheck="false" placeholder="/home/dev/skills"></textarea></label>
-<p class="hint">One extra skill directory per line.</p>
-<p class="field-error" data-error="overlay.skillPaths" hidden></p>`,
+      "Your own workflows, prompts, and skills. Agents get skills only from here.",
+      `<div class="setting-rows">
+${settingRow({
+  id: "overlay-workflows",
+  label: "Local workflows",
+  explain: "A folder of your own workflow files. Blank uses the Kiln home <code>workflows</code> folder.",
+  error: "overlay.workflows",
+  control: (describedBy) =>
+    `<input id="overlay-workflows" type="text" autocomplete="off" spellcheck="false" placeholder="workflows" aria-describedby="${describedBy}">`,
+})}
+${settingRow({
+  id: "overlay-prompts",
+  label: "Prompt overrides",
+  explain: "A folder of prompt files that replace the shipped ones. Blank uses the Kiln home <code>prompts</code> folder.",
+  error: "overlay.prompts",
+  control: (describedBy) =>
+    `<input id="overlay-prompts" type="text" autocomplete="off" spellcheck="false" placeholder="prompts" aria-describedby="${describedBy}">`,
+})}
+${settingRow({
+  id: "overlay-skills",
+  label: "Skills folder",
+  explain: "A folder holding one folder per skill, each with a <code>SKILL.md</code>. Blank uses the Kiln home <code>skills</code> folder.",
+  error: "overlay.skills",
+  warn: true,
+  control: (describedBy) =>
+    `<input id="overlay-skills" type="text" autocomplete="off" spellcheck="false" placeholder="skills" aria-describedby="${describedBy}">`,
+})}
+${settingRow({
+  id: "overlay-skill-paths",
+  label: "More skill folders",
+  explain: "Agents do not see your Claude Code plugins or skills. List a plugin's <code>skills</code> folder here to give agents that skill.",
+  error: "overlay.skillPaths",
+  warn: true,
+  control: (describedBy) =>
+    `<textarea id="overlay-skill-paths" rows="3" spellcheck="false" placeholder="~/skills" aria-describedby="${describedBy}"></textarea>`,
+  hint: "One folder per line.",
+})}
+<div class="setting-row">
+<div class="setting-text"><p class="setting-label" id="overlay-skill-names-label">Skills agents will see</p>
+<p class="setting-explain">From the saved folders. Save to check new ones.</p></div>
+<div class="setting-control" id="overlay-skill-names" role="region" aria-labelledby="overlay-skill-names-label" aria-live="polite"></div>
+</div>
+</div>`,
     ),
     settingsPane("appearance", active, "How this board looks.", `<p class="hint">Color palette for this board. The choice applies immediately and is saved here.</p>
 ${themePicker(theme)}
