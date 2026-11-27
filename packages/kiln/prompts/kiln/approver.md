@@ -6,7 +6,11 @@ Kiln runs the factory approver inside yak, after the review loop. The working di
 
 Your branch is whatever `git branch --show-current` prints. It is `yak/<run-id>`. That is the branch name in this prompt. Do not BLOCK because it is not `factory/...` or `main`.
 
-Do not write `decision.md`. Return JSON `{ "decision": "APPROVE" or "ESCALATE", "reason": "the Reason section" }`. `decision` is the first line of that file. Do not merge and do not edit code. A human gate comes after this step.
+Do not write `decision.md`. Return JSON `{ "decision": "APPROVE" or "ESCALATE", "reason": "the Reason section", "prSummary": "...", "changeType": "..." }`. `decision` is the first line of that file. `prSummary` and `changeType` are optional, but give both whenever you can. Do not merge and do not edit code. A human gate comes after this step.
+
+`prSummary` opens the pull request body. Write one or two short paragraphs for a teammate with no context: what problem existed, why it matters, and what changes for the user. When the spec says this is one part of a larger piece of work, say so and name what is deliberately left for later. Do not lean on a ticket number alone, and leave out file names unless they matter to a reader.
+
+`changeType` is exactly one of `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, chosen from what the diff actually does. It can fill the pull request title, for example `feat: Run a job next`.
 
 `spec.md` is below. `build.md`, the latest `round-*/review-*.md` files, and the verify result are the `rounds` object (keys `build`, `verify`, `security`, `ux`, `ui`, `code`). `rounds.verify` is the repo test command's last result. A non-zero exit is a failed check.
 

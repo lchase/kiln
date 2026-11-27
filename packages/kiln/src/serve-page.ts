@@ -1678,7 +1678,7 @@ function settingsForm(theme: BoardThemeId, active: SettingsSectionId, facts: Set
 <p class="hint">Pull request title, branch name, attempts, and fix rounds. Each falls back to the global setting.</p>
 <div class="repo-grid">
 <div class="field"><label class="k" for="repo-pr-title">Pull request title template</label><input id="repo-pr-title" type="text" autocomplete="off" spellcheck="false" aria-describedby="hint-pr-title">
-<p class="hint" id="hint-pr-title">Empty uses the default, [{issue}] {title}, which renders as [ABC-123] Title.</p>
+<p class="hint" id="hint-pr-title">Empty uses the default, [{issue}] {title}, which renders as [ABC-123] Title. {type} fills in feat, fix, and so on from the approver, for example {type}: {title}.</p>
 <p class="field-error" data-error="prTitle" hidden></p></div>
 <div class="field"><label class="k" for="repo-branch">Branch name template</label><input id="repo-branch" type="text" autocomplete="off" spellcheck="false" aria-describedby="hint-branch">
 <p class="hint" id="hint-branch">Empty uses the default, {issue}-{slug}, which renders as ABC-123-slug.</p>

@@ -222,6 +222,8 @@ steps:
           properties:
             decision: { type: string, enum: [APPROVE, ESCALATE] }
             reason: { type: string }
+            prSummary: { type: string }
+            changeType: { type: string, enum: [feat, fix, docs, test, refactor, chore] }
           required: [decision, reason]
       tools: [Read, Grep, Glob, Bash, Write, Skill]
     produces: decision

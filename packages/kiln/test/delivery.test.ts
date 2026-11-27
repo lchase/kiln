@@ -15,7 +15,7 @@ import { after, describe, it } from "node:test";
 import { resolveKilnConfig } from "../src/config.js";
 
 delete process.env.KILN_HOME;
-import { writeDelivery } from "../src/delivery.js";
+import { deliverJob, writeDelivery } from "../src/delivery.js";
 import { answerJob, runStatus, runTick } from "../src/driver.js";
 import {
   realGitRemote,
@@ -26,6 +26,7 @@ import {
   HostError,
 } from "../src/host.js";
 import { packageRoot } from "../src/paths.js";
+import type { Job } from "../src/schemas.js";
 import { defaultRemoteBranch } from "../src/pr-names.js";
 
 const root = packageRoot();
@@ -426,6 +427,46 @@ describe("delivery", { concurrency: 1 }, () => {
     const status = runStatus(config, id, host);
     assert.match(status, new RegExp(`${id}\\s+web\\s+feature\\s+in-review\\s+run ${runId}\\s+branch ${remoteName.replaceAll("/", "\\/")}`));
     assert.match(status, /pr https:\/\/github.com\/example\/repo\/pull\/1/);
+  });
+
+  it("titles the pull request from the approver's change type and puts its summary first", () => {
+    const { cwd, home } = workDir();
+    const { checkout } = initOrigin(join(cwd, "repos"));
+    const added = runCli(["repo", "add", "web", checkout, "--test", testCommand, "--deliver", "pr"], { cwd, home });
+    assert.equal(added.status, 0, added.stderr);
+    const config = resolveKilnConfig({ cwd, home });
+    const repo = config.repos.web;
+    assert.ok(repo);
+    repo.prTitle = "{type}: {title}";
+    const github = new FakeGitHub();
+    const host = { github, git: recordingGit().git };
+    const deliver = (title: string, runId: string, decision: Record<string, unknown>) => {
+      const id = addJob(cwd, home, "web", title);
+      commitOnBranch(checkout, `yak/${runId}`, `${runId}.txt`, "landed\n", `kiln: ${title}`);
+      landRun(checkout, id, runId);
+      writeFileSync(join(checkout, ".runs", runId, "artifacts", "decision.json"), `${JSON.stringify(decision)}\n`);
+      const job = JSON.parse(readFileSync(join(home, ".kiln", "jobs", `${id}.json`), "utf8")) as Job;
+      const outcome = deliverJob({ config, job, checkout, runId, baseBranch: "main", host });
+      assert.equal(outcome.ok, true, outcome.detail);
+      return github.pulls.at(-1);
+    };
+
+    const typed = deliver("01: Run a job next", "2026-10-25T00-00-00Z-ty01", {
+      decision: "APPROVE",
+      reason: "Reviews passed.",
+      prSummary: "Jobs can now run next.",
+      changeType: "feat",
+    });
+    assert.equal(typed?.title, "feat: Run a job next");
+    assert.match(typed?.body ?? "", /^Jobs can now run next\.\n\nShip the weekly summary/);
+
+    const invalid = deliver("02: Keep the title", "2026-10-25T00-00-00Z-ty02", {
+      decision: "APPROVE",
+      reason: "Reviews passed.",
+      changeType: "feature",
+    });
+    assert.equal(invalid?.title, "02: Keep the title");
+    assert.match(invalid?.body ?? "", /^Ship the weekly summary/);
   });
 
   it("keeps an after-merged job blocked until the pull request merges, then starts from origin/base", () => {

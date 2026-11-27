@@ -43,6 +43,41 @@ describe("pull request names", () => {
     );
   });
 
+  it("fills {type} from the change type and drops a leading imported ticket number", () => {
+    assert.equal(
+      pullRequestTitle({ title: "01: Run a job next", template: "{type}: {title}", type: "feat" }),
+      "feat: Run a job next",
+    );
+    assert.equal(
+      pullRequestTitle({ title: "Run a job next", template: "{type}: {title}", type: "fix" }),
+      "fix: Run a job next",
+    );
+    assert.equal(
+      pullRequestTitle({ title: "ABC-1: Run a job next", issue: "ABC-1", template: "{type}: [{issue}] {title}", type: "feat" }),
+      "feat: [ABC-1] Run a job next",
+    );
+    assert.equal(pullRequestTitle({ title: "01:", template: "{type}: {title}", type: "docs" }), "docs: 01:");
+  });
+
+  it("falls back to today's title when a {type} template has no change type", () => {
+    const noIssue = pullRequestTitle({ title: "01: Run a job next", template: "{type}: {title}" });
+    assert.equal(noIssue, "01: Run a job next");
+    assert.equal(noIssue, pullRequestTitle({ title: "01: Run a job next" }));
+    const withIssue = pullRequestTitle({ title: "ABC-1: Run a job next", issue: "ABC-1", template: "{type}: {title}" });
+    assert.equal(withIssue, "[ABC-1] Run a job next");
+    assert.equal(noIssue.includes("{type}"), false);
+    assert.equal(withIssue.includes("{type}"), false);
+  });
+
+  it("applies a template without {issue} to every job and keeps the title for an {issue} template with no issue", () => {
+    assert.equal(pullRequestTitle({ title: "Run a job next", template: "[{issue}] {title}" }), "Run a job next");
+    assert.equal(pullRequestTitle({ title: "Run a job next", template: "kiln: {title}" }), "kiln: Run a job next");
+    assert.equal(
+      pullRequestTitle({ title: "ABC-1 Run a job next", issue: "ABC-1", template: "kiln: {title}" }),
+      "kiln: Run a job next",
+    );
+  });
+
   it("builds a readable remote branch and suffixes a name someone else already has", () => {
     assert.equal(shortJobId(jobId), "ab12");
     assert.equal(shortJobId("widget"), "widget");

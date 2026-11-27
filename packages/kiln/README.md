@@ -584,7 +584,7 @@ With `deliver=pr`, the tick after an approved land pushes the local `yak/<run-id
 
 The default remote name is `<issue>-<slug>` when the job has an issue, and `kiln/<slug>-<short id>` otherwise. `slug` is the title in kebab case, at most 50 characters, with a leading issue prefix removed. `short id` is the four hex digits at the end of a kiln job id. A remote branch that already points at a different commit gets `-<short id>` appended, or the full job id when the short id is already on the name. A branch that already points at this commit is ours.
 
-The default pull request title is `[ABC-123] Title` when `issue` is set: template `[{issue}] {title}`. Before that template is applied, a leading `ABC-123:`, `ABC-123 `, or `[ABC-123]` is stripped, so a Jira `KEY: summary` title is not written twice. A job with no issue keeps its title, and a repo `prTitle` template is ignored in that case. Set `prTitle` on the repo (`{issue}` and `{title}`) for another convention. Set `branch` (`{issue}`, `{slug}`, `{jobId}`) for another remote name.
+The default pull request title is `[ABC-123] Title` when `issue` is set: template `[{issue}] {title}`. Before that template is applied, a leading `ABC-123:`, `ABC-123 `, or `[ABC-123]` is stripped, so a Jira `KEY: summary` title is not written twice. Set `prTitle` on the repo (`{issue}`, `{type}`, and `{title}`) for another convention. A template that uses `{issue}` applies only when the job has an issue, and a job with no issue keeps its title. A template without `{issue}` applies to every job. `{type}` is the approver's `changeType` (`feat`, `fix`, `docs`, `test`, `refactor`, or `chore`), and with `{type}` in the template a leading imported ticket number such as `01: ` is dropped from `{title}`. When the approver gave no change type (an older run, or the fix workflow), a `{type}` template falls back to the default title, so no literal `{type}` shows. Set `branch` (`{issue}`, `{slug}`, `{jobId}`) for another remote name.
 
 ```json
 "web": {
@@ -597,7 +597,9 @@ The default pull request title is `[ABC-123] Title` when `issue` is set: templat
 }
 ```
 
-The body is the spec's first paragraph, the line `Kiln job: <id>`, and the security, ux, ui, code, and approver verdicts. The branch, pull request number, and url are written to `~/.kiln/deliveries/<job-id>.json`, not the job file. A later tick looks up an existing pull request for that remote branch and does not push when origin already has the same commit. Deleting the delivery file and ticking again finds that pull request by the remote name. Kiln does not merge, and it does not push the base branch. An investigation is not delivered this way: approve stores findings and the job is `done`.
+For a repo released by release-please, `"prTitle": "{type}: {title}"` gives titles like `feat: Run a job next`, so Kiln's pull requests land in the changelog without a rename at merge.
+
+The body starts with the approver's plain-language summary when it wrote one (`prSummary`), then the spec's first paragraph, the line `Kiln job: <id>`, and the security, ux, ui, code, and approver verdicts. The branch, pull request number, and url are written to `~/.kiln/deliveries/<job-id>.json`, not the job file. A later tick looks up an existing pull request for that remote branch and does not push when origin already has the same commit. Deleting the delivery file and ticking again finds that pull request by the remote name. Kiln does not merge, and it does not push the base branch. An investigation is not delivered this way: approve stores findings and the job is `done`.
 
 If `gh` is missing or not authenticated, that job becomes `failed` and status prints what to run (`gh auth login`, then `kiln tick`). The rest of the tick still runs. The next tick tries again.
 
