@@ -44,7 +44,9 @@ import { intakeJobs } from "./intake-http.js";
 import { isJobId, jobBasename, packageRoot } from "./paths.js";
 import { SANDBOX_PREFLIGHT_PREFIX, sandboxIsEnabled } from "./sandbox.js";
 import type { StatusJobView } from "./report.js";
-import { renderApp, type AppSection, type ServePageOptions, renderMessagePage, renderTextPage } from "./serve-page.js";
+import { renderApp, type AppSection, type ServePageOptions, type StepPage, renderMessagePage, renderTextPage } from "./serve-page.js";
+import { startedPhaseIds } from "./job-view.js";
+import { STEP_NAME, readStepResult } from "./step-result.js";
 import { isPaused, pauseFactory, resumeFactory, spendFor } from "./rails.js";
 import { readSettings, saveSettings } from "./settings.js";
 import type { TickReply, TickRequest } from "./tick-worker.js";
@@ -482,6 +484,47 @@ async function handle(
       ...(job.logTail ? { logText: job.logTail } : {}),
     });
     sendHtml(res, 200, renderShell(state, css, csrf, "job", { detail, ...(tab ? { tab } : {}), activity }), secrets);
+    return;
+  }
+
+  const stepPage = /^\/jobs\/([^/]+)\/steps\/([^/]+)$/.exec(path);
+  if (stepPage?.[1] && stepPage[2]) {
+    const jobId = parseJobId(stepPage[1]);
+    const job = jobId ? findJob(config, jobId) : undefined;
+    if (!job) {
+      sendHtml(res, 404, renderMessagePage(css, "Not found", jobId ? `No job ${jobId}.` : "Not found.", config.boardTheme), secrets);
+      return;
+    }
+    // The step id reaches a file path (the run's artifacts), so check it before anything else uses it.
+    let stepId: string;
+    try {
+      stepId = decodeURIComponent(stepPage[2]);
+    } catch {
+      sendHtml(res, 404, renderMessagePage(css, "Not found", "Not found.", config.boardTheme), secrets);
+      return;
+    }
+    const noStep = () => sendHtml(res, 404, renderMessagePage(css, "Not found", `No step ${stepId}.`, config.boardTheme), secrets);
+    if (!STEP_NAME.test(stepId) || !job.steps.some((step) => step.id === stepId)) {
+      noStep();
+      return;
+    }
+    const viewRaw = url.searchParams.get("view");
+    if (viewRaw !== null && viewRaw !== "activity" && viewRaw !== "result") {
+      sendHtml(res, 400, renderMessagePage(css, "Step", "view must be activity or result.", config.boardTheme), secrets);
+      return;
+    }
+    const detail = detailDocument(state, job);
+    const runDir = runDirOf(config, job);
+    const activity = readRunActivity(runDir, {
+      running: detail.job.state === "running" || detail.job.state === "approved",
+      ...(job.logTail ? { logText: job.logTail } : {}),
+    });
+    if (!startedPhaseIds(detail.job, activity).has(stepId)) {
+      noStep();
+      return;
+    }
+    const step = { id: stepId, view: viewRaw === "result" ? ("result" as const) : ("activity" as const), result: readStepResult(runDir, stepId) };
+    sendHtml(res, 200, renderShell(state, css, csrf, "job", { detail, activity, step }), secrets);
     return;
   }
 
@@ -1051,6 +1094,7 @@ function renderShell(
     detail?: ReturnType<typeof detailDocument>;
     tab?: "overview" | "live" | "changes" | "timeline";
     activity?: ActivityFeed;
+    step?: StepPage;
   } = {},
 ): string {
   const status = readStatus(state.config, undefined, pageHost());
@@ -1066,7 +1110,7 @@ function renderShell(
     ...(extra.repo ? { repo: extra.repo } : {}),
     ...(section === "stats" && extra.window ? { stats: statsDocument(state, extra.window) } : {}),
     ...(section === "report" ? { report: reportDocument(state) } : {}),
-    ...(extra.detail ? { detail: extra.detail, ...(extra.tab ? { tab: extra.tab } : {}), ...(extra.activity ? { activity: extra.activity } : {}) } : {}),
+    ...(extra.detail ? { detail: extra.detail, ...(extra.tab ? { tab: extra.tab } : {}), ...(extra.activity ? { activity: extra.activity } : {}), ...(extra.step ? { step: extra.step } : {}) } : {}),
     ...(section === "triggers"
       ? { triggers: triggerRows(state.config, readEvents(state.config.kilnDir, { warn: () => {} })) }
       : {}),

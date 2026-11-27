@@ -1,4 +1,5 @@
 import { scheduledRetry, attentionReason, conflictFixing, conflictLine } from "./attention.js";
+import type { ActivityFeed } from "./activity.js";
 import { launchBlockLabel, type KilnEvent, type LaunchBlock } from "./events.js";
 import type { FailureClass } from "./failure.js";
 import { feedbackRoundLabel } from "./feedback.js";
@@ -30,6 +31,23 @@ const PHASE_LABEL: Record<string, string> = {
   draft: "Draft",
   fix: "Fix",
 };
+
+/** Who runs each step, for the step page header. A step not listed here uses its workflow kind. */
+const STEP_AGENT: Record<string, string> = {
+  spec: "spec-writer",
+  build: "builder",
+  verify: "command",
+  security: "review-security",
+  ux: "review-ux",
+  ui: "review-ui",
+  code: "review-code",
+  approver: "approver",
+  approve: "you",
+};
+
+export function stepAgent(id: string): string | undefined {
+  return STEP_AGENT[id];
+}
 
 const SEVERITY_ORDER: readonly ReviewSeverity[] = ["blocking", "warning", "nit", "note"];
 
@@ -324,6 +342,11 @@ export interface ProgressSegment {
 }
 
 const REVIEW_STEPS: ReadonlySet<string> = new Set(["security", "ux", "ui", "code"]);
+
+/** The four parallel reviews (security, ux, ui, code). The approver is not one of them. */
+export function isReviewStep(id: string): boolean {
+  return REVIEW_STEPS.has(id);
+}
 
 /**
  * The job page's progress row: one segment per step, with consecutive review
@@ -928,6 +951,29 @@ function reviewLabel(name: string, summary: string): string {
   if (!text) return "";
   if (text.toLowerCase().startsWith(name.toLowerCase())) return text;
   return `${name}: ${text}`;
+}
+
+/**
+ * The phase that is live now, if any. A job waiting out a retry backoff sits in the running column too, so the
+ * job state has to be running or approved as well.
+ */
+export function runningPhaseId(job: Pick<JobView, "state" | "column" | "phases">, feed: Pick<ActivityFeed, "phase">): string | undefined {
+  const live = job.state === "running" || job.state === "approved";
+  if (!live || job.column !== "running") return undefined;
+  return (job.phases.find((phase) => phase.status === "running") ?? job.phases.find((phase) => phase.id === feed.phase))?.id;
+}
+
+/**
+ * Phases that have started: a phase.started event, output in the run's sessions, or the live running phase.
+ * The job page's sections, the step page's list, and the step route all use this one rule.
+ */
+export function startedPhaseIds(
+  job: Pick<JobView, "state" | "column" | "phases">,
+  feed: Pick<ActivityFeed, "phase" | "events">,
+): Set<string> {
+  const running = runningPhaseId(job, feed);
+  const output = new Set(feed.events.map((event) => event.phase));
+  return new Set(job.phases.filter((phase) => phase.startedAt || output.has(phase.id) || phase.id === running).map((phase) => phase.id));
 }
 
 export function phaseLabel(id: string): string {

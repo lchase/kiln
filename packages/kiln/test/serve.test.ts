@@ -743,6 +743,37 @@ describe("kiln serve", () => {
       }
       assert.equal((await text(`${server.url}/jobs/${upstream}?tab=bogus`)).status, 400);
 
+      // One step in full. The job page links to started steps.
+      assert.match(detail.body, new RegExp(`href="/jobs/${upstream}/steps/spec"`));
+      assert.doesNotMatch(detail.body, new RegExp(`href="/jobs/${upstream}/steps/land"`));
+      const stepPage = await text(`${server.url}/jobs/${upstream}/steps/build`);
+      assert.equal(stepPage.status, 200);
+      assert.match(stepPage.body, /<nav class="step-nav" aria-label="Steps">/);
+      assert.match(stepPage.body, new RegExp(`<a class="title-link" href="/jobs/${upstream}">`));
+      assert.match(stepPage.body, /data-pin="true"/);
+      assert.match(stepPage.body, /<span class="step-agent">builder, opus<\/span>/);
+      const results: [string, RegExp[]][] = [
+        ["spec", [/Show the weekly summary\./, /Touch the named module\./]],
+        ["build", [/<dd>READY<\/dd>/, /Mock build\./]],
+        ["verify", [/<dd>passed, exit 0<\/dd>/]],
+        ["security", [/<dd>PASS<\/dd>/, /No must-fix findings\./]],
+        ["approver", [/<dd>APPROVE<\/dd>/, /Reviews passed\./]],
+      ];
+      for (const [step, patterns] of results) {
+        const shown = await text(`${server.url}/jobs/${upstream}/steps/${step}?view=result`);
+        assert.equal(shown.status, 200, step);
+        for (const pattern of patterns) assert.match(shown.body, pattern, step);
+      }
+      assert.equal((await text(`${server.url}/jobs/${upstream}/steps/spec?view=activity`)).status, 200);
+      assert.equal((await text(`${server.url}/jobs/${upstream}/steps/spec?view=prompt`)).status, 400);
+      for (const missing of ["land", "revise", "nope", "..%2F..%2Fjournal", "build%2F..%2F..", "%2E%2E", "%E0%A4%A"]) {
+        const gone = await text(`${server.url}/jobs/${upstream}/steps/${missing}`);
+        assert.equal(gone.status, 404, missing);
+        assert.doesNotMatch(gone.body, /<script>/, missing);
+      }
+      assert.match((await text(`${server.url}/jobs/${upstream}/steps/nope`)).body, /No step nope\./);
+      assert.equal((await text(`${server.url}/jobs/nope-0000/steps/spec`)).status, 404);
+
       const listed = JSON.parse((await text(`${server.url}/api/jobs`)).body) as {
         jobs: { jobId: string; state: string; dependsOn: { jobId: string; state: string }[]; stack: boolean }[];
         attention: { needsYouCount: number; needsYou: { job: { jobId: string } }[] };

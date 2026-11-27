@@ -2516,7 +2516,9 @@
     var cursor = root.getAttribute("data-cursor") || "";
     var running = root.getAttribute("data-running") === "true";
     var phase = root.getAttribute("data-phase") || "";
-    var stick = running;
+    // The step page pins the feed to one step. It never reloads to follow the run to the next step.
+    var pinned = root.getAttribute("data-pin") === "true";
+    var stick = running || pinned;
     var ignoreScroll = true;
     var reloading = false;
     var timer = 0;
@@ -2619,6 +2621,8 @@
 
     function place(event) {
       if (phase && event.phase && event.phase !== phase) {
+        // Pinned to one step: another step's event is not this page's to show.
+        if (pinned) return;
         // A new step started: reload so its section opens. The page scroll is kept by the browser.
         if (!reloading && !actionPending) {
           reloading = true;
@@ -2693,6 +2697,9 @@
       document.addEventListener("visibilitychange", function () {
         if (document.visibilityState === "visible" && running) pull();
       });
+    } else if (pinned) {
+      // A finished step opens at its last line.
+      requestAnimationFrame(follow);
     } else {
       ignoreScroll = false;
     }
