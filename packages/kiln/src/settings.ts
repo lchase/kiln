@@ -36,6 +36,7 @@ export interface SettingsDocument {
   repos: Record<string, RepoEntry>;
   stallTimeoutMs?: number;
   maxAttempts?: number;
+  keepWorktrees?: boolean;
   maxFixRounds?: number;
   maxSameFingerprint?: number;
   dailyDollarCap?: number;
@@ -204,6 +205,7 @@ function project(
     repos: file.repos,
     ...(file.stallTimeoutMs !== undefined ? { stallTimeoutMs: file.stallTimeoutMs } : {}),
     ...(file.maxAttempts !== undefined ? { maxAttempts: file.maxAttempts } : {}),
+    ...(file.keepWorktrees !== undefined ? { keepWorktrees: file.keepWorktrees } : {}),
     ...(file.maxFixRounds !== undefined ? { maxFixRounds: file.maxFixRounds } : {}),
     ...(file.maxSameFingerprint !== undefined ? { maxSameFingerprint: file.maxSameFingerprint } : {}),
     ...(file.dailyDollarCap !== undefined ? { dailyDollarCap: file.dailyDollarCap } : {}),
@@ -319,6 +321,7 @@ function mergeSettings(
   next.repos = repos;
   setOptional(next, "stallTimeoutMs", settings.stallTimeoutMs);
   setOptional(next, "maxAttempts", settings.maxAttempts);
+  setOptional(next, "keepWorktrees", settings.keepWorktrees);
   setOptional(next, "maxFixRounds", settings.maxFixRounds);
   setOptional(next, "maxSameFingerprint", settings.maxSameFingerprint);
   setOptional(next, "dailyDollarCap", settings.dailyDollarCap);

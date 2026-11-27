@@ -91,6 +91,8 @@ export interface JobChanges {
   /** Per-file line counts from `git diff --numstat base...branch`. Absent without a base. */
   files?: DiffFile[];
   commits: CommitRow[];
+  /** Set when the run's local branch is gone (worktree cleanup deleted it). */
+  changesUnavailable?: string;
 }
 
 export interface DiffFile {
@@ -266,7 +268,8 @@ export function phaseFeed(events: readonly KilnEvent[], jobId: string): PhaseCar
       continue;
     }
     if (event.event === "pr.feedback") {
-      const trigger = event.properties.trigger === "ci" ? "CI" : "review";
+      const trigger =
+        event.properties.trigger === "ci" ? "CI" : event.properties.trigger === "conflict" ? "conflict" : "review";
       cards.push({
         step: "fix",
         label: `Fix round ${event.properties.round} · ${trigger}`,
@@ -307,6 +310,7 @@ export function jobChanges(
   commits: readonly CommitRow[],
   diffStat?: string,
   files?: readonly DiffFile[],
+  removedBranch?: string,
 ): JobChanges {
   let branch = job.branch;
   let base: string | undefined;
@@ -328,6 +332,11 @@ export function jobChanges(
     ...(diff ? { diffStat: diff } : {}),
     ...(files && files.length > 0 ? { files: [...files] } : {}),
     commits: [...commits],
+    ...(removedBranch
+      ? {
+          changesUnavailable: `Branch ${removedBranch} was removed after the job finished; changes are no longer available locally.`,
+        }
+      : {}),
   };
 }
 
@@ -374,9 +383,11 @@ export function jobDetail(input: {
   commits?: readonly CommitRow[];
   diffStat?: string;
   diffFiles?: readonly DiffFile[];
+  /** Local `yak/<run id>` that no longer exists. */
+  removedBranch?: string;
 }): JobDetail {
   const jobEvents = input.events.filter((event) => event.job_id === input.job.jobId);
-  const changes = jobChanges(input.job, input.events, input.commits ?? [], input.diffStat, input.diffFiles);
+  const changes = jobChanges(input.job, input.events, input.commits ?? [], input.diffStat, input.diffFiles, input.removedBranch);
   return {
     job: projectJob(input.job, input.events),
     overview: phaseFeed(input.events, input.job.jobId),
@@ -514,6 +525,12 @@ export function readBranchCommits(repoPath: string, branch: string): CommitRow[]
   });
   if (result.status !== 0) return [];
   return commitsFromLog(result.stdout ?? "");
+}
+
+/** `refs/heads/<branch>` exists in `repoPath`. */
+export function localBranchExists(repoPath: string, branch: string): boolean {
+  if (!safeRef(branch)) return false;
+  return spawnSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: repoPath }).status === 0;
 }
 
 /** `git diff --shortstat base...branch`. Failure is omitted, not invented. */

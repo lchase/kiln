@@ -29,6 +29,7 @@ import {
   jobDetail,
   parseSeenQuery,
   parseStatsWindow,
+  localBranchExists,
   readBranchCommits,
   readDiffFiles,
   readDiffStat,
@@ -1112,6 +1113,8 @@ function detailDocument(state: LiveConfig, job: StatusJobView) {
   const diff = repo && branch && base ? readDiffStat(repo.path, base, branch) : undefined;
   const files = repo && branch && base ? readDiffFiles(repo.path, base, branch) : undefined;
   const issue = jobIssue(state.config, job.jobId);
+  const localBranch = job.runId && branch ? `yak/${job.runId}` : undefined;
+  const removedBranch = repo && localBranch && !localBranchExists(repo.path, localBranch) ? localBranch : undefined;
   return jobDetail({
     job,
     events,
@@ -1120,6 +1123,7 @@ function detailDocument(state: LiveConfig, job: StatusJobView) {
     ...(issue ? { issue } : {}),
     ...(diff ? { diffStat: diff } : {}),
     ...(files ? { diffFiles: files } : {}),
+    ...(removedBranch ? { removedBranch } : {}),
   });
 }
 

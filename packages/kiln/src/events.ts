@@ -46,6 +46,8 @@ export const EVENT_NAMES = [
   "run.finished",
   "pr.opened",
   "pr.feedback",
+  "pr.conflicted",
+  "pr.updated",
   "worktree.cleaned",
   "worktree.kept",
   "config.reloaded",
@@ -185,12 +187,34 @@ const PrOpened = z.object({
 });
 const PrFeedback = z.object({
   round: z.number().int().positive(),
-  trigger: z.enum(["ci", "review"]),
+  trigger: z.enum(["ci", "review", "conflict"]),
   outcome: z.enum(["fixed", "pushed"]).optional(),
   items: z.number().int().nonnegative().optional(),
   once,
 });
-const Worktree = z.object({ once });
+const SHA = z.string().regex(/^[0-9a-f]{7,64}$/i);
+/** GitHub said the pull request conflicts with its base on this head commit. */
+const PrConflicted = z.object({
+  headSha: SHA,
+  base: z.string().min(1),
+  once,
+});
+/** Kiln pushed a merge of the base onto the pull request branch. `agent` is false for a plain merge. */
+const PrUpdated = z.object({
+  from: SHA,
+  sha: SHA,
+  agent: z.boolean(),
+  once,
+});
+const Worktree = z.object({
+  once,
+  /** Why the worktree was removed or kept. */
+  reason: z.string().min(1).optional(),
+  /** Sha of the snapshot commit Kiln made for uncommitted changes. Never pushed. */
+  snapshot: z.string().min(1).optional(),
+  /** Whether `yak/<run id>` was deleted with the worktree. */
+  branch: z.enum(["deleted", "kept"]).optional(),
+});
 const ConfigReloaded = z.object({ once });
 const NeedsHuman = z.object({
   reason: z.string().min(1),
@@ -283,6 +307,8 @@ export const EventSchema = z.discriminatedUnion("event", [
   z.object({ ...envelope, event: z.literal("run.finished"), job_id: z.string().min(1), properties: RunFinished }),
   z.object({ ...envelope, event: z.literal("pr.opened"), job_id: z.string().min(1), properties: PrOpened }),
   z.object({ ...envelope, event: z.literal("pr.feedback"), job_id: z.string().min(1), properties: PrFeedback }),
+  z.object({ ...envelope, event: z.literal("pr.conflicted"), job_id: z.string().min(1), properties: PrConflicted }),
+  z.object({ ...envelope, event: z.literal("pr.updated"), job_id: z.string().min(1), properties: PrUpdated }),
   z.object({ ...envelope, event: z.literal("worktree.cleaned"), job_id: z.string().min(1), properties: Worktree }),
   z.object({ ...envelope, event: z.literal("worktree.kept"), job_id: z.string().min(1), properties: Worktree }),
   z.object({

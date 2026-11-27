@@ -286,8 +286,10 @@ export interface StatusJobView {
   rounds?: BoardReviewRound[];
   /** Pull request feedback rounds. Separate from the factory reviewer rounds. */
   feedbackRounds?: FeedbackRound[];
-  /** Set when the job is needs-human because feedback is exhausted or ambiguous. */
-  feedbackReason?: "feedback-exhausted" | "feedback-ambiguous";
+  /** Set when the job is needs-human because feedback is exhausted or ambiguous, or conflict rounds ran out. */
+  feedbackReason?: "feedback-exhausted" | "feedback-ambiguous" | "pr-conflict";
+  /** The pull request conflicts with its base. Kiln is fixing it, or the rounds ran out. */
+  prConflict?: { base: string; files: string[] };
   /** `<kilnDir>/feedback/<id>.json` could not be parsed. */
   feedbackLedgerError?: string;
   /** Spec, build, decision, reviews, and the gate, for the console drawer. */
@@ -443,7 +445,9 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
 
   const state = jobState(job, observation);
   const feedbackReason = job.feedbackExhausted
-    ? "feedback-exhausted"
+    ? job.prConflict
+      ? "pr-conflict"
+      : "feedback-exhausted"
     : job.feedbackAmbiguous
       ? "feedback-ambiguous"
       : undefined;
@@ -485,6 +489,9 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     ...(job.ledgerError ? { ledgerError: job.ledgerError } : {}),
     ...(job.feedbackLedgerError ? { feedbackLedgerError: job.feedbackLedgerError } : {}),
     ...(feedbackReason ? { feedbackReason } : {}),
+    ...(job.prConflict && (state === "in-review" || state === "running" || state === "needs-human")
+      ? { prConflict: job.prConflict }
+      : {}),
     ...(job.launchError ? { launchError: job.launchError } : {}),
     ...(state === "queued" && job.launchBlock ? { launchBlock: job.launchBlock } : {}),
     ...(job.delivery?.error ? { deliveryError: job.delivery.error } : {}),

@@ -1007,9 +1007,10 @@ function changesHtml(detail: JobDetail): string {
   const base = changes.base ? `<p><span class="k">Base</span> <span class="mono">${escapeHtml(changes.base)}</span></p>` : "";
   const pr = prHtml(changes.prUrl, changes.prNumber);
   const diff = changes.diffStat ? `<pre class="text">${escapeHtml(changes.diffStat)}</pre>` : "";
+  const unavailable = changes.changesUnavailable ? `<p class="empty">${escapeHtml(changes.changesUnavailable)}</p>` : "";
   const commits =
     changes.commits.length === 0
-      ? `<p class="empty">No commits read for this branch.</p>`
+      ? unavailable || `<p class="empty">No commits read for this branch.</p>`
       : `<ul class="commits">${changes.commits
           .map((commit) => {
             const round = commit.round !== undefined ? `<span class="meta">Kiln-Round ${commit.round}</span>` : "";
@@ -1253,6 +1254,9 @@ ${settingsTabs()}
 <label class="field"><span class="k">Stall timeout (ms)</span><input id="stall-timeout" type="number" step="1"></label>
 <p class="hint" id="hint-stall"></p>
 <p class="field-error" data-error="stallTimeoutMs" hidden></p>
+<label class="field"><span class="k">Keep worktrees</span><input id="keep-worktrees" type="checkbox"></label>
+<p class="hint">Off: each tick removes a finished run's worktree. On: only kiln clean --apply removes them.</p>
+<p class="field-error" data-error="keepWorktrees" hidden></p>
 <label class="field"><span class="k">Max fix rounds</span><input id="max-fix-rounds" type="number" min="1" step="1"></label>
 <p class="hint" id="hint-fix"></p>
 <p class="field-error" data-error="maxFixRounds" hidden></p>

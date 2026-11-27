@@ -120,6 +120,7 @@ That is the Anthropic API, the npm registry, and the GitHub hosts a fetch or ins
 | approve gates | Host. A person answers them. |
 | feature: land, fix: land | Host. `git commit` uses the host git identity. Publishing the fix branch is the kiln process. |
 | Pull request open, `git push`, `gh pr view`, feedback reads | Host kiln process. They are not workflow steps. |
+| Pull request conflict: plain merge of the base and test run | Host kiln process. It runs the repo `test` command on the merged tree, outside the sandbox. |
 
 `kiln sandbox` prints the resolved mode, the allowlist, and anything still missing. `kiln sandbox build` builds the images yak ships but does not publish, from the tag that matches the installed `@lchase/yak`:
 
@@ -343,8 +344,9 @@ A failed fire stores `last_error` and `lastErrorAt` under `<kiln-home>/triggers/
 `kiln cancel --queued` cancels jobs that have not started. `--repo` and `--workflow` narrow it. `POST /api/jobs/cancel` with `{ "queued": true }` does the same for the board. Both are idempotent: a second call cancels nothing new and writes no second `job.cancelled` event. Running, blocked, and finished jobs stay. Cancelling does not delete branches.
 
 `kiln cancel <jobId>` stops one job, whatever it is doing. A queued or blocked job becomes `cancelled`. A running
-run has its whole process tree killed, `yak cancel` closes its journal, and it is not retried; the worktree and
-branch stay as they are. A gated job's gate is closed without an approve or reject, and nothing is posted or landed.
+run has its whole process tree killed, `yak cancel` closes its journal, and it is not retried; the branch stays,
+and the next tick removes the worktree (see [Worktree cleanup](#worktree-cleanup)). A gated job's gate is closed
+without an approve or reject, and nothing is posted or landed.
 An in-review job stops being watched; its pull request stays open for you. A done or rejected job is left alone
 and the command says there is nothing to stop. The job file is stamped first and one `job.cancelled` records the
 prior state (`was`). Running it again writes nothing and prints `<id> already cancelled`.
@@ -411,7 +413,7 @@ A job is ready when its dependencies are met and the number of jobs in flight is
 
 `stallTimeoutMs` (default `900000`, 15 minutes), `maxAttempts` (default `3`), and `maxFixRounds` (default `2`) live in the kiln config. `stallTimeoutMs` of `0` or below turns stall detection off. A running job with no yak journal event, no log output, and no agent session output (the newest mtime under `.runs/<run id>/sessions/`) for that long is killed, process tree included, and marked failed with reason `stalled`. A process that is already gone when `kiln tick` or `kiln serve` starts is `orphaned`. An agent or launch crash is `crashed`. A non-zero exit that is not a gate rejection is `failed`. Those four retry on their own after `10s × 2^(n-1)`, capped at 5 minutes. A rejected gate, a cancelled run, and an ok run with no readable approval do not. After `maxAttempts` the failure is class `budget` and the job is `needs-human`. The same fingerprint does that after `maxSameFingerprint` (default 3) even sooner. A test, build, or type error is class `deterministic` and is not retried. `repos.<name>.maxAttempts` and `repos.<name>.maxFixRounds` override the global caps. `dailyDollarCap`, when set, blocks new runs once today's recorded dollars reach it. `kiln pause` does the same until `kiln resume`. In-flight runs finish. `kiln revise <id> --note <text>` sends a gated job around again with that note in the next prompt. Each attempt is a file under `<kiln-dir>/attempts/<job-id>.json`, so state stays derived. Status prints `attempts`, `reason`, and `next retry` from the same view `readStatus` returns. On the board, a dead card in Needs human shows `attempt N/M` and the reason. A failure that still has a scheduled retry stays in its stage column instead, with `retrying` and the local time.
 
-While a `deliver=pr` job is `in-review`, tick reads that pull request with `gh`: check runs for the head, reviews, and unresolved review comments. The operator's inline comments and unresolved threads count; a top-level note counts only when it starts with `/kiln`, and that prefix is left out of the fix prompt. Comments from `kiln` or a `[bot]` login are ignored, and a resolved thread does not start a round. Pending checks are ignored. A completed failing check on a head that no round has recorded, or review feedback newer than the last round, starts `workflows/fix.yaml` with `yak run --from` that head. The prompt is the original spec plus the failing check names (with a short log excerpt) and the review comment bodies, including file and line. The agent commits on `yak/<run-id>` and does not push. Kiln fast-forwards the open pull request branch. It does not open a second pull request, force-push, merge, approve, or comment. The same head and the same feedback do not start two runs. Each round is a file under `<kiln-dir>/feedback/<job-id>.json`. A stall or crash during a fix uses the attempt ledger above. After `maxFixRounds` the job is `needs-human` with reason `feedback-exhausted`. Feedback Kiln cannot classify is `needs-human` with reason `feedback-ambiguous`. The person merges the pull request.
+While a `deliver=pr` job is `in-review`, tick reads that pull request with `gh`: check runs for the head, reviews, and unresolved review comments. The operator's inline comments and unresolved threads count; a top-level note counts only when it starts with `/kiln`, and that prefix is left out of the fix prompt. Comments from `kiln` or a `[bot]` login are ignored, and a resolved thread does not start a round. Pending checks are ignored. A completed failing check on a head that no round has recorded, or review feedback newer than the last round, starts `workflows/fix.yaml` with `yak run --from` that head. The prompt is the original spec plus the failing check names (with a short log excerpt) and the review comment bodies, including file and line. The agent commits on `yak/<run-id>` and does not push. Kiln fast-forwards the open pull request branch. It does not open a second pull request, force-push, merge, approve, or comment. The same head and the same feedback do not start two runs. Each round is a file under `<kiln-dir>/feedback/<job-id>.json`. A stall or crash during a fix uses the attempt ledger above. After `maxFixRounds` the job is `needs-human` with reason `feedback-exhausted`. Feedback Kiln cannot classify is `needs-human` with reason `feedback-ambiguous`. A conflict with the base is feedback too: when `gh pr view` says `mergeable` is `CONFLICTING`, Kiln first merges `origin/<base>` into the branch itself, with no agent, runs the repo test command, and pushes that merge commit. When the merge conflicts or the tests fail, a fix round tells the agent to merge the base, resolve the conflicts, and run the tests. Kiln only merges: it never rebases and never force-pushes. The board shows `Conflicts with <base>, fixing` while that happens, and the job is not in Needs you. After `maxFixRounds` the job is `needs-human` with reason `pr-conflict` and the conflicting files. `kiln retry` clears that stop. The person merges the pull request.
 
 `npm run kiln -- status` lists jobs across repos. When a job has `source`, status prints `source <kind> <ref>`. For `needs-human` it prints `approve: kiln approve <id>` and `reject: kiln reject <id>`. Run those as `npm run kiln -- approve <id>` and `npm run kiln -- reject <id>`. For `done` and `in-review` it prints the branch. `deliver=local` prints `branch yak/<run-id>`. `deliver=pr` prints the remote branch name recorded on the delivery, and the pull request url once one exists. `auth-failed` prints `Claude login rejected (401) — check CLAUDE_CODE_OAUTH_TOKEN / claude login, then Retry`. For an investigation whose findings file exists, it prints `findings <path>`. That path is `findingsPath` on the same status view `kiln serve` renders, and the console links it. For `blocked` on a dependency id that has no job file, it prints `blocked on missing job <id>`. While an upstream pull request is open, it prints `waiting for PR #N to merge`. `npm run kiln -- retry <id>` relaunches a failed or dead job, or delivers again when the only failure is opening the pull request, and clears the attempt ledger.
 
@@ -423,16 +425,52 @@ State is derived from the yak journal, the gate files, and (for `deliver=pr`) `g
 | --- | --- |
 | `queued` | Dependencies are met, and the job has not started |
 | held | Not a state: a held job keeps its derived state (`queued`, `blocked`, or `failed` awaiting retry). It never launches or retries on its own and takes no slot. Status prints `held`, `kiln queue` prints reason `held`, and the board says "Held" |
-| `cancelled` | Any job that was not done or rejected, stopped by `kiln cancel`. Tick does not launch, retry, deliver, or watch it. Dependents, after-merged and stacked, stay `blocked`. No branch is deleted |
+| `cancelled` | Any job that was not done or rejected, stopped by `kiln cancel`. Tick does not launch, retry, deliver, or watch it. Dependents, after-merged and stacked, stay `blocked`. Its worktree is removed; a branch is deleted only when no commit is lost |
 | `blocked` | An after-merged dependency is not `done`, or a stacked dependency has not landed. A missing job id is named |
 | `running` | Yak is alive, or the launch process is alive and has not written a journal |
-| `needs-human` | A gate is open, feedback is exhausted or ambiguous, the attempt cap is used, or the same fingerprint has failed `maxSameFingerprint` times. `kiln retry` clears an attempt-cap or fingerprint stop. `kiln revise --note` sends a gate back with a note |
+| `needs-human` | A gate is open, feedback is exhausted or ambiguous, the pull request still conflicts with its base after `maxFixRounds`, the attempt cap is used, or the same fingerprint has failed `maxSameFingerprint` times. `kiln retry` clears an attempt-cap, fingerprint, or `pr-conflict` stop. `kiln revise --note` sends a gate back with a note |
 | `approved` | The gate says approve and the run has not finished. This still holds a slot |
 | `rejected` | The run finished ok and the gate says reject |
 | `failed` | The run failed, the launch died before a journal, the run finished ok with no readable approval, a pull request could not be opened, a Claude login was rejected (`auth-failed`, not retried), or a transient failure is waiting to retry |
 | `dead` | A journal whose process is already gone, before the next tick records it. Status prints the cancel command when a process is gone |
 | `in-review` | `deliver=pr` and the run has landed. The pull request is open, or the next tick still has to open it |
 | `done` | `deliver=local`: the run finished ok and the gate says approve. `deliver=pr`: that pull request has merged. An investigation is `done` when the gate says approve, including when the repo is `deliver=pr`. It does not enter `in-review` |
+
+## Worktree cleanup
+
+Every run gets its own git worktree at `<checkout>/.yak/worktrees/<run-id>` on branch `yak/<run-id>`. After each
+tick, Kiln removes a run's worktree once nothing will use it again:
+
+- the job is `done` (merged, or landed with `deliver: local`), `rejected`, or `cancelled`;
+- the run failed or died and is not live, including an earlier attempt that a retry or revise replaced;
+- a fix run whose round has settled (pushed or fixed);
+- the run landed with `deliver: pr` and its branch was pushed for the pull request. Fix rounds cut their own
+  worktree from the pull request head.
+
+A worktree stays while its run is alive, waiting on a gate, launching, part of a fix round in progress, or landed
+and still waiting for Kiln to push it. A directory under `.yak/worktrees/` that no Kiln job owns (including runs of
+a job removed with `kiln remove`) is never touched. `.runs/<run-id>` journals always stay.
+
+No work is lost. A dirty worktree is first committed to its own `yak/<run-id>` branch as a snapshot commit by
+`kiln <kiln@localhost>` whose message says Kiln made it and why. Kiln never pushes that commit. Ignored files such as
+`node_modules` are not saved. After the worktree is removed, `yak/<run-id>` is deleted only when its tip is on a
+remote or is an ancestor of the base branch (the pull request base, else the checkout's `HEAD`). A branch with a
+commit found nowhere else stays, and so does a branch a not-yet-launched `--stack` job will be cut from. A failed
+snapshot or `git worktree remove` (a locked worktree, for example) keeps the worktree. Each outcome is recorded once
+in the event log as `worktree.cleaned` or `worktree.kept`, with the reason, the snapshot sha, and whether the
+branch was deleted. A snapshot keeps every untracked, non-ignored file the agent left, so a stray `.env` or
+credentials file can end up in a kept local branch; check snapshot branches before sharing them. Once a branch is
+gone, the job page says its changes are no longer available locally.
+
+```bash
+npm run kiln -- clean                  # list every worktree, its size, job, state, and what would happen
+npm run kiln -- clean --apply          # remove the ones listed as removable
+npm run kiln -- clean --repo web       # limit to one registered repo
+```
+
+`kiln clean` with no flags changes nothing. `--apply` removes exactly the entries it listed as `remove` or
+`snapshot-remove`; a second run removes nothing. Set `"keepWorktrees": true` in the kiln config (or tick Keep
+worktrees in Settings) to stop the tick from removing anything. `kiln clean --apply` still removes when it is set.
 
 ## What a feature job runs
 
