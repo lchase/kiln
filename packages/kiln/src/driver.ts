@@ -212,7 +212,7 @@ export interface TickOptions {
 }
 
 export function runStatus(config: LoadedKilnConfig, jobId?: string, host: KilnHost = defaultHost()): string {
-  return renderStatus(readStatus(config, jobId, host));
+  return renderStatus(readStatus(config, jobId, host), { steps: jobId !== undefined });
 }
 
 export function runTick(

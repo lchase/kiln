@@ -16,6 +16,7 @@ import {
   QUIET_AFTER_MS,
   activityLiveness,
   formatCost,
+  formatStepUsage,
   formatDuration,
   formatClock,
   formatDay,
@@ -1037,7 +1038,8 @@ function stepPageHtml(detail: JobDetail, step: StepPage, clock: BoardClock, acti
   const open = step.id === runningId;
   const bits = phase ? stepStateBits(phase, clock, open) : [];
   const agent = stepAgent(step.id) ?? step.result.stepKind;
-  const who = [agent, step.result.model].filter(Boolean).join(", ");
+  // The observed model and the step's cost, once it has run. Before that, the workflow's model.
+  const who = [agent, phase && hasUsage(phase) ? formatStepUsage(phase) : step.result.model].filter(Boolean).join(", ");
   const commands = events.filter((event) => event.kind === "command").length;
   const files = editedFiles(events);
   const here = stepHref(job, step.id);
@@ -1168,6 +1170,7 @@ function jobMetaHtml(job: JobView): string {
   if (job.attemptCount > 0) bits.push(`<span>attempt ${job.attemptCount} of ${job.maxAttempts}</span>`);
   const cost = formatCost(job.costUsd);
   if (cost) bits.push(`<span>${escapeHtml(cost)}</span>`);
+  if (cost && job.costPartial) bits.push(`<span class="meta" title="The steps' costs do not add up to this total">partial</span>`);
   bits.push(`<span class="mono" title="${escapeHtml(job.jobId)}">${escapeHtml(shortJobId(job.jobId))}</span>`);
   if (job.branch) bits.push(`<span class="mono">${escapeHtml(job.branch)}</span>`);
   const pr = prHtml(job.prUrl, job.prNumber);
@@ -1322,6 +1325,7 @@ function stepSectionHtml(job: JobView, phase: PhaseView, feed: ActivityFeed, clo
   const commands = events.filter((event) => event.kind === "command").length;
   const bits = stepStateBits(phase, clock, open && Boolean(phase.startedAt));
   bits.push(commands === 1 ? "1 command" : `${commands} commands`);
+  if (hasUsage(phase)) bits.push(formatStepUsage(phase));
   const headId = `step-${escapeHtml(phase.id)}`;
   // fix-N and other phases outside the workflow's leaf plan have no step page.
   const title = job.steps.some((step) => step.id === phase.id)
@@ -1343,6 +1347,11 @@ ${liveFeedHtml(phase.label, events)}
 <header class="step-head"><h2 id="${headId}">${title}</h2>${line}${verdict}${output}</header>
 ${shown}
 </section>`;
+}
+
+/** The step has a usage entry: it is an agent step that has run. */
+function hasUsage(phase: PhaseView): boolean {
+  return phase.status !== "pending" && (phase.model !== undefined || phase.costUsd !== undefined || phase.tokens !== undefined);
 }
 
 function producedLink(job: JobView, phase: PhaseView): string {

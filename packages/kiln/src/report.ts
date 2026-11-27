@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { newestActivity } from "./activity.js";
+import { formatStepUsage } from "./job-view.js";
+import { readStepUsage, type StepUsage } from "./step-usage.js";
 import { AUTH_FAILED_LINE } from "./auth.js";
 import { launchBlockLabel, type LaunchBlock } from "./events.js";
 import { readBoardFiles, readReviewRounds, type BoardFile, type BoardReviewRound } from "./board.js";
@@ -296,6 +298,8 @@ export interface StatusJobView {
   files?: BoardFile[];
   /** Valid jobs whose `dependsOn` names this one. Remove is refused while any exist. */
   dependents?: string[];
+  /** Model and usage per step of the current run, from its session files. Absent when no step has any. */
+  stepUsage?: StepUsage[];
 }
 
 export interface StatusView {
@@ -323,13 +327,15 @@ export function statusView(observation: Observation, jobId?: string, now = new D
   };
 }
 
-export function renderStatus(view: StatusView): string {
+/** `steps`: also print one `step <id> …` line per step usage entry (`kiln status <jobId>`). */
+export function renderStatus(view: StatusView, options: { steps?: boolean } = {}): string {
   if (view.jobs.length === 0) return "no jobs\n";
   const lines: string[] = [];
   for (const job of view.jobs) {
     lines.push(statusHeader(job));
     if (job.state === "invalid") continue;
     for (const detail of statusDetails(job)) lines.push(`  ${detail}`);
+    if (options.steps) for (const usage of job.stepUsage ?? []) lines.push(`  step ${usage.stepId} ${formatStepUsage({ ...usage, ...(usage.usd !== undefined ? { costUsd: usage.usd } : {}) })}`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -514,6 +520,7 @@ function toStatusJob(job: ObservedJob, observation: Observation): StatusJobView 
     ...(job.logTail ? { logTail: job.logTail } : {}),
     ...(job.diffSummary ? { diffSummary: job.diffSummary } : {}),
     ...activityStamp(job),
+    ...stepUsageField(job),
     ...(failureDetail ? { failureDetail } : {}),
     ...(job.run?.sandboxError ? { sandboxError: job.run.sandboxError } : {}),
     ...(job.sandboxed ? { sandboxed: true } : {}),
@@ -569,6 +576,13 @@ function activityStamp(job: ObservedJob): { lastActivityAt?: string; latestNote?
   if (!run || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(run.runId)) return {};
   const { at, note } = newestActivity(join(run.checkout, ".runs", run.runId));
   return { ...(at ? { lastActivityAt: at } : {}), ...(note ? { latestNote: note.text, latestNoteAt: note.at } : {}) };
+}
+
+function stepUsageField(job: ObservedJob): { stepUsage?: StepUsage[] } {
+  const run = job.run;
+  if (!run || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(run.runId)) return {};
+  const usage = readStepUsage(join(run.checkout, ".runs", run.runId), progressFor(job));
+  return usage.length > 0 ? { stepUsage: usage } : {};
 }
 
 function progressFor(job: ObservedJob): StepProgress[] {
