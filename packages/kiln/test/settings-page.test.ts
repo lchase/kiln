@@ -417,7 +417,7 @@ async function openPage(fx: Fixture, path = "/settings", section: SettingsSectio
       delete respond.next;
       return json(next.status, next.data);
     }
-    const result = method === "PUT" ? saveSettings(fx.configPath, body, fx.home, {}) : readSettings(fx.configPath, {});
+    const result = method === "PUT" ? saveSettings(fx.configPath, body, fx.home, {}) : readSettings(fx.configPath, {}, fx.home);
     return result.ok ? json(200, result.document) : json(result.status, result.body);
   };
   const window = {
@@ -833,5 +833,112 @@ describe("settings page script", () => {
     const facts = page.byId("settings-nav");
     assert.equal(facts.querySelector('[data-settings-fact="jira"]')?.textContent, "not set up");
     assert.equal(facts.querySelector('[data-settings-fact="jira"]')?.getAttribute("data-state"), null);
+  });
+});
+
+/** Skills folder with smart-review, then a missing folder, an empty folder, and `~/plug/skills` holding foo. */
+function withSkills(fx: Fixture): { missing: string; empty: string } {
+  const missing = join(fx.home, "missing-skills");
+  const empty = join(fx.home, "empty-skills");
+  for (const dir of [join(fx.home, "my-skills", "smart-review"), join(fx.home, "plug", "skills", "foo"), empty]) {
+    mkdirSync(dir, { recursive: true });
+  }
+  writeFileSync(join(fx.home, "my-skills", "smart-review", "SKILL.md"), "# smart-review\n");
+  writeFileSync(join(fx.home, "plug", "skills", "foo", "SKILL.md"), "# foo\n");
+  const config = JSON.parse(readFileSync(fx.configPath, "utf8")) as Record<string, unknown>;
+  config.overlay = { workflows: "workflows", prompts: "~/prompts", skills: "my-skills", skillPaths: [missing, empty, "~/plug/skills"] };
+  writeFileSync(fx.configPath, `${JSON.stringify(config, null, 2)}\n`);
+  return { missing, empty };
+}
+
+function workflowsPane(): string {
+  const html = pageHtml("workflows");
+  const start = html.indexOf('id="settings-workflows"');
+  assert.notEqual(start, -1);
+  return html.slice(start, html.indexOf("</section>", start));
+}
+
+describe("local workflows and skills section", () => {
+  it("labels each row in plain words and ties each control to its explanation", () => {
+    const pane = workflowsPane();
+    const labels = [...pane.matchAll(/<label[^>]*>([^<]*)<\/label>/g)].map((match) => match[1]);
+    assert.deepEqual(labels, ["Local workflows", "Prompt overrides", "Skills folder", "More skill folders"]);
+    assert.match(pane, /Agents do not see your Claude Code plugins or skills\. List a plugin's <code>skills<\/code> folder here to give agents that skill\./);
+    assert.match(pane, /Skills agents will see/);
+    const keys = /^(workflows|prompts|skills|skillPaths|Skill paths|Workflows|Prompts|Skills|overlay\..*)$/;
+    const allLabels = [...pane.matchAll(/class="(?:setting-label|k)"[^>]*>([^<]*)</g)].map((match) => match[1] ?? "");
+    for (const label of allLabels) assert.doesNotMatch(label, keys, label);
+    const ids = new Set([...pane.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]));
+    for (const id of ["overlay-workflows", "overlay-prompts", "overlay-skills", "overlay-skill-paths"]) {
+      assert.match(pane, new RegExp(`<label class="setting-label" for="${id}">`), id);
+      const control = new RegExp(`<(?:input|textarea) id="${id}"[^>]*aria-describedby="([^"]+)"`).exec(pane);
+      assert.ok(control?.[1], `${id} has aria-describedby`);
+      const described = control[1].split(" ");
+      assert.ok(described.includes(`${id}-explain`), id);
+      for (const ref of described) assert.ok(ids.has(ref), `${id} -> #${ref}`);
+    }
+    assert.match(pane, /aria-describedby="[^"]*overlay-skills-warn/);
+    assert.match(pane, /aria-describedby="[^"]*overlay-skill-paths-warn/);
+    for (const key of ["overlay.workflows", "overlay.prompts", "overlay.skills", "overlay.skillPaths"]) {
+      assert.match(pane, new RegExp(`data-error="${key.replace(".", "\\.")}"`), key);
+    }
+  });
+
+  it("warns by typed folder, lists the skills, keeps ~ as typed, and still saves", async () => {
+    const fx = fixture();
+    const { missing, empty } = withSkills(fx);
+    const original = readFileSync(fx.configPath, "utf8");
+    const page = await openPage(fx, "/settings/workflows", "workflows");
+    assert.equal(page.byId("overlay-skills").value, "my-skills");
+    assert.equal(page.byId("overlay-prompts").value, "~/prompts");
+    assert.equal(page.byId("overlay-skill-paths").value, `${missing}\n${empty}\n~/plug/skills`);
+
+    const pathWarn = page.byId("overlay-skill-paths-warn");
+    assert.equal(pathWarn.hidden, false);
+    assert.deepEqual(
+      pathWarn.querySelectorAll("p").map((line) => line.textContent),
+      [`Folder not found: ${missing}`, `No skills in ${empty} (expected <name>/SKILL.md)`],
+    );
+    assert.equal(page.byId("overlay-skills-warn").hidden, true, "the skills folder holds a skill");
+    assert.deepEqual(page.byId("overlay-skill-names").querySelectorAll("li").map((item) => item.textContent), ["foo", "smart-review"]);
+    assert.equal(bar(page).hidden, true, "a warning is not an unsaved change");
+
+    page.type("overlay-workflows", "flows");
+    assert.equal(bar(page).text, "1 unsaved change, in Local workflows and skills: Local workflows");
+    page.submit();
+    await settle();
+    const sent = puts(page);
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0]?.body?.overlay, {
+      workflows: "flows",
+      prompts: "~/prompts",
+      skills: "my-skills",
+      skillPaths: [missing, empty, "~/plug/skills"],
+    });
+    assert.equal(page.byId("settings-error").hidden, true);
+    assert.equal(bar(page).hidden, true, "saved");
+    const saved = JSON.parse(readFileSync(fx.configPath, "utf8")) as { overlay: { workflows: string; skillPaths: string[] } };
+    assert.equal(saved.overlay.workflows, "flows");
+    assert.deepEqual(saved.overlay.skillPaths, [missing, empty, "~/plug/skills"]);
+
+    // Put the value back and save again: the overlay is written as it started, key order and `~` included.
+    // (Byte-for-byte for the whole file is in serve-settings.test.ts; this fixture's trigger keys are reordered.)
+    page.type("overlay-workflows", "workflows");
+    page.submit();
+    await settle();
+    assert.equal(puts(page).length, 2);
+    const overlayText = (text: string) => JSON.stringify((JSON.parse(text) as { overlay: unknown }).overlay);
+    assert.equal(overlayText(readFileSync(fx.configPath, "utf8")), overlayText(original));
+  });
+
+  it("names a missing skills folder, and says when no skills are found", async () => {
+    const fx = fixture();
+    const config = JSON.parse(readFileSync(fx.configPath, "utf8")) as Record<string, unknown>;
+    config.overlay = { skills: "~/nope" };
+    writeFileSync(fx.configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const page = await openPage(fx, "/settings/workflows", "workflows");
+    assert.equal(page.byId("overlay-skills-warn").textContent, "Folder not found: ~/nope");
+    assert.equal(page.byId("overlay-skill-paths-warn").hidden, true);
+    assert.equal(page.byId("overlay-skill-names").textContent, "No skills found.");
   });
 });

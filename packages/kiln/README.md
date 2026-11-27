@@ -71,7 +71,7 @@ Workflow YAML is loaded from the package or from the local workflows directory. 
 
 `skills/` is a tree of Claude Code skills (`<name>/SKILL.md`). Kiln passes that directory, plus `overlay.skillPaths`, to the agent. With the sandbox off, the Skill tool can load them. With `sandbox.mode` set to `docker`, yak mounts only those directories into the container, read-only, at the same host path. It does not mount `~/.claude`. Skills are not copied into the checkout or into job artifacts. The Skill tool sees each skill under its directory name.
 
-Agents do not load your user Claude Code setup (`~/.claude`): no global CLAUDE.md, plugins, user skills, agents, hooks, or MCP servers. The checkout's project settings still load. This keeps every agent turn small; the user setup added about 120K tokens per turn. A skill an agent needs, such as `smart-review` for the code review, goes in `skills/` or `overlay.skillPaths`. For a skill installed as a plugin, point `skillPaths` at the plugin's `skills` directory, for example `~/.claude/plugins/marketplaces/<marketplace>/plugins/smart-review/skills`.
+Agents do not load your user Claude Code setup (`~/.claude`): no global CLAUDE.md, plugins, user skills, agents, hooks, or MCP servers. The checkout's project settings still load. This keeps every agent turn small; the user setup added about 120K tokens per turn. A skill an agent needs, such as `smart-review` for the code review, goes in `skills/` or `overlay.skillPaths`. For a skill installed as a plugin, point `skillPaths` at the plugin's `skills` directory, for example `~/.claude/plugins/marketplaces/<marketplace>/plugins/smart-review/skills`. Settings → Local workflows and skills lists the skills agents will see and warns about a skill folder that is missing or holds no skills, so a typo does not silently drop one.
 
 A launch with skill directories set refuses an installed `@lchase/yak` that drops `skillDirs` while loading workflow YAML, so an older package cannot ignore them. Settings does not accept workflow YAML or skill file bodies.
 
@@ -346,6 +346,11 @@ Settings (`/settings`) edits triggers, routes, Jira, overlay paths, and the rest
 down the side: Repos, Limits and retries, Sandbox, Triggers (with routes under them), Jira, Local workflows and skills,
 Appearance, and Edit the file. Each has its own address, such as `/settings/triggers`. A bar at the bottom lists unsaved
 changes and has Discard and Save changes.
+
+Local workflows and skills lists the skill names agents will see, read from the saved skills folder and extra skill
+folders. A folder that does not exist, or holds no `<name>/SKILL.md`, gets a warning that names it as you typed it.
+The warning does not stop a save. A blank Skills folder uses the Kiln home `skills` folder, which may be missing, so it
+gets no warning. The list and warnings refresh after a save, not while you type.
 
 A cron fires once per slot. While serve was down, startup fires the latest missed slot once and does not replay the ones behind it. A Jira poll that was missed does the same: one search, not one per skipped interval. The router writes `trigger.routed` with a `dedupe` property (`review:<repo>:<number>:<head sha>`, `jira:<trigger>:<issue>`, `pr:<job>:<comment>`). A later tick that sees that value does not create another job. Comments and commits from `kiln`, a `[bot]` login, a `kiln:` subject, or a `Kiln-Job` trailer are ignored.
 

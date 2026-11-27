@@ -1490,6 +1490,41 @@
     if (prompts) prompts.value = overlay.prompts || "";
     if (skills) skills.value = overlay.skills || "";
     if (paths) paths.value = overlay.skillPaths ? overlay.skillPaths.join("\n") : "";
+    fillSkillCheck(data.skillCheck, Boolean(overlay.skills));
+  }
+
+  // Warnings name each problem folder as typed. They reflect the saved values and never block a save.
+  function skillFolderWarning(folder) {
+    if (!folder.exists) return "Folder not found: " + folder.typed;
+    if (!folder.skills || folder.skills.length === 0) return "No skills in " + folder.typed + " (expected <name>/SKILL.md)";
+    return "";
+  }
+
+  function fillSkillWarnings(id, folders) {
+    var slot = document.getElementById(id);
+    if (!slot) return;
+    var lines = [];
+    for (var i = 0; i < folders.length; i++) {
+      var line = skillFolderWarning(folders[i]);
+      if (line) lines.push('<p class="setting-warn-line">' + esc(line) + "</p>");
+    }
+    slot.innerHTML = lines.join("");
+    slot.hidden = lines.length === 0;
+  }
+
+  // A blank skills folder is the optional Kiln home default, which may be missing or empty.
+  function fillSkillCheck(check, skillsTyped) {
+    var folders = (check && check.folders) || [];
+    fillSkillWarnings("overlay-skills-warn", skillsTyped ? folders.slice(0, 1) : []);
+    fillSkillWarnings("overlay-skill-paths-warn", folders.slice(1));
+    var list = document.getElementById("overlay-skill-names");
+    if (!list) return;
+    var names = (check && check.skills) || [];
+    list.innerHTML = names.length === 0
+      ? '<p class="empty">No skills found.</p>'
+      : '<ul class="setting-skills" aria-labelledby="overlay-skill-names-label">' +
+        names.map(function (name) { return "<li>" + esc(name) + "</li>"; }).join("") +
+        "</ul>";
   }
 
   function fillAdvanced(file) {
@@ -1648,10 +1683,10 @@
     ["jira", "jira.baseUrl", "Base URL"],
     ["jira", "jira.email", "Email"],
     ["jira", "jira.acceptanceField", "Acceptance field"],
-    ["workflows", "overlay.workflows", "Workflows"],
-    ["workflows", "overlay.prompts", "Prompts"],
-    ["workflows", "overlay.skills", "Skills"],
-    ["workflows", "overlay.skillPaths", "Skill paths"],
+    ["workflows", "overlay.workflows", "Local workflows"],
+    ["workflows", "overlay.prompts", "Prompt overrides"],
+    ["workflows", "overlay.skills", "Skills folder"],
+    ["workflows", "overlay.skillPaths", "More skill folders"],
   ];
 
   function same(a, b) {
