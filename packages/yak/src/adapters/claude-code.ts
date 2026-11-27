@@ -91,11 +91,19 @@ function skillMountArgs(skillMounts: readonly string[]): string[] {
  * needs no `canUseTool` callback, which yak can't provide (agent steps
  * have no channel to ask a human, spec §3.6). Fixed engine-wide, not a
  * per-step IR field — see ticket 10.
+ *
+ * Agent steps do not load the operator's user settings (`~/.claude`: its
+ * CLAUDE.md, plugins, skills, agents, hooks) or any MCP server. Those added
+ * about 120K tokens to every turn of every step, and a sandboxed step never
+ * had them anyway. Project and local settings of the checkout still load, and
+ * so do configured skill directories (`additionalDirectories`).
  */
-const FIXED_OPTIONS = {
+const FIXED_OPTIONS: Options = {
   permissionMode: 'bypassPermissions',
   allowDangerouslySkipPermissions: true,
-} as const
+  settingSources: ['project', 'local'],
+  strictMcpConfig: true,
+}
 
 /** File-mutating tools whose `file_path` input we scan for `filesChanged`. */
 const FILE_MUTATING_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit'])
@@ -186,8 +194,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         ...(req.schema !== undefined
           ? { outputFormat: { type: 'json_schema', schema: req.schema as Record<string, unknown> } }
           : {}),
-        // Project settings stay at the SDK default so `--add-dir` skills load.
-        // Setting `settingSources` here would be a second switch for every run.
+        // `settingSources` keeps `project` (in FIXED_OPTIONS) so `--add-dir` skills load.
         ...(skills.additionalDirectories.length > 0
           ? { additionalDirectories: skills.additionalDirectories }
           : {}),
