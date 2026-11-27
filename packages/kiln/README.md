@@ -120,6 +120,7 @@ That is the Anthropic API, the npm registry, and the GitHub hosts a fetch or ins
 | approve gates | Host. A person answers them. |
 | feature: land, fix: land | Host. `git commit` uses the host git identity. Publishing the fix branch is the kiln process. |
 | Pull request open, `git push`, `gh pr view`, feedback reads | Host kiln process. They are not workflow steps. |
+| Pull request conflict: plain merge of the base and test run | Host kiln process. It runs the repo `test` command on the merged tree, outside the sandbox. |
 
 `kiln sandbox` prints the resolved mode, the allowlist, and anything still missing. `kiln sandbox build` builds the images yak ships but does not publish, from the tag that matches the installed `@lchase/yak`:
 
