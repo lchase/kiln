@@ -21,7 +21,7 @@ import {
   formatDay,
   formatLocal,
   formatRelative,
-  phaseLabel,
+  progressSegments,
   shortSha,
   stateTone,
   type ActivityRead,
@@ -178,7 +178,7 @@ ${navHtml(model)}
 </div>
 </footer>
 </aside>
-<div class="workspace${model.section === "job" ? " with-rail" : ""}">
+<div class="workspace">
 ${mainHtml(model, page)}
 </div>
 </div>
@@ -278,7 +278,7 @@ function mainHtml(model: AppModel, page: ServePageOptions): string {
     return `${error}<main class="main">${reportHtml(model.report)}</main>`;
   }
   if (model.section === "job" && model.detail) {
-    return `${error}<main class="main detail">${detailHtml(model.detail, model.tab ?? "overview", page.csrf, clockOf(page), model.activity)}</main>`;
+    return `${error}<main class="main detail">${detailHtml(model.detail, model.tab, page.csrf, clockOf(page), model.activity)}</main>`;
   }
   if (model.section === "triggers") {
     return `${error}<main class="main">${triggersHtml(model.triggers ?? [])}</main>`;
@@ -419,7 +419,7 @@ function pipeCard(job: JobView, clock: BoardClock): string {
   return `<article class="card" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}"${activityAttrs(job)}${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
 <a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a>
 <div class="job-meta"><span class="meta">${escapeHtml(job.repo)}</span><span class="chip">${escapeHtml(job.workflow)}</span>${heldChip(job)}${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}</div>
-${progressHtml(job, clock, false)}${blocked}
+${progressHtml(job, clock)}${blocked}
 </article>`;
 }
 
@@ -478,7 +478,7 @@ function jobRow(job: BoardJob, section: "inbox" | "hand" | "repos" | "history", 
 <div class="job-main">
 <div class="job-top">${flag}<a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a></div>
 <div class="job-meta"><span class="num">${escapeHtml(job.jobId)}</span>${repo}<span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span>${heldChip(job)}<span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}${sandbox}${pr}</div>
-${progressHtml(job, clock, false)}${reason}${fix}${section === "inbox" ? ranHtml(job) : ""}${history}${unsafe}${retrying}${attempt}${deps}${feedback}${body}${notes}${tail}${unseen}${links}
+${progressHtml(job, clock)}${reason}${fix}${section === "inbox" ? ranHtml(job) : ""}${history}${unsafe}${retrying}${attempt}${deps}${feedback}${body}${notes}${tail}${unseen}${links}
 </div>
 ${actionsHtml(job, section, csrf)}
 </article>`;
@@ -523,7 +523,7 @@ function activityAttrs(job: JobView): string {
   return ` data-column="${escapeHtml(job.column)}"${activity}`;
 }
 
-function progressHtml(job: JobView, clock: BoardClock, full: boolean): string {
+function progressHtml(job: JobView, clock: BoardClock): string {
   if (job.steps.length === 0) return "";
   const live = activityLiveness({
     column: job.column,
@@ -543,8 +543,7 @@ function progressHtml(job: JobView, clock: BoardClock, full: boolean): string {
   const nowName = focus ? `<span class="step-now ${stepClass(focus.status)}" aria-hidden="true">${escapeHtml(focus.label)}</span>` : "";
   const liveness = live.liveness === "idle" ? "" : livenessHtml(live);
   const meta = nowName || liveness ? `<div class="progress-meta">${nowName}${liveness}</div>` : "";
-  const variant = full ? " steps-full" : "";
-  return `<div class="progress"><ol class="steps${variant}" aria-label="Steps">${items}</ol>${meta}</div>`;
+  return `<div class="progress"><ol class="steps" aria-label="Steps">${items}</ol>${meta}</div>`;
 }
 
 function stepClass(status: StepMark["status"]): string {
@@ -688,19 +687,16 @@ function dependsHtml(job: BoardJob): string {
   return `<p class="deps">depends on ${links}</p>${detail ? `<p class="meta">${escapeHtml(detail)}</p>` : ""}`;
 }
 
-function actionsHtml(job: BoardJob, section: "inbox" | "hand" | "repos" | "history" | "job", csrf: string): string {
-  const showGate = section === "inbox" || section === "job" || (section === "hand" && Boolean(job.reviewPostError));
-  const showRetry = section === "hand" || section === "repos" || section === "job";
-  if (!showGate && !showRetry) return "";
+function actionsHtml(
+  job: BoardJob,
+  section: "inbox" | "hand" | "repos" | "history" | "job",
+  csrf: string,
+  parts: { gate?: boolean; retry?: boolean } = {},
+): string {
+  const showGate = parts.gate !== false && (section === "inbox" || section === "job" || (section === "hand" && Boolean(job.reviewPostError)));
+  const showRetry = parts.retry !== false && (section === "hand" || section === "repos" || section === "job");
   const id = encodeURIComponent(job.jobId);
-  const forms: string[] = [];
-  if (showGate && job.canApprove) forms.push(postForm(`/api/jobs/${id}/approve`, "approve", "Approve", csrf));
-  if (showGate && job.canReject) forms.push(postForm(`/api/jobs/${id}/reject`, "reject", "Reject", csrf));
-  if (showGate && job.canRevise) {
-    forms.push(
-      `<form method="post" action="/api/jobs/${id}/revise" class="act revise"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input name="note" type="text" required maxlength="8000" placeholder="Note for the next round" autocomplete="off"><button type="submit">Revise</button></form>`,
-    );
-  }
+  const forms: string[] = showGate ? gateForms(job, id, csrf) : [];
   if (showRetry && job.retry) forms.push(postForm(`/api/jobs/${id}/retry`, "retry", "Retry", csrf));
   const queueable = (section === "repos" || section === "job") && job.queuePosition !== undefined;
   if (queueable && job.held) forms.push(postForm(`/api/jobs/${id}/release`, "release", "Release", csrf));
@@ -718,6 +714,19 @@ function actionsHtml(job: BoardJob, section: "inbox" | "hand" | "repos" | "histo
   return `<div class="d-actions">${forms.join("")}</div>`;
 }
 
+/** Approve, Reject, and Revise (with a required note), as allowed. `id` is already URL-encoded. */
+function gateForms(job: BoardJob, id: string, csrf: string): string[] {
+  const forms: string[] = [];
+  if (job.canApprove) forms.push(postForm(`/api/jobs/${id}/approve`, "approve", "Approve", csrf));
+  if (job.canReject) forms.push(postForm(`/api/jobs/${id}/reject`, "reject", "Reject", csrf));
+  if (job.canRevise) {
+    forms.push(
+      `<form method="post" action="/api/jobs/${id}/revise" class="act revise"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input name="note" type="text" required maxlength="8000" placeholder="Note for the next round" aria-label="Note for the next round" autocomplete="off"><button type="submit">Revise</button></form>`,
+    );
+  }
+  return forms;
+}
+
 /** Opening the summary reveals the real submit button, so confirming needs no script. */
 function confirmForm(action: string, kind: string, label: string, confirm: string, csrf: string): string {
   return `<details class="act confirm ${kind}"><summary>${label}</summary>${postForm(action, kind, confirm, csrf)}</details>`;
@@ -727,83 +736,255 @@ function postForm(action: string, kind: string, label: string, csrf: string): st
   return `<form method="post" action="${action}" class="act ${kind}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button type="submit">${label}</button></form>`;
 }
 
+type JobTarget = "live" | "changes" | "timeline";
+
 function detailHtml(
   detail: JobDetail,
-  tab: "overview" | "live" | "changes" | "timeline",
-  _csrf: string,
+  tab: "overview" | "live" | "changes" | "timeline" | undefined,
+  csrf: string,
   clock: BoardClock,
   activity?: ActivityFeed,
 ): string {
   const job = detail.job;
-  const id = encodeURIComponent(job.jobId);
-  const liveDefault = job.column === "running";
-  const tabs = (["overview", "live", "changes", "timeline"] as const)
-    .map((name) => {
-      const href = name === "overview" && !liveDefault ? `/jobs/${id}` : `/jobs/${id}?tab=${name}`;
-      const current = name === tab ? ` aria-current="page"` : "";
-      const label = name[0]?.toUpperCase() + name.slice(1);
-      return `<a href="${href}"${current}>${label}</a>`;
-    })
-    .join("");
-  const panel =
-    tab === "changes" ? changesHtml(detail) : tab === "timeline" ? timelineHtml(detail) : tab === "live" ? liveHtml(job, activity) : overviewHtml(detail);
+  const target: JobTarget | undefined = tab === "live" || tab === "changes" || tab === "timeline" ? tab : undefined;
+  const feed = activity ?? { running: job.column === "running", cursor: "", events: [], raw: "" };
+  const deciding = job.column === "needs-you" && job.inbox;
+  const failing = !deciding && (job.column === "needs-hand" || job.retry);
+  const nowing = !deciding && !failing && job.column === "running";
+  const middle = deciding ? decisionCardHtml(job, csrf) : failing ? failureCardHtml(job, csrf) : nowing ? nowCardHtml(job, feed, clock) : "";
+  const result = !deciding && job.deliverable ? `<details class="job-more" id="result"><summary>Result</summary>${deliverableHtml(job)}</details>` : "";
   const back = job.inbox ? "/inbox" : "/";
   const backLabel = job.inbox ? "Inbox" : "Pipeline";
-  return `<div class="detail-main"${activityAttrs(job)}>
+  const ask = !deciding && job.ask ? `<p class="ask">${escapeHtml(job.ask)}</p>` : "";
+  // The Now card names the running step, and the failure card carries the reason.
+  const reason = !failing && !nowing && showReason(job) ? `<p class="reason">${escapeHtml(job.reason)}</p>` : "";
+  const targetAttr = target ? ` data-target="${target}"` : "";
+  return `<div class="job-page"${activityAttrs(job)}${targetAttr}>
+<header class="job-head">
 <a class="back" href="${back}">${backLabel}</a>
-<header class="list-head">
-<div class="job-top"><h2>${escapeHtml(job.title)}</h2><span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span></div>
-<div class="job-meta"><a href="/repos/${encodeURIComponent(job.repo)}">${escapeHtml(job.repo)}</a><span class="chip">${escapeHtml(job.workflow)}</span>${job.branch ? `<span class="mono">${escapeHtml(job.branch)}</span>` : ""}${prLinkHtml(job.repo, job.prNumber, job.prUrl, job.headSha)}</div>
-${progressHtml(job, clock, true)}
-${fileLinks(job)}
-${job.ask ? `<p class="ask">${escapeHtml(job.ask)}</p>` : ""}
-${job.workflow === "review" && job.canApprove ? `<p class="meta">Approving posts this draft as a pull request comment. Kiln does not approve the pull request or merge it.</p>` : ""}
-${showReason(job) ? `<p class="reason">${escapeHtml(job.reason)}</p>` : ""}
-${launchFixHtml(job)}
+<div class="job-top"><h1>${escapeHtml(job.title)}</h1><span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span>${heldChip(job)}</div>
+${jobMetaHtml(job)}
+${ask}${reason}${launchFixHtml(job)}
 <p class="unseen" data-unseen-for="${escapeHtml(job.jobId)}" hidden></p>
+${actionsHtml(job, "job", csrf, { gate: !deciding, retry: false })}
 </header>
-<nav class="tabs" aria-label="Job">${tabs}</nav>
-${actionsHtml(job, "job", _csrf)}
-${panel}
+${progressRowHtml(job)}
+<div class="job-body">
+<div class="job-main">
+${middle}
+${stepSectionsHtml(job, feed, clock)}
+${result}
+<details class="job-more" id="changes"${target === "changes" ? " open" : ""}><summary>Diff</summary>${changesHtml(detail)}</details>
+<details class="job-more" id="timeline"${target === "timeline" ? " open" : ""}><summary>Event history</summary>${timelineHtml(detail)}</details>
 </div>
-${railHtml(detail)}`;
+${sideHtml(detail)}
+</div>
+</div>`;
 }
 
-function liveHtml(job: BoardJob, activity: ActivityFeed | undefined): string {
-  const feed = activity ?? { running: job.column === "running", cursor: "", events: [], raw: "" };
-  const note = feed.running ? (feed.phase ? `Watching ${phaseLabel(feed.phase)}` : "Watching this run") : "Last session";
-  const phase = feed.phase ? ` data-phase="${escapeHtml(feed.phase)}"` : "";
-  return `<section class="live" id="live" data-running="${feed.running ? "true" : "false"}" data-cursor="${escapeHtml(feed.cursor)}"${phase}>
-<div class="live-bar"><p class="meta live-note" id="live-note">${escapeHtml(note)}</p><button type="button" class="btn" id="live-raw-toggle" aria-pressed="false" aria-controls="live-raw">Raw log</button></div>
-<p class="field-error" id="live-error" role="alert" hidden></p>
-<div class="live-feed" id="live-feed">${feedHtml(feed.events)}</div>
-<pre class="text live-raw" id="live-raw" hidden>${escapeHtml(feed.raw)}</pre>
+function shortJobId(id: string): string {
+  return id.length > 13 ? `${id.slice(0, 5)}…${id.slice(-5)}` : id;
+}
+
+function jobMetaHtml(job: JobView): string {
+  const bits: string[] = [`<a href="/repos/${encodeURIComponent(job.repo)}">${escapeHtml(job.repo)}</a>`, `<span>${escapeHtml(job.workflow)}</span>`];
+  if (job.since) bits.push(`<span>started ${timeHtml(job.since, "rel")}</span>`);
+  if (job.attemptCount > 0) bits.push(`<span>attempt ${job.attemptCount} of ${job.maxAttempts}</span>`);
+  const cost = formatCost(job.costUsd);
+  if (cost) bits.push(`<span>${escapeHtml(cost)}</span>`);
+  bits.push(`<span class="mono" title="${escapeHtml(job.jobId)}">${escapeHtml(shortJobId(job.jobId))}</span>`);
+  if (job.branch) bits.push(`<span class="mono">${escapeHtml(job.branch)}</span>`);
+  const pr = prHtml(job.prUrl, job.prNumber);
+  if (pr) bits.push(`<span>${pr}</span>`);
+  return `<div class="job-meta">${bits.join("")}</div>`;
+}
+
+function progressRowHtml(job: JobView): string {
+  const segments = progressSegments(job);
+  if (segments.length === 0) return "";
+  const items = segments
+    .map((segment) => {
+      const cls = stepClass(segment.status);
+      const current = segment.status === "running" || segment.status === "failed" ? ` aria-current="step"` : "";
+      const mark = segment.status === "done" ? icon("check", "icon mark") : "";
+      const failed = segment.status === "failed" ? `<span class="prog-note">failed</span>` : "";
+      const duration = segment.durationMs !== undefined ? `<span class="prog-note">${escapeHtml(formatDuration(segment.durationMs))}</span>` : "";
+      return `<li class="prog-step ${cls}"${current}><span class="prog-bar" aria-hidden="true"></span><span class="prog-name">${mark}${escapeHtml(segment.label)}</span>${failed}${duration}</li>`;
+    })
+    .join("");
+  return `<section class="job-progress" aria-label="Progress"><ol class="prog">${items}</ol></section>`;
+}
+
+function currentStepLabel(job: JobView): string | undefined {
+  return job.steps.find((step) => step.status === "running")?.label ?? job.phases.find((phase) => phase.status === "running")?.label ?? job.currentPhase;
+}
+
+/** Same strip as showNow in assets/serve.js; change both together. */
+function commandText(event: ActivityEvent | undefined): string {
+  if (!event) return "";
+  return event.summary.replace(/^Ran\s+/, "");
+}
+
+function nowCardHtml(job: JobView, feed: ActivityFeed, clock: BoardClock): string {
+  const label = currentStepLabel(job);
+  const at = job.lastActivityAt ?? job.stallActivityAt;
+  const live = activityLiveness({
+    column: job.column,
+    ...(at ? { lastActivityAt: at } : {}),
+    ...(clock.now !== undefined ? { now: clock.now } : {}),
+    stallTimeoutMs: clock.stallTimeoutMs,
+  });
+  const liveness = live.liveness === "idle" ? "" : livenessHtml(live);
+  const last = job.lastActivityAt ? `<span class="now-last">last activity ${timeHtml(job.lastActivityAt, "rel")}</span>` : "";
+  const phase = feed.phase ?? job.phases.find((item) => item.status === "running")?.id;
+  const command = [...feed.events].reverse().find((event) => event.kind === "command" && (!phase || event.phase === phase));
+  const text = commandText(command);
+  return `<section class="now-card" aria-label="Now" id="now">
+<p class="now-head">${liveness}<span>Now, in ${escapeHtml(label ?? "this run")}</span>${last}</p>
+<p class="now-note" id="now-note"${job.latestNote ? "" : " hidden"}>${escapeHtml(job.latestNote ?? "")}</p>
+<code class="now-command" id="now-command"${text ? "" : " hidden"}>${escapeHtml(text)}</code>
 </section>`;
 }
 
-function feedHtml(events: readonly ActivityEvent[]): string {
-  if (events.length === 0) return `<p class="empty">No session output yet.</p>`;
-  const blocks: string[] = [];
-  let phase = "";
-  let started = "";
-  let items: string[] = [];
-  const flush = (): void => {
-    if (!phase) return;
-    blocks.push(
-      `<section class="live-phase" data-phase="${escapeHtml(phase)}"><h3>${escapeHtml(phaseLabel(phase))} ${timeHtml(started, "date")}</h3><ol class="live-events">${items.join("")}</ol></section>`,
-    );
+const VERDICT_STEPS = ["approver", "security", "ux", "ui", "code"] as const;
+
+function decisionCardHtml(job: BoardJob, csrf: string): string {
+  const verdicts = VERDICT_STEPS.flatMap((id) => {
+    const phase = job.phases.find((item) => item.id === id && item.verdict);
+    return phase?.verdict ? [`<div><dt>${escapeHtml(phase.label)}</dt><dd>${escapeHtml(phase.verdict)}</dd></div>`] : [];
+  });
+  const list = verdicts.length > 0 ? `<dl class="verdicts">${verdicts.join("")}</dl>` : "";
+  const id = encodeURIComponent(job.jobId);
+  const forms = gateForms(job, id, csrf);
+  const actions = forms.length > 0 ? `<div class="d-actions">${forms.join("")}</div>` : "";
+  return `<section class="mid-card decision-card" aria-label="Your decision" id="decision">
+<h2>Your decision</h2>
+${list}${decisionBody(job)}${actions}
+</section>`;
+}
+
+function failureCardHtml(job: BoardJob, csrf: string): string {
+  const failed = [...job.phases].reverse().find((phase) => phase.status === "failed");
+  const reason = `<p class="reason">${escapeHtml(job.reason)}</p>`;
+  const tag = [job.failureClass, job.fingerprint].filter(Boolean).join(" · ");
+  const klass = tag ? `<p class="meta mono">${escapeHtml(tag)}</p>` : "";
+  const where = failed ? `<p class="meta">Failed in ${escapeHtml(failed.label)}</p>` : "";
+  const detail = failed?.detail ? phaseDetailHtml(failed.detail) : "";
+  const retry = job.retry ? `<div class="d-actions">${postForm(`/api/jobs/${encodeURIComponent(job.jobId)}/retry`, "retry", "Retry", csrf)}</div>` : "";
+  return `<section class="mid-card failure-card" aria-label="What went wrong" id="failure">
+<h2>What went wrong</h2>
+${reason}${klass}${where}${detail}${retry}
+</section>`;
+}
+
+function stepSectionsHtml(job: JobView, feed: ActivityFeed, clock: BoardClock): string {
+  // A step has started when its phase.started event is in the log, or when the run wrote output for it.
+  // Open the current step only while a run is live: a job waiting out a retry backoff sits in the running column too.
+  const live = job.state === "running" || job.state === "approved";
+  const running = live && job.column === "running" ? (job.phases.find((phase) => phase.status === "running") ?? job.phases.find((phase) => phase.id === feed.phase)) : undefined;
+  const firstOutput = (id: string) => feed.events.find((event) => event.phase === id)?.at;
+  const startOf = (phase: PhaseView) => {
+    const at = Date.parse(phase.startedAt ?? firstOutput(phase.id) ?? "");
+    return Number.isFinite(at) ? at : phase.id === running?.id ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
   };
-  for (const event of events) {
-    if (event.phase !== phase) {
-      flush();
-      phase = event.phase;
-      started = event.at;
-      items = [];
-    }
-    items.push(eventHtml(event));
+  const started = job.phases
+    .filter((phase) => phase.startedAt || firstOutput(phase.id) || phase.id === running?.id)
+    .sort((left, right) => startOf(right) - startOf(left));
+  const openId = running?.id;
+  const sections = started.map((phase) => stepSectionHtml(job, phase, feed, clock, phase.id === openId)).join("");
+  const body = sections || `<p class="empty">No step has started yet.</p>`;
+  const phaseAttr = openId ? ` data-phase="${escapeHtml(openId)}"` : feed.phase ? ` data-phase="${escapeHtml(feed.phase)}"` : "";
+  const polling = Boolean(openId) && feed.running;
+  return `<div class="step-sections" id="live" data-running="${polling ? "true" : "false"}" data-cursor="${escapeHtml(feed.cursor)}"${phaseAttr}>
+<p class="field-error" id="live-error" role="alert" hidden></p>
+${body}
+</div>`;
+}
+
+function stepSectionHtml(job: JobView, phase: PhaseView, feed: ActivityFeed, clock: BoardClock, open: boolean): string {
+  const events = feed.events.filter((event) => event.phase === phase.id);
+  const commands = events.filter((event) => event.kind === "command").length;
+  const bits: string[] = [];
+  if (phase.iteration !== undefined) bits.push(`round ${phase.iteration}`);
+  if (open && phase.startedAt) {
+    const ms = (clock.now ?? Date.now()) - Date.parse(phase.startedAt);
+    bits.push(Number.isFinite(ms) && ms >= 0 ? `running ${formatDuration(ms)}` : "running");
+  } else if (phase.status === "failed") {
+    bits.push(phase.durationMs !== undefined ? `failed after ${formatDuration(phase.durationMs)}` : "failed");
+  } else if (phase.status === "skipped") {
+    bits.push("skipped");
+  } else if (phase.durationMs !== undefined) {
+    bits.push(`done in ${formatDuration(phase.durationMs)}`);
   }
-  flush();
-  return blocks.join("");
+  bits.push(commands === 1 ? "1 command" : `${commands} commands`);
+  const headId = `step-${escapeHtml(phase.id)}`;
+  const verdict = phase.verdict ? `<span class="verdict">${escapeHtml(phase.verdict)}</span>` : "";
+  const line = `<span class="meta">${escapeHtml(bits.join(", "))}</span>`;
+  if (open) {
+    const items = events.length > 0 ? events.map((event) => eventHtml(event)).join("") : `<li class="empty">No session output yet.</li>`;
+    return `<section class="step-section open" aria-labelledby="${headId}" data-phase="${escapeHtml(phase.id)}">
+<header class="step-head"><h2 id="${headId}">${escapeHtml(phase.label)}</h2>${line}</header>
+<ol id="live-feed" class="activity" tabindex="0" aria-label="${escapeHtml(phase.label)} activity, scrolls">${items}</ol>
+<div class="follow-bar"><span id="follow-status" role="status">Following the latest line</span><button type="button" class="btn" id="jump-latest">Jump to latest</button><button type="button" class="btn" id="expand-log" aria-pressed="false" aria-controls="live-feed">Expand</button></div>
+</section>`;
+  }
+  const output = producedLink(job, phase);
+  const shown = events.length > 0
+    ? `<details class="step-activity"><summary>Show activity</summary><ol class="activity">${events.map((event) => eventHtml(event)).join("")}</ol></details>`
+    : "";
+  return `<section class="step-section" aria-labelledby="${headId}" data-phase="${escapeHtml(phase.id)}">
+<header class="step-head"><h2 id="${headId}">${escapeHtml(phase.label)}</h2>${line}${verdict}${output}</header>
+${shown}
+</section>`;
+}
+
+function producedLink(job: JobView, phase: PhaseView): string {
+  const id = encodeURIComponent(job.jobId);
+  if (phase.id === "spec" && job.spec) return `<a href="/jobs/${id}/spec">Read the spec</a>`;
+  if ((REVIEW_IDS as readonly string[]).includes(phase.id) && job.findings) return `<a href="/jobs/${id}/findings">Read the findings</a>`;
+  if (phase.id === "build" || phase.id === "fix" || phase.id === "draft") return `<a href="#changes">See the changes</a>`;
+  return "";
+}
+
+const REVIEW_IDS = ["security", "ux", "ui", "code", "approver"] as const;
+
+function nextSentence(job: JobView): string {
+  if (job.finished) return "Nothing. This job is finished.";
+  const left = progressSegments(job).filter((segment) => segment.status === "pending").map((segment) => segment.label);
+  if (left.length === 0) return "No steps left after this one.";
+  return `${left.join(", then ")}.`;
+}
+
+function sideHtml(detail: JobDetail): string {
+  const job = detail.job;
+  const id = encodeURIComponent(job.jobId);
+  const files = detail.changes.files ?? [];
+  const changes =
+    files.length > 0
+      ? `<ul class="file-list">${files
+          .map((file) => `<li><span class="mono file-path">${escapeHtml(file.path)}</span><span class="mono file-count">+${file.added} -${file.removed}</span></li>`)
+          .join("")}</ul><a href="#changes">Open the diff</a>`
+      : `<p class="empty">No changes yet.</p>`;
+  const links: string[] = [];
+  if (job.spec) links.push(fileLink(`/jobs/${id}/spec`, "file-text", "Spec"));
+  if (job.log) links.push(fileLink(`/jobs/${id}/log`, "scroll-text", "Raw log"));
+  if (job.findings) links.push(fileLink(`/jobs/${id}/findings`, "list-checks", "Findings"));
+  links.push(fileLink("#timeline", "history", "Event history"));
+  const rail = detail.rail;
+  const rows: string[] = [];
+  const row = (label: string, value: string) => rows.push(`<div><dt>${escapeHtml(label)}</dt><dd>${value}</dd></div>`);
+  if (rail.issue) row("Issue", `<span class="mono">${escapeHtml(rail.issue)}</span>`);
+  if (rail.ci) row("CI", escapeHtml(rail.ci));
+  if (rail.risk) row("Risk", escapeHtml(rail.risk));
+  if (rail.fixRounds.used > 0) row("Fix rounds", escapeHtml(`${rail.fixRounds.used} / ${rail.fixRounds.cap}`));
+  if (rail.failureClass || rail.fingerprint) row("Failure", escapeHtml([rail.failureClass, rail.fingerprint].filter(Boolean).join(" · ")));
+  const facts = rows.length > 0 ? `<dl class="side-facts">${rows.join("")}</dl>` : "";
+  return `<aside class="job-side" aria-label="Job facts">
+<section class="side-card"><h2>Changes so far</h2>${changes}</section>
+<section class="side-card"><h2>What happens next</h2><p>${escapeHtml(nextSentence(job))}</p></section>
+<p class="links side-links">${links.join("")}</p>
+${facts}
+</aside>`;
 }
 
 function eventHtml(event: ActivityEvent): string {
@@ -812,33 +993,6 @@ function eventHtml(event: ActivityEvent): string {
     ? `<button type="button" class="live-summary" aria-expanded="false" data-summary="${summary}" data-detail="${escapeHtml(event.detail)}">${summary}</button>`
     : `<span class="live-summary">${summary}</span>`;
   return `<li class="live-event ${escapeHtml(event.kind)}" data-kind="${escapeHtml(event.kind)}" data-summary="${summary}">${timeHtml(event.at, "clock")}${body}</li>`;
-}
-
-function overviewHtml(detail: JobDetail): string {
-  const phases = detail.job.phases;
-  if (phases.length === 0) return `<p class="empty">No phases in the event log yet.</p>`;
-  const cost = formatCost(detail.job.costUsd);
-  const summary = cost ? `<p class="meta">Cost ${escapeHtml(cost)}</p>` : "";
-  return `${summary}${deliverableHtml(detail.job, true)}<ol class="phases">${phases.map((phase) => phaseHtml(phase)).join("")}</ol>`;
-}
-
-function phaseHtml(phase: PhaseView): string {
-  const bits: string[] = [];
-  if (phase.verdict) bits.push(`<p class="verdict">${escapeHtml(phase.verdict)}</p>`);
-  if (phase.detail) bits.push(phaseDetailHtml(phase.detail));
-  if (phase.testCommand || phase.exitCode !== undefined) {
-    const exit = phase.exitCode === undefined ? "" : ` · exit ${phase.exitCode}`;
-    bits.push(`<p class="meta">${escapeHtml(`${phase.testCommand ?? "test"}${exit}`)}</p>`);
-  }
-  if (phase.failureClass || phase.fingerprint) {
-    bits.push(`<p class="meta">${escapeHtml([phase.failureClass, phase.fingerprint].filter(Boolean).join(" · "))}</p>`);
-  }
-  if (phase.note) bits.push(`<blockquote class="note">${escapeHtml(phase.note)}</blockquote>`);
-  const iteration = phase.iteration !== undefined ? ` <span class="meta">#${phase.iteration}</span>` : "";
-  const duration = phase.durationMs !== undefined ? `<span class="meta">${escapeHtml(formatDuration(phase.durationMs))}</span>` : "";
-  const when = phase.finishedAt ?? phase.startedAt;
-  const clock = when ? timeHtml(when, "local") + timeHtml(when, "rel") : "";
-  return `<li class="phase ${escapeHtml(phase.status)}"><header><span class="mark" aria-hidden="true">${phase.status === "done" ? "✓" : phase.status === "failed" ? "×" : phase.status === "running" ? "●" : "○"}</span><span class="step">${escapeHtml(phase.label)}</span>${iteration}<span class="outcome">${escapeHtml(phase.status)}</span>${duration}${clock}</header>${bits.join("")}</li>`;
 }
 
 function phaseDetailHtml(detail: string): string {
@@ -881,27 +1035,6 @@ function timelineHtml(detail: JobDetail): string {
       return `<section class="run-group"><h3>${escapeHtml(label)}</h3><ol class="timeline">${rows}</ol></section>`;
     })
     .join("");
-}
-
-function railHtml(detail: JobDetail): string {
-  const rail = detail.rail;
-  const rows: string[] = [];
-  const row = (label: string, value: string) => {
-    rows.push(`<div><dt>${escapeHtml(label)}</dt><dd>${value}</dd></div>`);
-  };
-  row("Repo", escapeHtml(rail.repo));
-  if (rail.issue) row("Issue", `<span class="mono">${escapeHtml(rail.issue)}</span>`);
-  if (rail.branch) row("Branch", `<span class="mono">${escapeHtml(rail.branch)}</span>`);
-  if (rail.prUrl || rail.prNumber) row("Pull request", prHtml(rail.prUrl, rail.prNumber) || escapeHtml(rail.prUrl ?? ""));
-  if (rail.ci) row("CI", escapeHtml(rail.ci));
-  if (rail.risk) row("Risk", escapeHtml(rail.risk));
-  row("Cost", rail.costUsd === null ? "no cost recorded" : escapeHtml(formatDollars(rail.costUsd)));
-  row("Attempts", escapeHtml(`${rail.attempts.used} / ${rail.attempts.cap}`));
-  row("Fix rounds", escapeHtml(`${rail.fixRounds.used} / ${rail.fixRounds.cap}`));
-  if (rail.failureClass || rail.fingerprint) {
-    row("Failure", escapeHtml([rail.failureClass, rail.fingerprint].filter(Boolean).join(" · ")));
-  }
-  return `<aside class="rail" aria-label="Job facts"><h3>${escapeHtml(detail.job.jobId)}</h3><dl>${rows.join("")}</dl></aside>`;
 }
 
 function prHtml(url: string | undefined, number: number | undefined): string {

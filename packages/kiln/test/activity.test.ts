@@ -270,7 +270,7 @@ describe("activity from a recorded build session", () => {
 });
 
 describe("activity endpoint", () => {
-  it("polls incrementally, redacts secrets, and defaults a running job to Live", async () => {
+  it("polls incrementally, redacts secrets, and opens a running job's current step", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "kiln-activity-http-"));
     keep.push(cwd);
     const home = join(cwd, "home");
@@ -411,14 +411,15 @@ describe("activity endpoint", () => {
 
       const page = await text(`${server.url}/jobs/${jobId}`);
       assert.equal(page.status, 200);
-      assert.match(page.body, /aria-current="page">Live</);
+      assert.doesNotMatch(page.body, /class="tabs"/);
+      assert.doesNotMatch(page.body, /data-target=/);
       assert.match(page.body, /Read src\/foo\.ts/);
       assert.match(page.body, /Edit src\/foo\.ts \(\+12 -3\)/);
       assert.match(page.body, /Ran npm test - 3 failed/);
-      assert.match(page.body, /id="live-note">Watching Build</);
-      const feed = page.body.slice(page.body.indexOf('id="live-feed"'), page.body.indexOf('id="live-raw"'));
+      assert.match(page.body, /<section class="now-card" aria-label="Now" id="now">[\s\S]*Now, in Build/);
+      assert.match(page.body, /<ol id="live-feed" class="activity" tabindex="0" aria-label="Build activity, scrolls">/);
+      const feed = page.body.slice(page.body.indexOf('id="live-feed"'), page.body.indexOf('class="follow-bar"'));
       assert.match(feed, /data-time="clock"/);
-      assert.match(feed, /data-time="date"/);
       assert.doesNotMatch(feed, /data-time="rel"/);
       assert.doesNotMatch(feed, /class="live-detail"/);
       assert.equal(page.body.includes("tool_use"), false);
@@ -427,11 +428,23 @@ describe("activity endpoint", () => {
 
       const finished = await text(`${server.url}/jobs/${doneId}?tab=live`);
       assert.equal(finished.status, 200);
-      assert.match(finished.body, /id="live-note">Last session</);
-      assert.match(finished.body, /Wrote the spec\./);
-      const overview = await text(`${server.url}/jobs/${doneId}`);
-      assert.match(overview.body, /aria-current="page">Overview</);
-      assert.doesNotMatch(overview.body, /aria-current="page">Live</);
+      assert.match(finished.body, /data-target="live"/);
+      assert.match(finished.body, /id="live"/);
+      assert.doesNotMatch(finished.body, /id="live-feed"/);
+      assert.match(finished.body, /<details class="step-activity"><summary>Show activity<\/summary>[\s\S]*Wrote the spec\./);
+      for (const tab of ["changes", "timeline"]) {
+        const linked = await text(`${server.url}/jobs/${doneId}?tab=${tab}`);
+        assert.equal(linked.status, 200, tab);
+        assert.match(linked.body, new RegExp(`data-target="${tab}"`));
+        assert.match(linked.body, new RegExp(`<details class="job-more" id="${tab}" open>`));
+        const other = tab === "changes" ? "timeline" : "changes";
+        assert.match(linked.body, new RegExp(`<details class="job-more" id="${other}">`));
+      }
+      const overview = await text(`${server.url}/jobs/${doneId}?tab=overview`);
+      assert.equal(overview.status, 200);
+      assert.doesNotMatch(overview.body, /data-target=/);
+      const unknown = await text(`${server.url}/jobs/${doneId}?tab=bogus`);
+      assert.equal(unknown.status, 400);
     } finally {
       if (server.child.exitCode === null) server.child.kill("SIGTERM");
     }

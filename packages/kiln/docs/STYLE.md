@@ -91,7 +91,40 @@ State colors (say the word as well as the color):
 - A loop (or map) container is not a step. Its body steps appear in the list and the container does not. In
   `feature`, the `revise` loop is not shown; Build, Verify, and the reviews are.
 - A pipeline card is narrow. It uses a segmented bar (one segment per step) plus the current step name. Done segments are `--muted`. The current segment is `--primary`. Upcoming segments are `--line`.
-- Inbox, repo, and history rows use the same stepper. Wide rows show the names. The job page always shows the full stepper. The phase list under it keeps durations and notes.
+- Inbox, repo, and history rows use the same stepper. Wide rows show the names. The job page uses its own progress
+  row (see Job page), not this stepper.
+
+## Job page
+
+`/jobs/<id>` is one page that reads top to bottom. There are no tabs.
+
+1. Header: back link, title, state chip, then one meta line (repo, workflow, started, `attempt N of M`, cost, short
+   job id, branch and pull request when present). Stop job, Remove job, Run next, Hold, and Release sit here.
+2. Progress (`aria-label="Progress"`): one segment per step. The four reviews (security, UX, UI, code) are one
+   segment named Reviews. A done segment has a check and its duration. Upcoming segments print no status word.
+3. One middle card, picked by state: "Now" while the job runs (the step, last activity, the newest note, the
+   running command), "Your decision" while it waits on you (the approver's and each review's verdict, then Approve,
+   Reject, and Revise with a note), or "What went wrong" when it failed or needs a hand (the failure and Retry). A
+   done job has none.
+4. One section per started step, newest first. The running step is open and shows its activity. A finished step is
+   one line (round, duration, command count, a link to what it produced) and a native "Show activity" disclosure.
+   A step's name and state appear once outside the progress row.
+5. The diff and the event history are disclosures at the end of the main column (`#changes`, `#timeline`).
+6. Side column (`aria-label="Job facts"`): changes so far (file, `+added -removed`, "Open the diff"), what happens
+   next, links to the spec, the raw log, and the event history, and a short list of other facts. Under the narrow
+   breakpoint it moves below the main column. Long commands and paths wrap; nothing scrolls sideways.
+
+Old `?tab=live|changes|timeline` links land on `#live`, `#changes`, or `#timeline`. Changes and timeline open their
+disclosure.
+
+The running step's activity log:
+
+- Scrolls inside its own box, `max-height: var(--log-max-height)`, `overflow-y: auto`. It never scrolls the page.
+- Is an `<ol>` with `tabindex="0"` and an accessible name ("Build activity, scrolls").
+- Follows the newest line while the operator has not scrolled it. The status line says "Following the latest line".
+- Scrolling up stops following ("Paused. Jump to latest to follow."). Only "Jump to latest" turns it back on.
+- "Expand" (`aria-pressed`) removes the max height so the log opens at full height.
+- No smooth scrolling, so `prefers-reduced-motion: reduce` stays still.
 
 ## Liveness
 
@@ -230,7 +263,7 @@ Kiln adapts published palettes onto the tokens above. It does not vendor theme s
 - Spacing, type, radius, and color come from tokens. Colors come from the active theme. The style guard passes.
 - The screen follows the Don't list: no card bars, glow, washes, pills, or all-caps eyebrows.
 - Tags, status, filter chips, and count badges share `--radius-md` and `--space-2` padding.
-- A running card shows the step bar and liveness. The job page shows the full stepper.
+- A running card shows the step bar and liveness. The job page shows the progress row and the open step's log.
 - Links have no underline. Focus rings stay. Spec, log, and findings are `.text-btn`.
 - The screen uses the page gutter and stays within `--content-max`.
 - Drawer content is padded on all sides. The footer is sticky. The primary action is on the right, Cancel on its left.

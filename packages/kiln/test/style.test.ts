@@ -328,3 +328,51 @@ describe("board style", () => {
     assert.equal(css.includes(".repo-block h3"), false);
   });
 });
+
+describe("job page style", () => {
+  const script = readFileSync(join(packageRoot(), "assets", "serve.js"), "utf8");
+
+  function rules(selector: string, source = css): string {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const found = [...source.matchAll(new RegExp(`(?:^|[\\n}])\\s*${escaped}\\s*\\{([^}]+)\\}`, "g"))].map((match) => match[1] ?? "");
+    assert.ok(found.length > 0, selector);
+    return found.join("\n");
+  }
+
+  it("scrolls the current step's activity inside its own box", () => {
+    const box = rules(".step-section.open .activity");
+    assert.match(box, /overflow-y:\s*auto/);
+    assert.match(box, /max-height:\s*var\(--log-max-height\)/);
+    assert.match(css.slice(css.indexOf("/* tokens:start */"), css.indexOf("/* tokens:end */")), /--log-max-height:/);
+    assert.match(rules(".step-section.open .activity.expanded"), /max-height:\s*none/);
+  });
+
+  it("puts the side column below the main column at narrow width", () => {
+    assert.match(rules(".job-body"), /grid-template-columns:\s*minmax\(0, 1fr\) var\(--rail\)/);
+    const narrow = css.slice(css.indexOf("@media (max-width: 960px)"));
+    const block = narrow.slice(0, narrow.indexOf("\n}\n"));
+    assert.match(block, /\.job-body \{ grid-template-columns: 1fr; \}/);
+    assert.match(rules(".job-main, .job-side"), /min-width:\s*0/);
+    assert.match(rules(".now-command, .file-path"), /overflow-wrap:\s*anywhere/);
+    assert.doesNotMatch(css, /\.tabs\b/);
+  });
+
+  it("follows new activity in the feed and never scrolls the page", () => {
+    const start = script.indexOf("function startLive()");
+    assert.ok(start >= 0);
+    const live = script.slice(start);
+    assert.doesNotMatch(live, /scrollingElement/);
+    assert.doesNotMatch(live, /documentElement\.scrollTop/);
+    assert.doesNotMatch(live, /window\.addEventListener\("scroll"/);
+    assert.match(live, /feed\.scrollTop = feed\.scrollHeight/);
+    assert.match(live, /feed\.addEventListener\("scroll"/);
+    assert.match(live, /stick = false;/);
+    assert.equal(live.split("stick = true").length - 1, 1, "only Jump to latest turns following back on");
+    assert.match(live, /jump\.addEventListener\("click", function \(\) \{\s*stick = true;/);
+    assert.match(live, /Following the latest line/);
+    assert.match(live, /Paused\. Jump to latest to follow\./);
+    assert.match(live, /classList\.toggle\("expanded"/);
+    assert.match(live, /location\.replace\("#" \+ target\)/);
+    assert.doesNotMatch(live, /behavior:\s*"smooth"/);
+  });
+});

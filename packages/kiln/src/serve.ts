@@ -31,6 +31,7 @@ import {
   parseStatsWindow,
   localBranchExists,
   readBranchCommits,
+  readDiffFiles,
   readDiffStat,
   statsFor,
   unseenChanges,
@@ -475,12 +476,12 @@ async function handle(
       return;
     }
     const running = detail.job.state === "running" || detail.job.state === "approved";
-    const tab = tabRaw === "overview" || tabRaw === "live" || tabRaw === "changes" || tabRaw === "timeline" ? tabRaw : running ? "live" : "overview";
+    const tab = tabRaw === "overview" || tabRaw === "live" || tabRaw === "changes" || tabRaw === "timeline" ? tabRaw : undefined;
     const activity = readRunActivity(runDirOf(config, job), {
       running,
       ...(job.logTail ? { logText: job.logTail } : {}),
     });
-    sendHtml(res, 200, renderShell(state, css, csrf, "job", { detail, tab, activity }), secrets);
+    sendHtml(res, 200, renderShell(state, css, csrf, "job", { detail, ...(tab ? { tab } : {}), activity }), secrets);
     return;
   }
 
@@ -1065,7 +1066,7 @@ function renderShell(
     ...(extra.repo ? { repo: extra.repo } : {}),
     ...(section === "stats" && extra.window ? { stats: statsDocument(state, extra.window) } : {}),
     ...(section === "report" ? { report: reportDocument(state) } : {}),
-    ...(extra.detail ? { detail: extra.detail, tab: extra.tab ?? "overview", ...(extra.activity ? { activity: extra.activity } : {}) } : {}),
+    ...(extra.detail ? { detail: extra.detail, ...(extra.tab ? { tab: extra.tab } : {}), ...(extra.activity ? { activity: extra.activity } : {}) } : {}),
     ...(section === "triggers"
       ? { triggers: triggerRows(state.config, readEvents(state.config.kilnDir, { warn: () => {} })) }
       : {}),
@@ -1110,6 +1111,7 @@ function detailDocument(state: LiveConfig, job: StatusJobView) {
   const base = prBase(events, job.jobId);
   const commits = repo && branch ? readBranchCommits(repo.path, branch) : [];
   const diff = repo && branch && base ? readDiffStat(repo.path, base, branch) : undefined;
+  const files = repo && branch && base ? readDiffFiles(repo.path, base, branch) : undefined;
   const issue = jobIssue(state.config, job.jobId);
   const localBranch = job.runId && branch ? `yak/${job.runId}` : undefined;
   const removedBranch = repo && localBranch && !localBranchExists(repo.path, localBranch) ? localBranch : undefined;
@@ -1120,6 +1122,7 @@ function detailDocument(state: LiveConfig, job: StatusJobView) {
     commits,
     ...(issue ? { issue } : {}),
     ...(diff ? { diffStat: diff } : {}),
+    ...(files ? { diffFiles: files } : {}),
     ...(removedBranch ? { removedBranch } : {}),
   });
 }
