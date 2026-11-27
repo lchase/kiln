@@ -1999,8 +1999,18 @@
 
   // Opens the rejected repo's form (a just-added repo's form is already open)
   // and shows the message on that field, revealing name or path on Edit.
+  var REPO_ERROR_SLOTS = {
+    name: "name", path: "path", test: "test", base: "base", deliver: "deliver",
+    prTitle: "prTitle", branch: "branch", maxAttempts: "repoAttempts", maxFixRounds: "repoRounds",
+  };
+
   function showRepoError(name, field, message) {
-    if (name && Object.prototype.hasOwnProperty.call(repoDraft, name) && !(editing && editing.original === name)) startEdit(name);
+    if (name && Object.prototype.hasOwnProperty.call(repoDraft, name) && !(editing && editing.original === name)) {
+      // Show the rejected repo even when the open form will not flush; its
+      // invalid edit was never in the refused payload.
+      if (!flushEditor()) editing = null;
+      openEditor(name, repoDraft[name]);
+    }
     var editor = document.getElementById("repo-editor");
     if (!editing || !editor || editor.hidden) return;
     if (field === "name" || field === "path") showIdent(field, true);
@@ -2008,8 +2018,9 @@
       var more = document.getElementById("repo-more");
       if (more) more.open = true;
     }
-    var slotName = field === "maxAttempts" ? "repoAttempts" : field === "maxFixRounds" ? "repoRounds" : field;
-    showSlot(slotName, message);
+    // Only known fields map to a slot; the general error banner shows the rest.
+    var slotName = REPO_ERROR_SLOTS[field];
+    if (slotName) showSlot(slotName, message);
   }
 
   function applySettingsDocument(data) {

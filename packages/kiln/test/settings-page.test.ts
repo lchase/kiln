@@ -1107,4 +1107,19 @@ describe("settings repos table", () => {
     assert.equal(nameSlot?.textContent, "Invalid repo name.");
     assert.equal(editor.querySelector('[data-repo-ident="name"]')?.hidden, false);
   });
+
+  it("opens the rejected repo's form even when the open form no longer flushes", async () => {
+    const fx = fixture();
+    const page = await openPage(fx);
+    page.click(page.byId("repo-add"));
+    page.type("repo-name", "docs");
+    page.type("repo-path", join(fx.home, "web"));
+    page.respond.next = { status: 400, data: { error: "Settings are invalid.", fields: { "repos.web.test": "Test is required." } } };
+    page.submit();
+    page.type("repo-name", "");
+    await settle();
+    assert.equal(page.byId("repo-editor").hidden, false);
+    assert.equal(page.byId("repo-name").value, "web", "the rejected repo's form opens");
+    assert.equal(page.byId("repo-editor").querySelector('[data-error="test"]')?.textContent, "Test is required.");
+  });
 });
