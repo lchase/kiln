@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { addRepo, renderRepoList, resolveKilnConfig } from "./config.js";
 import { renderSandboxStatus, runSandboxBuild } from "./sandbox.js";
-import { answerJob, cancelQueuedJobs, retryJob, reviseJob, runStatus, runTick } from "./driver.js";
+import { answerJob, cancelJob, cancelQueuedJobs, removeJob, retryJob, reviseJob, runStatus, runTick } from "./driver.js";
 import { productionHost } from "./host.js";
 import { pauseFactory, resumeFactory } from "./rails.js";
 import { parseSince, renderLedgerFile } from "./ledger.js";
@@ -11,6 +11,7 @@ import { addFromJira } from "./intake/jira.js";
 import { addFromPrompt } from "./intake/prompt.js";
 import { importTickets } from "./intake/tickets.js";
 import { renderAddedJob } from "./jobs.js";
+import { assertJobId } from "./paths.js";
 import { formatVersionReport } from "./version.js";
 
 function usage(): never {
@@ -27,6 +28,8 @@ function usage(): never {
       "       kiln revise <jobId> --note <text> [--config <file>]",
       "       kiln retry <jobId> [--config <file>]",
       "       kiln cancel --queued [--repo <name>] [--workflow <name>] [--config <file>]",
+      "       kiln cancel <jobId> [--config <file>]",
+      "       kiln remove <jobId> [--config <file>]",
       "       kiln pause [--config <file>]",
       "       kiln resume [--config <file>]",
       "       kiln ledger [--since 7d] [--repo <name>] [--config <file>]",
@@ -112,6 +115,13 @@ function usage(): never {
       "may be queued or running. The rest are skipped until a later fire.",
       "kiln cancel --queued cancels jobs that have not started. It does not",
       "delete branches. A second cancel changes nothing.",
+      "kiln cancel <jobId> stops one job whatever it is doing: a running run's",
+      "process tree is killed and not retried, a gate is closed without an answer,",
+      "and an in-review pull request is left open and no longer watched.",
+      "Branches and worktrees stay. Done and rejected jobs are left alone.",
+      "kiln remove <jobId> deletes Kiln's records for a job that is not running,",
+      "gated, or in review and that no other job depends on. The event log keeps",
+      "its history plus job.removed. Git is untouched; the branch name is printed.",
       "",
       "serve listens on 127.0.0.1. The page is a board of workflow stages:",
       "queued, spec, build, review, approve, land, PR review, Done (landed locally),",
@@ -461,8 +471,17 @@ function statusCommand(argv: string[]): void {
 function cancelCommand(argv: string[]): void {
   const flags = parseFlags(argv);
   rejectServeFlags(flags);
+  if (!flags.queued) {
+    const jobId = flags.positionals[0];
+    if (!jobId || flags.positionals.length !== 1 || flags.test || flags.note || hasIntakeFlags(flags) || flags.deliver || flags.base) {
+      usage();
+    }
+    assertJobId(jobId);
+    const config = resolveKilnConfig({ configPath: flags.configPath });
+    process.stdout.write(`${cancelJob(config, jobId).message}\n`);
+    return;
+  }
   if (
-    !flags.queued ||
     flags.positionals.length !== 0 ||
     flags.test ||
     flags.spec ||
@@ -490,6 +509,22 @@ function cancelCommand(argv: string[]): void {
     return;
   }
   process.stdout.write(`${result.cancelled.map((id) => `cancelled ${id}`).join("\n")}\n`);
+}
+
+function removeCommand(argv: string[]): void {
+  const flags = parseFlags(argv);
+  rejectServeFlags(flags);
+  const jobId = flags.positionals[0];
+  if (!jobId || flags.positionals.length !== 1 || flags.test || flags.note || hasIntakeFlags(flags) || flags.deliver || flags.base) {
+    usage();
+  }
+  assertJobId(jobId);
+  const config = resolveKilnConfig({ configPath: flags.configPath });
+  const result = removeJob(config, jobId);
+  const branch = result.branch
+    ? `branch ${result.branch} left in place; delete it with git branch -D ${result.branch}`
+    : "no branch";
+  process.stdout.write(`removed ${jobId}\n${branch}\n`);
 }
 
 function retryCommand(argv: string[]): void {
@@ -659,6 +694,10 @@ async function main(): Promise<void> {
   }
   if (command === "cancel") {
     cancelCommand(argv.slice(1));
+    return;
+  }
+  if (command === "remove") {
+    removeCommand(argv.slice(1));
     return;
   }
   if (command === "revise") {

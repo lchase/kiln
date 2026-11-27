@@ -9,6 +9,10 @@ import { kilnVersion } from "../src/project.js";
 import type { StatusJobView } from "../src/report.js";
 import { renderConsole } from "../src/serve-page.js";
 import type { KilnEvent } from "../src/events.js";
+import { workflowStepPlan } from "../src/workflow.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const FP = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
 
@@ -128,7 +132,7 @@ describe("job view", () => {
     assert.equal(view.column, "needs-you");
     assert.equal(view.ask, 'Draft review for "SAMPLE-1"?');
     assert.equal(view.costUsd, 0.42);
-    assert.equal(view.currentPhase, "Approve");
+    assert.equal(view.currentPhase, "Your decision");
     assert.deepEqual(
       view.phases.map((phase) => [phase.id, phase.status]),
       [
@@ -446,5 +450,151 @@ describe("version badge", () => {
     const version = kilnVersion();
     assert.match(version, /^\d+\.\d+\.\d+/);
     assert.match(html, new RegExp(`class="ver">v${version}</span>`));
+  });
+});
+
+const FEATURE_LABELS = ["Spec", "Build", "Verify", "Security", "UX", "UI", "Code", "Approver", "Your decision", "Land"];
+
+function featureJob(current: string): StatusJobView {
+  const plan = workflowStepPlan("feature");
+  const at = plan.indexOf(current);
+  return job({
+    jobId: "SAMPLE-1",
+    state: "running",
+    steps: plan.map((id, index) => ({ id, phase: index < at ? ("done" as const) : index === at ? ("current" as const) : ("pending" as const) })),
+  });
+}
+
+function loopEvents(): KilnEvent[] {
+  return [
+    event({ id: "s1", event: "phase.started", step: "spec", properties: {}, ts: "2026-11-09T04:00:00.000Z" }),
+    event({ id: "s2", event: "phase.finished", step: "spec", properties: { outcome: "completed" }, ts: "2026-11-09T04:01:00.000Z" }),
+    event({ id: "r1", event: "phase.started", step: "revise", properties: {}, ts: "2026-11-09T04:01:00.000Z" }),
+    event({ id: "b1", event: "phase.started", step: "build", properties: { iteration: 1 }, ts: "2026-11-09T04:01:00.000Z" }),
+    event({ id: "b2", event: "phase.finished", step: "build", properties: { outcome: "completed", iteration: 1 }, ts: "2026-11-09T04:05:00.000Z" }),
+    event({ id: "b3", event: "phase.started", step: "build", properties: { iteration: 2 }, ts: "2026-11-09T04:10:00.000Z" }),
+    event({ id: "r2", event: "phase.finished", step: "revise", properties: { outcome: "completed" }, ts: "2026-11-09T04:11:00.000Z" }),
+  ];
+}
+
+describe("step list", () => {
+  it("names each feature step once and leaves the revise loop out", () => {
+    const view = projectJob(featureJob("build"), loopEvents());
+    assert.deepEqual(
+      view.steps.map((step) => step.label),
+      FEATURE_LABELS,
+    );
+    assert.deepEqual(
+      view.phases.map((phase) => phase.label),
+      FEATURE_LABELS,
+    );
+    assert.equal(new Set(view.phases.map((phase) => phase.label)).size, view.phases.length);
+    assert.equal(view.phases.some((phase) => phase.label === "Revise" || phase.id === "revise"), false);
+  });
+
+  it("keeps Build current with its round in round 2", () => {
+    const view = projectJob(featureJob("build"), loopEvents());
+    const build = view.phases.find((phase) => phase.id === "build");
+    assert.equal(build?.status, "running");
+    assert.equal(build?.iteration, 2);
+    assert.equal(view.currentPhase, "Build");
+    assert.equal(view.steps.find((step) => step.status === "running")?.label, "Build");
+  });
+
+  it("keeps a revise note on the gate phase", () => {
+    const events = [
+      ...loopEvents(),
+      event({
+        id: "g1",
+        event: "gate.resolved",
+        step: "approve",
+        properties: { decision: "revise", note: "Split the helper." },
+        ts: "2026-11-09T04:09:00.000Z",
+      } as Pick<KilnEvent, "event" | "properties"> & Partial<KilnEvent>),
+    ];
+    const view = projectJob(featureJob("build"), events);
+    const gate = view.phases.find((phase) => phase.label === "Your decision");
+    assert.equal(gate?.note, "Split the helper.");
+    assert.deepEqual(
+      view.phases.map((phase) => phase.label),
+      FEATURE_LABELS,
+    );
+  });
+
+  it("renders Approver and Your decision once and no Revise in each step list", () => {
+    const featured = featureJob("build");
+    const events = loopEvents();
+    const attention = buildAttention([featured]);
+    const board = buildBoard([featured], events);
+    const page = { csrf: "token", repos: [{ name: "web", path: "/repos/web" }], workflows: ["feature"] };
+    const count = (html: string, text: string) => html.split(`>${text}<`).length - 1;
+    const between = (html: string, start: string) => {
+      const from = html.indexOf(start);
+      assert.ok(from >= 0, `missing ${start}`);
+      return html.slice(from, html.indexOf("</ol>", from));
+    };
+
+    const pipeline = renderApp({ css: "", section: "pipeline", board, attention, page });
+    const card = pipeline.slice(pipeline.indexOf('id="job-SAMPLE-1"'), pipeline.indexOf("</article>", pipeline.indexOf('id="job-SAMPLE-1"')));
+    const detail = jobDetail({ job: featured, events, maxFixRounds: 2 });
+    const jobHtml = renderApp({ css: "", section: "job", board, attention, page, detail, tab: "overview" });
+    const lists = {
+      card: between(card, 'class="steps"'),
+      page: between(jobHtml, 'class="steps steps-full"'),
+      overview: between(jobHtml, 'class="phases"'),
+    };
+    for (const [name, html] of Object.entries(lists)) {
+      assert.equal(count(html, "Approver"), 1, `${name} Approver`);
+      assert.equal(count(html, "Your decision"), 1, `${name} Your decision`);
+      assert.equal(count(html, "Approve"), 0, `${name} Approve`);
+      assert.doesNotMatch(html, /Revise/, `${name} Revise`);
+    }
+    assert.match(lists.overview, /Build<\/span> <span class="meta">#2<\/span>/);
+  });
+
+  it("leaves a local overlay workflow's loop out of the step list", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiln-loop-"));
+    try {
+      writeFileSync(
+        join(dir, "cycle.yaml"),
+        [
+          "name: kiln-cycle",
+          'version: "1"',
+          "steps:",
+          "  - id: plan",
+          "    agent: { prompt: plan }",
+          "  - id: cycle",
+          "    loop:",
+          "      body:",
+          "        - id: work",
+          "          agent: { prompt: work }",
+          "        - id: check",
+          "          agent: { prompt: check }",
+          "  - id: ship",
+          "    agent: { prompt: ship }",
+          "",
+        ].join("\n"),
+      );
+      const plan = workflowStepPlan("cycle", dir);
+      assert.deepEqual(plan, ["plan", "work", "check", "ship"]);
+      const looped = job({
+        jobId: "SAMPLE-1",
+        workflow: "cycle",
+        state: "running",
+        steps: plan.map((id, index) => ({ id, phase: index === 0 ? ("done" as const) : index === 1 ? ("current" as const) : ("pending" as const) })),
+      });
+      const view = projectJob(looped, [
+        event({ id: "c1", event: "phase.started", step: "cycle", properties: {} }),
+        event({ id: "w1", event: "phase.started", step: "work", properties: { iteration: 1 } }),
+        event({ id: "c2", event: "phase.finished", step: "cycle", properties: { outcome: "completed" } }),
+      ]);
+      assert.deepEqual(
+        view.phases.map((phase) => phase.label),
+        ["Plan", "Work", "Check", "Ship"],
+      );
+      assert.equal(view.phases.some((phase) => phase.id === "cycle"), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

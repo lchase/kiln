@@ -206,6 +206,8 @@ interface PendingFailure {
 }
 
 function pendingFailure(job: ObservedJob, config: LoadedKilnConfig, options: RecoverOptions): PendingFailure | undefined {
+  // `kiln cancel` killed it on purpose: not a crash, not retried, worktree left as is.
+  if (job.cancelled) return undefined;
   if (job.run?.gateDecision === "reject") return undefined;
   if (job.run?.status === "ok") return undefined;
   if (job.run?.status === "suspended") return undefined;
@@ -521,7 +523,7 @@ function childrenByPpid(parent: number): number[] {
   try {
     entries = readdirSync("/proc");
   } catch {
-    return [];
+    return childrenByPs(parent);
   }
   const found: number[] = [];
   for (const entry of entries) {
@@ -535,12 +537,31 @@ function childrenByPpid(parent: number): number[] {
 
 function processGroup(pid: number): number | undefined {
   const state = procFields(pid);
-  const group = state ? Number(state[2]) : Number.NaN;
+  const group = state ? Number(state[2]) : Number(psField(pid, "pgid") ?? Number.NaN);
   return Number.isInteger(group) ? group : undefined;
 }
 
 function procState(pid: number): string | undefined {
-  return procFields(pid)?.[0] ?? statusValue(pid, "State")?.slice(0, 1);
+  return procFields(pid)?.[0] ?? statusValue(pid, "State")?.slice(0, 1) ?? psField(pid, "stat")?.slice(0, 1);
+}
+
+// ponytail: no /proc (macOS). `ps` is one spawn per call; fine for the few pids a kill touches.
+function psField(pid: number, field: "pgid" | "stat"): string | undefined {
+  if (existsSync("/proc/self")) return undefined;
+  const result = spawnSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" });
+  const value = result.status === 0 ? result.stdout.trim() : "";
+  return value || undefined;
+}
+
+function childrenByPs(parent: number): number[] {
+  const result = spawnSync("ps", ["-A", "-o", "pid=", "-o", "ppid="], { encoding: "utf8" });
+  if (result.status !== 0) return [];
+  const found: number[] = [];
+  for (const line of result.stdout.split("\n")) {
+    const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+    if (pid !== undefined && pid > 1 && ppid === parent) found.push(pid);
+  }
+  return found;
 }
 
 function statusValue(pid: number, key: string): string | undefined {

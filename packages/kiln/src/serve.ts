@@ -6,7 +6,17 @@ import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { AUTH_PREFLIGHT_PREFIX } from "./auth.js";
 import { loadKilnConfig, type LoadedKilnConfig } from "./config.js";
-import { answerJob, cancelQueuedJobs, readStatus, retryJob, reviseJob, runTick, startupRecovery } from "./driver.js";
+import {
+  answerJob,
+  cancelJob,
+  cancelQueuedJobs,
+  readStatus,
+  removeJob,
+  retryJob,
+  reviseJob,
+  runTick,
+  startupRecovery,
+} from "./driver.js";
 import { browse } from "./fs-browse.js";
 import {
   branchOf,
@@ -23,9 +33,9 @@ import {
 } from "./board-view.js";
 import { appendEvent, eventsForJob, readEvents } from "./events.js";
 import { INVESTIGATION_WORKFLOW } from "./findings.js";
-import { productionHost } from "./host.js";
+import { cachedGitHub, defaultHost, productionHost, type KilnHost, type PullRequestViewCache } from "./host.js";
 import { intakeJobs } from "./intake-http.js";
-import { jobBasename, packageRoot } from "./paths.js";
+import { isJobId, jobBasename, packageRoot } from "./paths.js";
 import { SANDBOX_PREFLIGHT_PREFIX, sandboxIsEnabled } from "./sandbox.js";
 import type { StatusJobView } from "./report.js";
 import { renderApp, type AppSection, type ServePageOptions, renderMessagePage, renderTextPage } from "./serve-page.js";
@@ -45,7 +55,6 @@ export interface ServeOptions {
 
 const BODY_LIMIT = 65_536;
 const TEXT_LIMIT = 100_000;
-const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 interface LiveConfig {
   config: LoadedKilnConfig;
@@ -143,9 +152,26 @@ export function loadServeCss(): string {
   return readFileSync(path, "utf8");
 }
 
+/**
+ * Pull request state for this serve process. Deriving a job's state runs
+ * `gh pr view`, about a second each, and a page derives it several times.
+ * The tick refreshes this cache. Page requests read it.
+ */
+const pullRequestViews: PullRequestViewCache = new Map();
+
+function tickHost(): KilnHost {
+  const host = productionHost();
+  return { ...host, github: cachedGitHub(host.github, { cache: pullRequestViews, mode: "refresh" }) };
+}
+
+function pageHost(): KilnHost {
+  const host = defaultHost();
+  return { ...host, github: cachedGitHub(host.github, { cache: pullRequestViews, mode: "read" }) };
+}
+
 function safeTick(config: LoadedKilnConfig, secrets: string[], triggerStartup: boolean): void {
   try {
-    const report = runTick(config, productionHost(), { startup: false, triggerStartup });
+    const report = runTick(config, tickHost(), { startup: false, triggerStartup });
     if (report.startsWith(SANDBOX_PREFLIGHT_PREFIX) || report.startsWith(AUTH_PREFLIGHT_PREFIX)) {
       const tickAt = report.indexOf("\ntick ");
       const head = tickAt === -1 ? report : report.slice(0, tickAt);
@@ -248,8 +274,8 @@ async function handle(
       redirect(res, redirectTarget(req));
       return;
     }
-    const action = /^\/api\/jobs\/([^/]+)\/(approve|reject|retry|revise)$/.exec(path);
-    if (!action?.[1] || (action[2] !== "approve" && action[2] !== "reject" && action[2] !== "retry" && action[2] !== "revise")) {
+    const action = /^\/api\/jobs\/([^/]+)\/(approve|reject|retry|revise|cancel|remove)$/.exec(path);
+    if (!action?.[1] || !action[2]) {
       sendJson(res, 404, { error: "Not found." }, secrets);
       return;
     }
@@ -260,6 +286,10 @@ async function handle(
     }
     if (action[2] === "retry") {
       await retry(req, res, config, css, secrets, jobId);
+      return;
+    }
+    if (action[2] === "cancel" || action[2] === "remove") {
+      stopOrRemove(req, res, config, css, secrets, jobId, action[2]);
       return;
     }
     if (action[2] === "revise") {
@@ -306,7 +336,7 @@ async function handle(
   }
   if (path === "/api/events") {
     const jobId = url.searchParams.get("job_id");
-    if (!jobId || !JOB_ID.test(jobId)) {
+    if (!jobId || !isJobId(jobId)) {
       sendJson(res, 400, { error: "job_id is required." }, secrets);
       return;
     }
@@ -504,7 +534,7 @@ async function answer(
   choice: "approve" | "reject",
 ): Promise<void> {
   try {
-    answerJob(config, jobId, choice);
+    answerJob(config, jobId, choice, pageHost());
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const status = message.startsWith("No job ") ? 404 : 409;
@@ -537,7 +567,7 @@ async function revise(
     return;
   }
   try {
-    reviseJob(config, jobId, note);
+    reviseJob(config, jobId, note, pageHost());
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const status = message.startsWith("No job ") ? 404 : 409;
@@ -575,7 +605,7 @@ async function retry(
   jobId: string,
 ): Promise<void> {
   try {
-    retryJob(config, jobId);
+    retryJob(config, jobId, pageHost());
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const status = message.startsWith("No job ") ? 404 : 409;
@@ -589,6 +619,39 @@ async function retry(
     return;
   }
   redirect(res, redirectTarget(req));
+}
+
+function stopOrRemove(
+  req: IncomingMessage,
+  res: ServerResponse,
+  config: LoadedKilnConfig,
+  css: string,
+  secrets: string[],
+  jobId: string,
+  kind: "cancel" | "remove",
+): void {
+  let body: Record<string, unknown>;
+  try {
+    if (kind === "cancel") {
+      const result = cancelJob(config, jobId);
+      body = { ok: true, outcome: result.outcome, ...(result.was ? { was: result.was } : {}), message: result.message };
+    } else {
+      const result = removeJob(config, jobId);
+      body = { ok: true, removed: result.removed, ...(result.branch ? { branch: result.branch } : {}) };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = message.startsWith("No job ") ? 404 : 409;
+    const title = kind === "cancel" ? "Could not stop" : "Could not remove";
+    if (wantsJson(req)) sendJson(res, status, { error: message }, secrets);
+    else sendHtml(res, status, renderMessagePage(css, title, message, config.boardTheme), secrets);
+    return;
+  }
+  if (wantsJson(req)) {
+    sendJson(res, 200, kind === "cancel" ? { ...body, job: findJob(config, jobId) } : body, secrets);
+    return;
+  }
+  redirect(res, kind === "remove" ? "/" : redirectTarget(req));
 }
 
 function sendFindings(
@@ -616,7 +679,7 @@ function sendFindings(
 
 function findJob(config: LoadedKilnConfig, jobId: string): StatusJobView | undefined {
   try {
-    return readStatus(config, jobId).jobs[0];
+    return readStatus(config, jobId, pageHost()).jobs[0];
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message === `No job ${jobId}.`) return undefined;
@@ -678,7 +741,7 @@ function parseJobId(raw: string): string | undefined {
   } catch {
     return undefined;
   }
-  if (!JOB_ID.test(id)) return undefined;
+  if (!isJobId(id)) return undefined;
   return id;
 }
 
@@ -886,7 +949,7 @@ function pageOptions(state: LiveConfig, csrf: string): ServePageOptions {
 function statusDocument(state: LiveConfig): unknown {
   const spend = spendFor(state.config.kilnDir, state.config.dailyDollarCap);
   return {
-    ...readStatus(state.config),
+    ...readStatus(state.config, undefined, pageHost()),
     repos: repoList(state.config),
     configError: state.configError ?? null,
     paused: isPaused(state.config.kilnDir),
@@ -927,7 +990,7 @@ function renderShell(
     activity?: ActivityFeed;
   } = {},
 ): string {
-  const status = readStatus(state.config);
+  const status = readStatus(state.config, undefined, pageHost());
   const events = readEvents(state.config.kilnDir, { warn: () => {} });
   const board = buildBoard(status.jobs, events);
   const page = pageOptions(state, csrf);
@@ -948,7 +1011,7 @@ function renderShell(
 }
 
 function boardPayload(state: LiveConfig): unknown {
-  const status = readStatus(state.config);
+  const status = readStatus(state.config, undefined, pageHost());
   const events = readEvents(state.config.kilnDir, { warn: () => {} });
   const spend = spendFor(state.config.kilnDir, state.config.dailyDollarCap);
   return {
@@ -974,7 +1037,7 @@ function reportDocument(state: LiveConfig) {
 
 function unseenDocument(state: LiveConfig, seenValues: string[]) {
   const events = readEvents(state.config.kilnDir, { warn: () => {} });
-  const board = buildBoard(readStatus(state.config).jobs, events);
+  const board = buildBoard(readStatus(state.config, undefined, pageHost()).jobs, events);
   return unseenChanges(events, parseSeenQuery(seenValues), new Set(board.inbox.map((job) => job.jobId)));
 }
 

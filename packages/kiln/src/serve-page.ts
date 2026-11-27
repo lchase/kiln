@@ -691,8 +691,19 @@ function actionsHtml(job: BoardJob, section: "inbox" | "hand" | "repos" | "histo
     );
   }
   if (showRetry && job.retry) forms.push(postForm(`/api/jobs/${id}/retry`, "retry", "Retry", csrf));
+  if (section === "job" && job.canStop) {
+    forms.push(confirmForm(`/api/jobs/${id}/cancel`, "stop", "Stop job", "Confirm stop", csrf));
+  }
+  if (section === "job" && job.canRemove) {
+    forms.push(confirmForm(`/api/jobs/${id}/remove`, "remove", "Remove job", "Confirm remove", csrf));
+  }
   if (forms.length === 0) return "";
   return `<div class="d-actions">${forms.join("")}</div>`;
+}
+
+/** Opening the summary reveals the real submit button, so confirming needs no script. */
+function confirmForm(action: string, kind: string, label: string, confirm: string, csrf: string): string {
+  return `<details class="act confirm ${kind}"><summary>${label}</summary>${postForm(action, kind, confirm, csrf)}</details>`;
 }
 
 function postForm(action: string, kind: string, label: string, csrf: string): string {

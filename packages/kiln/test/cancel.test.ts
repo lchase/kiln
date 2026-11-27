@@ -1,21 +1,33 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { loadKilnConfig, type LoadedKilnConfig } from "../src/config.js";
-import { cancelQueuedJobs, readStatus } from "../src/driver.js";
-import { readEvents } from "../src/events.js";
+import { cancelJob, cancelQueuedJobs, readStatus, removeJob, runTick } from "../src/driver.js";
+import { readEvents, type KilnEvent } from "../src/events.js";
+import { realGitRemote, type KilnHost } from "../src/host.js";
 import { writeJob } from "../src/jobs.js";
-import { packageRoot } from "../src/paths.js";
+import { renderLedger } from "../src/ledger.js";
+import { assertJobId, packageRoot } from "../src/paths.js";
+import { isPidAlive } from "../src/reliability.js";
 
 const keep: string[] = [];
 const children: ChildProcess[] = [];
+/** Process groups this file spawned. The after hook kills only these. */
+const spawnedGroups: number[] = [];
 
 after(() => {
   for (const child of children) {
     if (child.exitCode === null) child.kill("SIGKILL");
+  }
+  for (const pid of spawnedGroups) {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
   }
   for (const dir of keep) rmSync(dir, { recursive: true, force: true });
 });
@@ -235,3 +247,441 @@ async function text(url: string, init?: RequestInit): Promise<{ status: number; 
   const response = await fetch(url, init);
   return { status: response.status, body: await response.text() };
 }
+
+/** A config whose kiln home is `dir`, with one git checkout `web` that has branch `yak/<branch>`. */
+function stopBox(options: { deliver?: "local" | "pr"; maxConcurrent?: number; branch?: string } = {}): {
+  dir: string;
+  checkout: string;
+  configPath: string;
+  config: LoadedKilnConfig;
+} {
+  const dir = mkdtempSync(join(tmpdir(), "kiln-stop-"));
+  keep.push(dir);
+  const checkout = join(dir, "web");
+  mkdirSync(checkout, { recursive: true });
+  git(checkout, ["init", "-q", "-b", "main"]);
+  git(checkout, ["config", "user.email", "kiln-test@example.com"]);
+  git(checkout, ["config", "user.name", "Kiln Test"]);
+  writeFileSync(join(checkout, "readme.md"), "sample\n");
+  git(checkout, ["add", "readme.md"]);
+  git(checkout, ["commit", "-q", "-m", "sample"]);
+  if (options.branch) git(checkout, ["branch", `yak/${options.branch}`]);
+  const configPath = join(dir, "kiln.config.json");
+  writeFileSync(
+    configPath,
+    `${JSON.stringify({
+      adapter: "mock",
+      maxConcurrent: options.maxConcurrent ?? 1,
+      repos: { web: { path: checkout, test: "node --test test.mjs", ...(options.deliver ? { deliver: options.deliver, base: "main" } : {}) } },
+    }, null, 2)}\n`,
+  );
+  return { dir, checkout, configPath, config: loadKilnConfig(configPath, { home: dir }) };
+}
+
+function add(config: LoadedKilnConfig, title: string, extra: { dependsOn?: string[]; stack?: boolean } = {}): string {
+  return writeJob(config, {
+    workflow: "feature",
+    repo: "web",
+    specText: `# ${title}\n`,
+    title,
+    dependsOn: extra.dependsOn ?? [],
+    ...(extra.stack ? { stack: true } : {}),
+    source: { kind: "prompt", ref: "inline" },
+  }).job.id;
+}
+
+function journal(checkout: string, runId: string, jobId: string, lines: Record<string, unknown>[], pid?: number): string {
+  const runDir = join(checkout, ".runs", runId);
+  mkdirSync(join(runDir, "artifacts"), { recursive: true });
+  const at = new Date().toISOString();
+  const all = [{ t: "run.started", at, runId, tag: `kiln:${jobId}`, ...(pid ? { pid } : {}) }, ...lines].map((line) => ({ at, ...line }));
+  writeFileSync(join(runDir, "journal.jsonl"), `${all.map((line) => JSON.stringify(line)).join("\n")}\n`);
+  return runDir;
+}
+
+/** A run waiting on an approve/reject gate. */
+function gatedRun(checkout: string, runId: string, jobId: string): string {
+  const runDir = journal(checkout, runId, jobId, [
+    { t: "gate.opened", stepId: "approve" },
+    { t: "run.finished", status: "suspended" },
+  ]);
+  mkdirSync(join(runDir, "pending"), { recursive: true });
+  writeFileSync(
+    join(runDir, "pending", "approve.request.json"),
+    `${JSON.stringify({
+      rendered: "Approve the change?",
+      answerSchema: { type: "object", required: ["decision"], properties: { decision: { enum: ["approve", "reject"] } } },
+    })}\n`,
+  );
+  return runDir;
+}
+
+/** A run that finished ok with an approve decision: landed. */
+function landedRun(checkout: string, runId: string, jobId: string): void {
+  const runDir = journal(checkout, runId, jobId, [{ t: "run.finished", status: "ok" }]);
+  writeFileSync(join(runDir, "artifacts", "approval.json"), `${JSON.stringify({ decision: "approve" })}\n`);
+}
+
+/** bash parent + sleep child in their own process group. Only this file signals them. */
+function spawnTree(): Promise<{ parent: ChildProcess; parentPid: number; childPid: number }> {
+  const parent = spawn("bash", ["-c", "sleep 300 & echo $!; wait"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+  if (parent.pid) spawnedGroups.push(parent.pid);
+  return new Promise((resolve, reject) => {
+    let buf = "";
+    const timer = setTimeout(() => reject(new Error(`no child pid\n${buf}`)), 3000);
+    parent.stdout?.setEncoding("utf8");
+    parent.stdout?.on("data", (chunk: string) => {
+      buf += chunk;
+      const line = buf.split("\n")[0]?.trim();
+      if (line && /^\d+$/.test(line) && parent.pid) {
+        clearTimeout(timer);
+        resolve({ parent, parentPid: parent.pid, childPid: Number(line) });
+      }
+    });
+  });
+}
+
+function waitForExit(child: ChildProcess, timeoutMs = 5000): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("process still running")), timeoutMs);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+function eventsFor(config: LoadedKilnConfig, jobId: string, name: string): KilnEvent[] {
+  return readEvents(config.kilnDir, { warn: () => {} }).filter((event) => event.job_id === jobId && event.event === name);
+}
+
+/** A host that records every GitHub and feedback call and never reaches gh. */
+function recordingHost(calls: string[], starts: number[]): KilnHost {
+  return {
+    github: {
+      findByHead: () => {
+        calls.push("findByHead");
+        return null;
+      },
+      createDraft: () => {
+        calls.push("createDraft");
+        throw new Error("createDraft must not be called");
+      },
+      view: () => {
+        calls.push("view");
+        return { state: "OPEN", mergedAt: null };
+      },
+      postCommentReview: () => {
+        calls.push("postCommentReview");
+        throw new Error("postCommentReview must not be called");
+      },
+    },
+    git: realGitRemote,
+    feedback: {
+      read: () => {
+        calls.push("feedback.read");
+        throw new Error("feedback.read must not be called");
+      },
+    },
+    startAgent() {
+      const child = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
+      if (child.pid) spawnedGroups.push(child.pid);
+      children.push(child);
+      child.unref();
+      starts.push(child.pid ?? 0);
+      return { pid: child.pid ?? 0 };
+    },
+  };
+}
+
+describe("kiln cancel <jobId>", () => {
+  it("kills a running run's process tree, is idempotent, frees the slot, and keeps dependents blocked", async () => {
+    const box = stopBox({ maxConcurrent: 1 });
+    const running = add(box.config, "SAMPLE-RUN");
+    const queued = add(box.config, "SAMPLE-NEXT");
+    const after = add(box.config, "SAMPLE-AFTER", { dependsOn: [running] });
+    const stacked = add(box.config, "SAMPLE-STACK", { dependsOn: [running], stack: true });
+    const tree = await spawnTree();
+    const runId = "2000-01-01T00-00-00Z-run";
+    journal(box.checkout, runId, running, [], tree.parentPid);
+    assert.equal(readStatus(box.config, running).jobs[0]?.state, "running");
+
+    const first = runCli(["cancel", running, "--config", box.configPath], { cwd: box.dir, home: box.dir });
+    assert.equal(first.status, 0, first.stderr);
+    assert.match(first.stdout, new RegExp(`cancelled ${running} \\(was running\\)`));
+    await waitForExit(tree.parent);
+    assert.equal(isPidAlive(tree.parentPid), false);
+    assert.equal(isPidAlive(tree.childPid), false, `child ${tree.childPid} survived`);
+    const status = runCli(["status", running, "--config", box.configPath], { cwd: box.dir, home: box.dir });
+    assert.match(status.stdout, new RegExp(`${running}\\s+web\\s+feature\\s+cancelled`));
+    const cancelled = eventsFor(box.config, running, "job.cancelled");
+    assert.equal(cancelled.length, 1);
+    assert.equal(cancelled[0]?.event === "job.cancelled" ? cancelled[0].properties.was : undefined, "running");
+
+    const second = runCli(["cancel", running, "--config", box.configPath], { cwd: box.dir, home: box.dir });
+    assert.equal(second.status, 0, second.stderr);
+    assert.match(second.stdout, new RegExp(`${running} already cancelled`));
+    assert.equal(eventsFor(box.config, running, "job.cancelled").length, 1);
+
+    const calls: string[] = [];
+    const starts: number[] = [];
+    const tick = runTick(box.config, recordingHost(calls, starts), { startup: true, now: new Date() });
+    assert.match(tick, new RegExp(`launch ${queued}\\s+web`));
+    assert.doesNotMatch(tick, new RegExp(`(launch|retry|stall) ${running}`));
+    assert.equal(starts.length, 1);
+    assert.equal(eventsFor(box.config, running, "job.retried").length, 0);
+    // `yak cancel` closes the journal as failed/cancelled and that is projected as is. Recovery records nothing.
+    const failed = eventsFor(box.config, running, "run.failed");
+    assert.deepEqual(failed.map((event) => (event.event === "run.failed" ? event.properties.reason : "")), ["cancelled"]);
+    assert.equal(existsSync(join(box.config.kilnDir, "attempts", `${running}.json`)), false);
+    assert.equal(readStatus(box.config, running).jobs[0]?.state, "cancelled");
+    assert.equal(readStatus(box.config, after).jobs[0]?.state, "blocked");
+    assert.equal(readStatus(box.config, stacked).jobs[0]?.state, "blocked");
+
+    const ledger = renderLedger(readEvents(box.config.kilnDir, { warn: () => {} }));
+    assert.match(ledger, new RegExp(`${running}  1\\n    stopped by hand  1`));
+  });
+
+  it("closes a gate without answering it and posts or delivers nothing", () => {
+    const box = stopBox({ deliver: "pr" });
+    const gated = add(box.config, "SAMPLE-GATE");
+    const runDir = gatedRun(box.checkout, "2000-01-01T00-00-01Z-gate", gated);
+    const calls: string[] = [];
+    const host = recordingHost(calls, []);
+    assert.equal(readStatus(box.config, gated, host).jobs[0]?.canApprove, true);
+
+    const result = cancelJob(box.config, gated, host);
+    assert.deepEqual([result.outcome, result.was], ["cancelled", "needs-human"]);
+    assert.deepEqual(calls, []);
+    assert.equal(eventsFor(box.config, gated, "gate.resolved").length, 0);
+    assert.equal(existsSync(join(runDir, "pending", "approve.answer.json")), false);
+    assert.doesNotMatch(readFileSync(join(runDir, "journal.jsonl"), "utf8"), /gate\.answered/);
+    const view = readStatus(box.config, gated, host).jobs[0];
+    assert.equal(view?.state, "cancelled");
+    assert.equal(view?.canApprove, false);
+    assert.equal(view?.canReject, false);
+    assert.equal(existsSync(join(box.config.kilnDir, "deliveries", `${gated}.json`)), false);
+    const ledger = renderLedger(readEvents(box.config.kilnDir, { warn: () => {} }));
+    assert.match(ledger, /stopped by hand  1/);
+  });
+
+  it("stops watching an in-review pull request and leaves the delivery record alone", () => {
+    const box = stopBox({ deliver: "pr" });
+    const review = add(box.config, "SAMPLE-REVIEW");
+    const runId = "2000-01-01T00-00-02Z-pr";
+    landedRun(box.checkout, runId, review);
+    const delivery = join(box.config.kilnDir, "deliveries", `${review}.json`);
+    mkdirSync(dirname(delivery), { recursive: true });
+    const record = `${JSON.stringify({ jobId: review, runId, branch: `yak/${runId}`, base: "main", pushed: true, prNumber: 7, prUrl: "https://example.com/pull/7" }, null, 2)}\n`;
+    writeFileSync(delivery, record);
+    const calls: string[] = [];
+    const host = recordingHost(calls, []);
+    assert.equal(readStatus(box.config, review, host).jobs[0]?.state, "in-review");
+
+    const result = cancelJob(box.config, review, host);
+    assert.deepEqual([result.outcome, result.was], ["cancelled", "in-review"]);
+    calls.length = 0;
+    runTick(box.config, host, { startup: false, now: new Date() });
+    assert.deepEqual(calls, []);
+    assert.equal(readFileSync(delivery, "utf8"), record);
+    assert.equal(readStatus(box.config, review, host).jobs[0]?.state, "cancelled");
+    const ledger = renderLedger(readEvents(box.config.kilnDir, { warn: () => {} }));
+    assert.match(ledger, /0 interventions/);
+  });
+
+  it("reports nothing to stop on done and rejected jobs and writes nothing", () => {
+    const box = stopBox();
+    const done = add(box.config, "SAMPLE-DONE");
+    landedRun(box.checkout, "2000-01-01T00-00-03Z-done", done);
+    const rejected = add(box.config, "SAMPLE-REJECTED");
+    const runDir = journal(box.checkout, "2000-01-01T00-00-04Z-rej", rejected, [{ t: "run.finished", status: "ok" }]);
+    writeFileSync(join(runDir, "artifacts", "approval.json"), `${JSON.stringify({ decision: "reject" })}\n`);
+    const before = readFileSync(join(box.config.jobsDir, `${done}.json`), "utf8");
+    const out = runCli(["cancel", done, "--config", box.configPath], { cwd: box.dir, home: box.dir });
+    assert.equal(out.status, 0, out.stderr);
+    assert.match(out.stdout, new RegExp(`${done} is done; nothing to stop`));
+    assert.equal(cancelJob(box.config, rejected).outcome, "finished");
+    assert.equal(readFileSync(join(box.config.jobsDir, `${done}.json`), "utf8"), before);
+    assert.equal(eventsFor(box.config, done, "job.cancelled").length + eventsFor(box.config, rejected, "job.cancelled").length, 0);
+    const queuedCancel = add(box.config, "SAMPLE-QUEUED");
+    assert.equal(cancelJob(box.config, queuedCancel).was, "queued");
+    assert.match(renderLedger(readEvents(box.config.kilnDir, { warn: () => {} })), /0 interventions/);
+  });
+});
+
+describe("kiln remove <jobId>", () => {
+  it("refuses active jobs and jobs with dependents, then removes Kiln's records and keeps the branch", async () => {
+    const runId = "2000-01-01T00-00-05Z-old";
+    const box = stopBox({ deliver: "pr", branch: runId });
+    const cli = (args: string[]) => runCli([...args, "--config", box.configPath], { cwd: box.dir, home: box.dir });
+
+    const launching = add(box.config, "SAMPLE-LAUNCHING");
+    mkdirSync(join(box.config.kilnDir, "launching"), { recursive: true });
+    writeFileSync(
+      join(box.config.kilnDir, "launching", `${launching}.json`),
+      `${JSON.stringify({ jobId: launching, pid: process.pid, logPath: "" })}\n`,
+    );
+    const gated = add(box.config, "SAMPLE-GATED");
+    gatedRun(box.checkout, "2000-01-01T00-00-06Z-gate", gated);
+    const review = add(box.config, "SAMPLE-INREVIEW");
+    landedRun(box.checkout, "2000-01-01T00-00-07Z-pr", review);
+    for (const [id, state] of [[launching, "running"], [gated, "needs-human"], [review, "in-review"]] as const) {
+      const out = cli(["remove", id]);
+      assert.equal(out.status, 1, out.stdout);
+      assert.match(out.stderr, new RegExp(`Job ${id} is ${state}\\. Run kiln cancel ${id} first\\.`));
+      assert.ok(existsSync(join(box.config.jobsDir, `${id}.json`)));
+    }
+
+    const upstream = add(box.config, "SAMPLE-UPSTREAM");
+    const downstream = add(box.config, "SAMPLE-DOWNSTREAM", { dependsOn: [upstream] });
+    const refused = cli(["remove", upstream]);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, new RegExp(`Job ${upstream} is needed by ${downstream}\\. Remove or cancel those first\\.`));
+
+    const target = add(box.config, "SAMPLE-REMOVE");
+    journal(box.checkout, runId, target, [{ t: "run.finished", status: "failed" }]);
+    assert.equal(readStatus(box.config, target).jobs[0]?.state, "failed");
+    const k = box.config.kilnDir;
+    const files = [
+      join(box.config.jobsDir, `${target}.json`),
+      join(k, "specs", `${target}.md`),
+      join(k, "rendered", target, "feature.yaml"),
+      join(k, "attempts", `${target}.json`),
+      join(k, "feedback", `${target}.json`),
+      join(k, "deliveries", `${target}.json`),
+      join(k, "logs", `${target}.log`),
+    ];
+    for (const file of files.slice(2)) {
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, "{}\n");
+    }
+    for (const file of files) assert.ok(existsSync(file), file);
+    const eventsBefore = readEvents(k, { warn: () => {} }).filter((event) => event.job_id === target).length;
+
+    const removed = cli(["remove", target]);
+    assert.equal(removed.status, 0, removed.stderr);
+    assert.equal(
+      removed.stdout,
+      `removed ${target}\nbranch yak/${runId} left in place; delete it with git branch -D yak/${runId}\n`,
+    );
+    for (const file of files) assert.equal(existsSync(file), false, file);
+    assert.equal(existsSync(join(k, "rendered", target)), false);
+    const status = cli(["status"]);
+    assert.doesNotMatch(status.stdout, new RegExp(target));
+    const after = readEvents(k, { warn: () => {} }).filter((event) => event.job_id === target);
+    assert.equal(after.length, eventsBefore + 1);
+    assert.equal(after.at(-1)?.event, "job.removed");
+    assert.match(git(box.checkout, ["branch", "--list", `yak/${runId}`]), new RegExp(`yak/${runId}`));
+    assert.throws(() => removeJob(box.config, target), /No job/);
+
+    const server = await startServe(["--no-tick", "--port", "0", "--config", box.configPath], { cwd: box.dir, home: box.dir });
+    try {
+      const board = await text(`${server.url}/api/board`);
+      assert.equal(board.status, 200);
+      assert.doesNotMatch(board.body, new RegExp(target));
+    } finally {
+      await stop(server.child);
+    }
+  });
+  it("refuses a cancelled job that still has a live process and only deletes Kiln's own spec copy", () => {
+    const box = stopBox();
+    const k = box.config.kilnDir;
+    const stuck = add(box.config, "SAMPLE-STUCK");
+    assert.equal(cancelJob(box.config, stuck).outcome, "cancelled");
+    // ponytail: our own pid as the breadcrumb; remove only reads it, nothing signals it.
+    mkdirSync(join(k, "launching"), { recursive: true });
+    const crumb = join(k, "launching", `${stuck}.json`);
+    writeFileSync(crumb, `${JSON.stringify({ jobId: stuck, pid: process.pid, logPath: "" })}\n`);
+    assert.throws(() => removeJob(box.config, stuck), new RegExp(`Job ${stuck} still has a live process\\. Run kiln cancel ${stuck} first\\.`));
+    assert.ok(existsSync(join(box.config.jobsDir, `${stuck}.json`)));
+    rmSync(crumb);
+    removeJob(box.config, stuck);
+    assert.equal(existsSync(join(box.config.jobsDir, `${stuck}.json`)), false);
+
+    const edited = add(box.config, "SAMPLE-EDITED");
+    const jobFile = join(box.config.jobsDir, `${edited}.json`);
+    const record = join(k, "keep-me.md");
+    writeFileSync(record, "keep\n");
+    writeFileSync(jobFile, JSON.stringify({ ...JSON.parse(readFileSync(jobFile, "utf8")), spec: "keep-me.md" }));
+    removeJob(box.config, edited);
+    assert.equal(existsSync(jobFile), false);
+    assert.ok(existsSync(record));
+  });
+});
+
+describe("job id validation and board routes", () => {
+  it("rejects bad ids everywhere and guards both routes with CSRF and POST", async () => {
+    const box = stopBox();
+    const cli = (args: string[]) => runCli([...args, "--config", box.configPath], { cwd: box.dir, home: box.dir });
+    for (const bad of ["a/b", "..", "a..b", "%2e%2e"]) {
+      assert.throws(() => assertJobId(bad), /is not valid/);
+      assert.throws(() => cancelJob(box.config, bad), /is not valid/);
+      assert.throws(() => removeJob(box.config, bad), /is not valid/);
+      for (const command of ["cancel", "remove"]) {
+        const out = cli([command, bad]);
+        assert.equal(out.status, 1, `${command} ${bad}: ${out.stdout}`);
+        assert.match(out.stderr, /is not valid/);
+      }
+    }
+    assert.equal(existsSync(join(box.config.kilnDir, "events.jsonl")), false);
+
+    const stoppable = add(box.config, "SAMPLE-STOP");
+    const removable = add(box.config, "SAMPLE-REMOVABLE");
+    const server = await startServe(["--no-tick", "--port", "0", "--config", box.configPath], { cwd: box.dir, home: box.dir });
+    try {
+      const page = await text(`${server.url}/jobs/${stoppable}`);
+      assert.equal(page.status, 200);
+      const csrf = page.body.match(/data-csrf="([a-f0-9]+)"/)?.[1];
+      assert.ok(csrf);
+      assert.match(page.body, /<details class="act confirm stop"><summary>Stop job<\/summary><form method="post" action="\/api\/jobs\/[^"]+\/cancel"/);
+      assert.match(page.body, /<button type="submit">Confirm stop<\/button>/);
+      assert.match(page.body, /<details class="act confirm remove"><summary>Remove job<\/summary>/);
+      assert.match(page.body, /<button type="submit">Confirm remove<\/button>/);
+      const headers = { Origin: server.url, Accept: "application/json", "Content-Type": "application/json", "X-Kiln-CSRF": csrf };
+
+      for (const bad of ["a%2Fb", "..", "a..b", "%2e%2e"]) {
+        for (const action of ["cancel", "remove"]) {
+          const res = await text(`${server.url}/api/jobs/${bad}/${action}`, { method: "POST", headers, body: "{}" });
+          assert.ok(res.status === 404 || res.status === 400, `${bad}/${action} -> ${res.status}`);
+        }
+      }
+      for (const action of ["cancel", "remove"]) {
+        const noToken = await text(`${server.url}/api/jobs/${stoppable}/${action}`, {
+          method: "POST",
+          headers: { Origin: server.url, Accept: "application/json", "Content-Type": "application/json" },
+          body: "{}",
+        });
+        assert.equal(noToken.status, 403);
+        const viaGet = await text(`${server.url}/api/jobs/${stoppable}/${action}`);
+        assert.notEqual(viaGet.status, 200);
+      }
+      assert.equal(readStatus(box.config, stoppable).jobs[0]?.state, "queued");
+      assert.ok(existsSync(join(box.config.jobsDir, `${stoppable}.json`)));
+
+      const stopped = await text(`${server.url}/api/jobs/${stoppable}/cancel`, { method: "POST", headers, body: "{}" });
+      assert.equal(stopped.status, 200, stopped.body);
+      assert.equal((JSON.parse(stopped.body) as { was?: string }).was, "queued");
+      assert.equal(readStatus(box.config, stoppable).jobs[0]?.state, "cancelled");
+      const after = await text(`${server.url}/jobs/${stoppable}`);
+      assert.doesNotMatch(after.body, /Stop job/);
+      assert.match(after.body, /Remove job/);
+
+      const gone = await text(`${server.url}/api/jobs/${removable}/remove`, { method: "POST", headers, body: "{}" });
+      assert.equal(gone.status, 200, gone.body);
+      assert.equal(existsSync(join(box.config.jobsDir, `${removable}.json`)), false);
+      const missing = await text(`${server.url}/api/jobs/${removable}/remove`, { method: "POST", headers, body: "{}" });
+      assert.equal(missing.status, 404);
+      const form = await fetch(`${server.url}/api/jobs/${stoppable}/remove`, {
+        method: "POST",
+        redirect: "manual",
+        headers: { Origin: server.url, "Content-Type": "application/x-www-form-urlencoded" },
+        body: `csrf=${csrf}`,
+      });
+      assert.equal(form.status, 303);
+      assert.equal(form.headers.get("location"), "/");
+    } finally {
+      await stop(server.child);
+    }
+  });
+});

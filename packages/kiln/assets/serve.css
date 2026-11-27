@@ -557,6 +557,7 @@ h3 {
 .fs-use,
 .trigger button,
 .d-actions button,
+.d-actions .confirm summary,
 .d-actions .revise input,
 .repo-f,
 .wf-f {
@@ -567,6 +568,27 @@ h3 {
   background: var(--card);
   color: var(--ink);
   cursor: pointer;
+}
+.d-actions button:disabled { opacity: var(--disabled); cursor: not-allowed; }
+.d-actions button[aria-busy="true"] { opacity: 1; cursor: progress; }
+.d-actions button[aria-busy="true"]::before {
+  content: "";
+  display: inline-block;
+  width: var(--space-3);
+  height: var(--space-3);
+  margin-right: var(--space-2);
+  vertical-align: middle;
+  box-sizing: border-box;
+  border: var(--track) solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--radius-full);
+  animation: act-spin 0.8s linear infinite;
+}
+@keyframes act-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .d-actions button[aria-busy="true"]::before { animation: none; }
 }
 .pause button {
   display: inline-flex;
@@ -1067,6 +1089,10 @@ body.open .drawer { transform: none; }
 .d-actions form, .form-footer { margin: 0; }
 .d-actions .revise { display: flex; gap: var(--space-2); align-items: center; }
 .d-actions .revise input { min-width: 16rem; background: var(--bg); }
+.d-actions .confirm { display: flex; gap: var(--space-2); align-items: center; }
+.d-actions .confirm summary { list-style: none; display: inline-flex; align-items: center; }
+.d-actions .confirm summary::-webkit-details-marker { display: none; }
+.d-actions .confirm[open] summary { color: var(--muted); }
 
 .sheet.intake { flex: 1; min-height: 0; height: auto; overflow: hidden; display: flex; flex-direction: column; }
 .intake-form {

@@ -86,6 +86,10 @@ State colors (say the word as well as the color):
 - A job shows the workflow's step list. The card does not show the current step as plain text.
 - Done steps are `--muted` with a check. The current step is `--primary` and weight 500. Upcoming steps are `--faint`. A failed step uses `--state-failed`.
 - Names are separated by `›`.
+- Each step is named once. The approver agent step (`approver`) is "Approver". The human gate (`approve`) is
+  "Your decision".
+- A loop (or map) container is not a step. Its body steps appear in the list and the container does not. In
+  `feature`, the `revise` loop is not shown; Build, Verify, and the reviews are.
 - A pipeline card is narrow. It uses a segmented bar (one segment per step) plus the current step name. Done segments are `--muted`. The current segment is `--primary`. Upcoming segments are `--line`.
 - Inbox, repo, and history rows use the same stepper. Wide rows show the names. The job page always shows the full stepper. The phase list under it keeps durations and notes.
 
@@ -150,6 +154,17 @@ Kiln notifies only when the needs-you count grows, and only while sending is on.
 - No all-caps marketing eyebrows.
 - Do not paint chrome, nav icons, or the sidebar footer with `--primary`. It is for the action button (Approve, Add job) and the current step.
 - Do not add a second accent color for decoration.
+
+## Pending actions
+
+- Approve, Reject, Revise, and Retry post a form, and the answer takes a moment. On click the button keeps its
+  place, shows a small spinning ring before its label, and the label changes to the action in progress
+  (`Approving…`, `Rejecting…`, `Sending back…`, `Retrying…`). It carries `aria-busy="true"`.
+- Every other button in that row is disabled and the note field is read-only until the page changes. A second click
+  does not post again.
+- The ring is the only motion. `prefers-reduced-motion: reduce` leaves it still. The label change carries the
+  state without it.
+- The page does not reload itself while an action is on its way.
 
 ## Forms
 
