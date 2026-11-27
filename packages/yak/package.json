@@ -1,6 +1,6 @@
 {
   "name": "@lchase/yak",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "An agentic workflow engine",
   "license": "MIT",
   "type": "module",
