@@ -57,6 +57,10 @@
   --field-min: 88px;
   --setting-text-min: 320px;
   --setting-control-min: 240px;
+  --setting-number: 96px;
+  --switch-w: 44px;
+  --switch-h: 24px;
+  --switch-knob: 18px;
   --prose-max: 220px;
   --log-max-height: 280px;
   --seg-min: 72px;
@@ -1506,6 +1510,45 @@ body.open .drawer { transform: none; }
 .setting-warn-line { color: var(--state-needs-hand); }
 .setting-control { flex: 1 1 var(--setting-control-min); min-width: 0; display: flex; flex-direction: column; gap: var(--space-2); }
 .setting-control .empty { margin: 0; }
+.setting-control input[type="number"] {
+  width: var(--setting-number);
+  height: var(--control-h);
+  font: var(--text-sm)/var(--leading-sm) var(--font-sans);
+  color: var(--ink);
+  background: var(--bg);
+  border: var(--hairline) solid var(--line-strong);
+  border-radius: var(--radius-md);
+  padding: 0 var(--space-3);
+}
+.setting-control input[type="checkbox"] { align-self: flex-start; }
+.setting-control .seg { gap: var(--space-2); }
+/* A unit or prefix beside a number: "$ [ 5 ]", "[ 15 ] minutes". */
+.setting-unit { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.setting-affix { color: var(--muted); }
+.setting-reset { align-self: flex-start; }
+.setting-check { display: flex; flex-direction: column; gap: var(--space-1); }
+/* An on/off switch: role="switch" with aria-checked. The knob's side says the state; the row's warning says it in words. */
+.switch {
+  flex: none;
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  width: var(--switch-w);
+  height: var(--switch-h);
+  padding: var(--space-2xs);
+  border: var(--hairline) solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  cursor: pointer;
+}
+.switch-knob {
+  width: var(--switch-knob);
+  height: var(--switch-knob);
+  border-radius: var(--radius-sm);
+  background: var(--faint);
+}
+.switch[aria-checked="true"] { justify-content: flex-end; border-color: var(--ink); background: var(--card-hover); }
+.switch[aria-checked="true"] .switch-knob { background: var(--ink); }
 .setting-skills { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .setting-skills li {
   font: var(--text-xs)/var(--leading-xs) var(--font-mono);

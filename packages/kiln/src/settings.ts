@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { assertBranchName, assertCheckoutDirectory, overlaySkillReport, type OverlaySkillReport } from "./config.js";
+import { assertBranchName, assertCheckoutDirectory, overlaySkillReport, type LoadedKilnConfig, type OverlaySkillReport } from "./config.js";
 import { DEFAULT_BRANCH_TEMPLATE, DEFAULT_PR_TITLE } from "./pr-names.js";
 import {
   DEFAULT_MAX_ATTEMPTS,
@@ -19,6 +19,8 @@ import {
   type RouteConfig,
   type TriggerConfig,
 } from "./schemas.js";
+import { spendFor } from "./rails.js";
+import { sandboxIsEnabled, sandboxPreflightMessage, type SandboxFacts } from "./sandbox.js";
 import { resolveBoardTheme, type BoardThemeId } from "./theme.js";
 import { effectiveRoutes, effectiveTriggers } from "./triggers.js";
 import type { ZodError } from "zod";
@@ -68,6 +70,14 @@ export interface SettingsDocument {
    * a PUT that echoes it writes nothing.
    */
   skillCheck: OverlaySkillReport;
+  /**
+   * Dollars recorded today (local day). Read-only: `GET`/`PUT /api/settings`
+   * add it from the loaded config ({@link settingsStatus}); a PUT that echoes
+   * it writes nothing.
+   */
+  spentToday?: number;
+  /** Whether a sandbox is on and, if so, what `kiln sandbox` would report missing. Read-only like `spentToday`. */
+  sandboxCheck?: SandboxCheck;
   /** Resolved board theme. Unknown or missing file values are `kiln`. */
   board: { theme: BoardThemeId };
   /** Shown when a field is omitted. Not written back. */
@@ -90,6 +100,31 @@ export interface SettingsDocument {
    * A PUT of `{ revision, file }` writes this object back.
    */
   file: Record<string, unknown>;
+}
+
+export interface SandboxCheck {
+  on: boolean;
+  /** The text `kiln sandbox` prints when a sandboxed run cannot start. Never holds an env value. */
+  problem?: string;
+}
+
+/** The read-only facts the page shows beside Limits and Sandbox. */
+export interface SettingsStatus {
+  spentToday: number;
+  sandboxCheck: SandboxCheck;
+}
+
+/**
+ * Today's spend and the sandbox check for the loaded config. Docker is probed
+ * only when a sandbox is on; tests pass `facts` instead.
+ */
+export function settingsStatus(config: LoadedKilnConfig, facts?: SandboxFacts, now = new Date()): SettingsStatus {
+  const on = sandboxIsEnabled(config);
+  const problem = on ? sandboxPreflightMessage(config, facts) : undefined;
+  return {
+    spentToday: spendFor(config.kilnDir, config.dailyDollarCap, now).usd,
+    sandboxCheck: { on, ...(problem ? { problem } : {}) },
+  };
 }
 
 export interface SettingsTrigger {
@@ -164,7 +199,7 @@ export function readSettings(
  * the file after the same schema check. Invalid JSON never reaches this
  * function. A secret value other than {@link SECRET_PLACEHOLDER} is rejected
  * and the placeholder keeps the bytes already on disk. The read-only
- * `skillCheck` a page echoes back is dropped.
+ * `skillCheck`, `spentToday` and `sandboxCheck` a page echoes back are dropped.
  */
 export function saveSettings(
   configPath: string,
@@ -173,7 +208,7 @@ export function saveSettings(
   env: NodeJS.ProcessEnv = process.env,
 ): SettingsSuccess | SettingsFailure {
   if (!isRecord(input)) return fail(400, "Request body must be a JSON object.");
-  const { skillCheck: _skillCheck, ...body } = input;
+  const { skillCheck: _skillCheck, spentToday: _spentToday, sandboxCheck: _sandboxCheck, ...body } = input;
   const read = readConfigFile(configPath);
   if ("error" in read) return fail(409, "The settings file changed on disk. Reload and try again.");
 

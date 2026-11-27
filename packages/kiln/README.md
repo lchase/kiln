@@ -398,6 +398,14 @@ or keep a local branch), and a closed "Naming and limits for this repo" section 
 templates, max attempts, and max fix rounds. Add repo asks for a name and a path first. Remove repo asks on the page,
 and the repo stays in the file until Save changes. To rename a repo or change its path, use Edit the file.
 
+Limits and retries and Sandbox are rows with a plain label and one line on what each does. Limits and retries has Jobs
+at once, Daily spending cap (in dollars, with what has been spent today; blank means no cap), Stop a silent run after
+(in minutes, saved as `stallTimeoutMs` in milliseconds; 0 warns that a hung run will not be stopped), Attempts per job,
+Stop after the same failure, Fix rounds on a pull request, Agent (Claude Code, or Mock for testing), and Keep finished
+worktrees. Sandbox has a Run agents in Docker switch, which warns when it is off, and Sites agents may reach, one host
+per line, with Reset to default list. When the sandbox is on and a run cannot start, the section shows what
+`kiln sandbox` reports.
+
 Local workflows and skills lists the skill names agents will see, read from the saved skills folder and extra skill
 folders. A folder that does not exist, or holds no `<name>/SKILL.md`, gets a warning that names it as you typed it.
 The warning does not stop a save. A blank Skills folder uses the Kiln home `skills` folder, which may be missing, so it
