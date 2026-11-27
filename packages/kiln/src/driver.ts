@@ -129,6 +129,7 @@ import {
   type SandboxFacts,
 } from "./sandbox.js";
 import { JobSchema, type Job, type JobState } from "./schemas.js";
+import { applyWorktrees, planWorktrees, renderCleanPlan } from "./worktrees.js";
 import {
   ensureReviewHead,
   evaluateTriggers,
@@ -168,6 +169,8 @@ interface Breadcrumb {
 interface World {
   observation: Observation;
   jobs: Map<string, Job>;
+  /** Runs by job tag, scanned with this observation. A run that starts later is not in it. */
+  runs: Map<string, ObservedRun[]>;
 }
 
 const TAG_PREFIX = "kiln:";
@@ -240,12 +243,48 @@ export function runTick(
     if (world.observation.spendBlocked) {
       recordDailyCap(config.kilnDir, spendSnapshot(readEvents(config.kilnDir, { warn: () => {} }), config.dailyDollarCap, now), now);
     }
-    const body = apply(config, world, actions, host, notes, now, [...published, ...feedbackNotes], facts);
+    const applied = apply(config, world, actions, host, notes, now, [...published, ...feedbackNotes], facts);
+    const cleaned = config.keepWorktrees
+      ? []
+      : applyWorktrees(config, planWorktrees(config, world.observation, world.runs));
+    const body = `${applied}${cleaned.map((done) => `${done.outcome} ${done.entry.runId}\n`).join("")}`;
     const heads = [
       claudeCredentialPreflight(process.env, config.adapter),
       facts ? sandboxPreflight(config, facts) : undefined,
     ].filter((line): line is string => Boolean(line));
     return heads.length > 0 ? `${heads.join("\n")}\n${body}` : body;
+  });
+}
+
+export interface CleanOptions {
+  /** Remove what the plan lists as removable. Without it nothing changes. */
+  apply?: boolean;
+  /** Limit to one registered repo. */
+  repo?: string;
+}
+
+/**
+ * `kiln clean`: list every worktree under `.yak/worktrees/` with its owner and
+ * what cleanup would do. `apply` removes the removable ones and ignores
+ * `keepWorktrees`. Runs under the tick lock.
+ */
+export function cleanWorktrees(config: LoadedKilnConfig, options: CleanOptions = {}, host: KilnHost = defaultHost()): string {
+  if (options.repo !== undefined && !config.repos[options.repo]) {
+    throw new Error(`Repo ${options.repo} is not registered.`);
+  }
+  return withTickLock(config.kilnDir, () => {
+    const world = observe(config, host);
+    const entries = planWorktrees(config, world.observation, world.runs, options.repo);
+    if (!options.apply) return renderCleanPlan(entries);
+    const listed = renderCleanPlan(entries);
+    const outcomes = applyWorktrees(config, entries);
+    const tail = outcomes.map((done) => {
+      const branch = done.branch ? `  branch ${done.branch}` : "";
+      const snapshot = done.snapshot ? `  snapshot ${done.snapshot.slice(0, 12)}` : "";
+      const detail = done.outcome === "kept" && done.detail ? `  ${done.detail}` : "";
+      return `${done.outcome} ${done.entry.runId}${branch}${snapshot}${detail}\n`;
+    });
+    return `${listed}${tail.length > 0 ? tail.join("") : "cleaned 0\n"}`;
   });
 }
 
@@ -899,6 +938,7 @@ function observe(config: LoadedKilnConfig, host: KilnHost, now = new Date()): Wo
       ...(waiting ? { holdDetail: waiting } : {}),
     },
     jobs: records,
+    runs,
   };
 }
 

@@ -342,8 +342,9 @@ A failed fire stores `last_error` and `lastErrorAt` under `<kiln-home>/triggers/
 `kiln cancel --queued` cancels jobs that have not started. `--repo` and `--workflow` narrow it. `POST /api/jobs/cancel` with `{ "queued": true }` does the same for the board. Both are idempotent: a second call cancels nothing new and writes no second `job.cancelled` event. Running, blocked, and finished jobs stay. Cancelling does not delete branches.
 
 `kiln cancel <jobId>` stops one job, whatever it is doing. A queued or blocked job becomes `cancelled`. A running
-run has its whole process tree killed, `yak cancel` closes its journal, and it is not retried; the worktree and
-branch stay as they are. A gated job's gate is closed without an approve or reject, and nothing is posted or landed.
+run has its whole process tree killed, `yak cancel` closes its journal, and it is not retried; the branch stays,
+and the next tick removes the worktree (see [Worktree cleanup](#worktree-cleanup)). A gated job's gate is closed
+without an approve or reject, and nothing is posted or landed.
 An in-review job stops being watched; its pull request stays open for you. A done or rejected job is left alone
 and the command says there is nothing to stop. The job file is stamped first and one `job.cancelled` records the
 prior state (`was`). Running it again writes nothing and prints `<id> already cancelled`.
@@ -422,7 +423,7 @@ State is derived from the yak journal, the gate files, and (for `deliver=pr`) `g
 | --- | --- |
 | `queued` | Dependencies are met, and the job has not started |
 | held | Not a state: a held job keeps its derived state (`queued`, `blocked`, or `failed` awaiting retry). It never launches or retries on its own and takes no slot. Status prints `held`, `kiln queue` prints reason `held`, and the board says "Held" |
-| `cancelled` | Any job that was not done or rejected, stopped by `kiln cancel`. Tick does not launch, retry, deliver, or watch it. Dependents, after-merged and stacked, stay `blocked`. No branch is deleted |
+| `cancelled` | Any job that was not done or rejected, stopped by `kiln cancel`. Tick does not launch, retry, deliver, or watch it. Dependents, after-merged and stacked, stay `blocked`. Its worktree is removed; a branch is deleted only when no commit is lost |
 | `blocked` | An after-merged dependency is not `done`, or a stacked dependency has not landed. A missing job id is named |
 | `running` | Yak is alive, or the launch process is alive and has not written a journal |
 | `needs-human` | A gate is open, feedback is exhausted or ambiguous, the pull request still conflicts with its base after `maxFixRounds`, the attempt cap is used, or the same fingerprint has failed `maxSameFingerprint` times. `kiln retry` clears an attempt-cap, fingerprint, or `pr-conflict` stop. `kiln revise --note` sends a gate back with a note |
@@ -432,6 +433,42 @@ State is derived from the yak journal, the gate files, and (for `deliver=pr`) `g
 | `dead` | A journal whose process is already gone, before the next tick records it. Status prints the cancel command when a process is gone |
 | `in-review` | `deliver=pr` and the run has landed. The pull request is open, or the next tick still has to open it |
 | `done` | `deliver=local`: the run finished ok and the gate says approve. `deliver=pr`: that pull request has merged. An investigation is `done` when the gate says approve, including when the repo is `deliver=pr`. It does not enter `in-review` |
+
+## Worktree cleanup
+
+Every run gets its own git worktree at `<checkout>/.yak/worktrees/<run-id>` on branch `yak/<run-id>`. After each
+tick, Kiln removes a run's worktree once nothing will use it again:
+
+- the job is `done` (merged, or landed with `deliver: local`), `rejected`, or `cancelled`;
+- the run failed or died and is not live, including an earlier attempt that a retry or revise replaced;
+- a fix run whose round has settled (pushed or fixed);
+- the run landed with `deliver: pr` and its branch was pushed for the pull request. Fix rounds cut their own
+  worktree from the pull request head.
+
+A worktree stays while its run is alive, waiting on a gate, launching, part of a fix round in progress, or landed
+and still waiting for Kiln to push it. A directory under `.yak/worktrees/` that no Kiln job owns (including runs of
+a job removed with `kiln remove`) is never touched. `.runs/<run-id>` journals always stay.
+
+No work is lost. A dirty worktree is first committed to its own `yak/<run-id>` branch as a snapshot commit by
+`kiln <kiln@localhost>` whose message says Kiln made it and why. Kiln never pushes that commit. Ignored files such as
+`node_modules` are not saved. After the worktree is removed, `yak/<run-id>` is deleted only when its tip is on a
+remote or is an ancestor of the base branch (the pull request base, else the checkout's `HEAD`). A branch with a
+commit found nowhere else stays, and so does a branch a not-yet-launched `--stack` job will be cut from. A failed
+snapshot or `git worktree remove` (a locked worktree, for example) keeps the worktree. Each outcome is recorded once
+in the event log as `worktree.cleaned` or `worktree.kept`, with the reason, the snapshot sha, and whether the
+branch was deleted. A snapshot keeps every untracked, non-ignored file the agent left, so a stray `.env` or
+credentials file can end up in a kept local branch; check snapshot branches before sharing them. Once a branch is
+gone, the job page says its changes are no longer available locally.
+
+```bash
+npm run kiln -- clean                  # list every worktree, its size, job, state, and what would happen
+npm run kiln -- clean --apply          # remove the ones listed as removable
+npm run kiln -- clean --repo web       # limit to one registered repo
+```
+
+`kiln clean` with no flags changes nothing. `--apply` removes exactly the entries it listed as `remove` or
+`snapshot-remove`; a second run removes nothing. Set `"keepWorktrees": true` in the kiln config (or tick Keep
+worktrees in Settings) to stop the tick from removing anything. `kiln clean --apply` still removes when it is set.
 
 ## What a feature job runs
 

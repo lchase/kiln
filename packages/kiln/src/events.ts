@@ -206,7 +206,15 @@ const PrUpdated = z.object({
   agent: z.boolean(),
   once,
 });
-const Worktree = z.object({ once });
+const Worktree = z.object({
+  once,
+  /** Why the worktree was removed or kept. */
+  reason: z.string().min(1).optional(),
+  /** Sha of the snapshot commit Kiln made for uncommitted changes. Never pushed. */
+  snapshot: z.string().min(1).optional(),
+  /** Whether `yak/<run id>` was deleted with the worktree. */
+  branch: z.enum(["deleted", "kept"]).optional(),
+});
 const ConfigReloaded = z.object({ once });
 const NeedsHuman = z.object({
   reason: z.string().min(1),

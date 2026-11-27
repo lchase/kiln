@@ -138,6 +138,8 @@ export const DEFAULT_MAX_SAME_FINGERPRINT = 3;
  * Milliseconds without a yak event or log output before a running job is
  * killed and retried. Default 15 minutes. `0` or negative disables stall detection.
  */
+/** True turns off the tick's worktree cleanup. `kiln clean --apply` still removes. */
+const keepWorktrees = z.boolean({ error: "Keep worktrees must be true or false." }).optional();
 const stallTimeoutMs = z.number().int("Stall timeout must be a whole number of milliseconds.").optional();
 /** Transient failures before the job needs a person. Default 3. Hitting the cap is a budget failure. */
 const maxAttempts = z
@@ -253,6 +255,7 @@ export const EditableKilnSettingsSchema = z.object({
   repos: KilnReposSchema,
   stallTimeoutMs,
   maxAttempts,
+  keepWorktrees,
   maxFixRounds,
   maxSameFingerprint,
   dailyDollarCap,
@@ -277,6 +280,7 @@ export const KilnConfigFileSchema = z.object({
   maxConcurrent,
   stallTimeoutMs,
   maxAttempts,
+  keepWorktrees,
   maxFixRounds,
   maxSameFingerprint,
   dailyDollarCap,

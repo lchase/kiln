@@ -171,6 +171,7 @@ interface SettingsDoc {
   repos: Record<string, { path?: string; test?: string; deliver?: string; base?: string; prTitle?: string; branch?: string }>;
   maxAttempts?: number;
   stallTimeoutMs?: number;
+  keepWorktrees?: boolean;
   maxFixRounds?: number;
   sandbox?: { mode?: string; allowDomains?: string[]; image?: string };
   defaults: {
@@ -224,6 +225,7 @@ describe("serve settings", () => {
       assert.match(page.body, /JIRA_API_TOKEN/);
       assert.match(page.body, /aria-label="Settings sections"/);
       assert.match(page.body, /data-settings-tab="advanced" aria-pressed="false"/);
+      assert.match(page.body, /<input id="keep-worktrees" type="checkbox">/);
       assert.match(page.body, /renders as \[ABC-123\] Title/);
       assert.match(page.body, /renders as ABC-123-slug/);
       assert.equal(page.body.includes(TOKEN), false);
@@ -234,6 +236,7 @@ describe("serve settings", () => {
       assert.equal(loaded.body.includes(TOKEN), false);
       assert.equal(loaded.body.includes("keep-me"), true);
       const before = JSON.parse(loaded.body) as SettingsDoc;
+      assert.equal(before.keepWorktrees, undefined);
       assert.equal(before.path, configPath);
       assert.match(before.revision, /^[a-f0-9]{64}$/);
       assert.equal(before.repos.web?.path, "~/code/web");
@@ -277,6 +280,7 @@ describe("serve settings", () => {
         },
         maxAttempts: 4,
         stallTimeoutMs: 60_000,
+        keepWorktrees: true,
         maxFixRounds: 5,
         sandbox: { mode: "docker", allowDomains: ["example.com"] },
       });
@@ -291,6 +295,7 @@ describe("serve settings", () => {
       assert.equal(afterSave.repos.docs?.path, "~/code/docs");
       assert.equal(afterSave.maxAttempts, 4);
       assert.equal(afterSave.stallTimeoutMs, 60_000);
+      assert.equal(afterSave.keepWorktrees, true);
       assert.equal(afterSave.maxFixRounds, 5);
       assert.equal(afterSave.sandbox?.mode, "docker");
       assert.deepEqual(afterSave.sandbox?.allowDomains, ["example.com"]);
@@ -299,6 +304,7 @@ describe("serve settings", () => {
       assert.equal(again.revision, afterSave.revision);
       assert.deepEqual(again.repos, afterSave.repos);
       assert.equal(again.maxAttempts, 4);
+      assert.equal(again.keepWorktrees, true);
       assert.equal(again.sandbox?.mode, "docker");
 
       const file = JSON.parse(readFileSync(configPath, "utf8")) as {
@@ -306,6 +312,7 @@ describe("serve settings", () => {
         owner: string;
         adapter: string;
         maxConcurrent: number;
+        keepWorktrees?: boolean;
         sandbox: { mode: string; image: string; allowDomains: string[] };
         workflows: { feature: { sandbox: { mode: string } } };
         repos: { web: { custom?: string; deliver?: string }; docs: { path: string } };
@@ -315,6 +322,7 @@ describe("serve settings", () => {
       assert.equal(file.owner, "synthetic");
       assert.equal(file.adapter, "mock");
       assert.equal(file.maxConcurrent, 2);
+      assert.equal(file.keepWorktrees, true);
       assert.equal(file.sandbox.image, IMAGE);
       assert.equal(file.sandbox.mode, "docker");
       assert.deepEqual(file.sandbox.allowDomains, ["example.com"]);
