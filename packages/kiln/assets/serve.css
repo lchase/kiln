@@ -848,6 +848,7 @@ h3 {
 .steps .step.current { color: var(--primary); font-weight: 500; }
 .steps .step.failed { color: var(--state-failed); font-weight: 500; }
 .step-now { display: none; }
+.step-now.outcome { display: inline; color: var(--muted); font-size: var(--text-xs); line-height: var(--leading-xs); }
 .progress-meta { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .liveness {
   position: relative;
@@ -1544,6 +1545,7 @@ button.live-summary[aria-expanded="true"] { white-space: pre-wrap; }
 .prog-step.current .prog-bar { background: var(--primary); }
 .prog-step.failed { color: var(--state-failed); font-weight: 500; }
 .prog-step.failed .prog-bar { background: var(--state-failed); }
+.prog-outcome { margin: var(--space-2) 0 0; color: var(--muted); font-size: var(--text-sm); line-height: var(--leading-sm); }
 .job-body { display: grid; grid-template-columns: minmax(0, 1fr) var(--rail); gap: var(--space-5); align-items: start; }
 .job-main, .job-side { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
 .now-card, .mid-card {

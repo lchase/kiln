@@ -199,6 +199,8 @@ export interface JobView {
   eventCount: number;
   prUrl?: string;
   prNumber?: number;
+  /** Repo delivery mode, when the job's repo is known. */
+  deliver?: "local" | "pr";
   dependsOn: { jobId: string; state: string; detail?: string }[];
   evidence: string[];
   feedback: FeedbackLine[];
@@ -279,6 +281,50 @@ export function isHand(job: StatusJobView): boolean {
 
 export function isFinished(job: StatusJobView): boolean {
   return job.state === "done" || job.state === "rejected" || job.state === "cancelled";
+}
+
+/** What the stepper names: the step that runs or failed, or the job's outcome. */
+export type StepFocus = { kind: "step"; step: StepMark } | { kind: "outcome"; label: string; short: string };
+
+function outcome(label: string, short = label): StepFocus {
+  return { kind: "outcome", label, short };
+}
+
+function finishedOutcome(
+  job: Pick<JobView, "state" | "workflow" | "deliver" | "prNumber" | "prUrl" | "reviewUrl">,
+): StepFocus | undefined {
+  if (job.state === "cancelled") return outcome("Cancelled");
+  if (job.state === "rejected") return outcome("Rejected");
+  if (job.state !== "done") return undefined;
+  // An investigation never opens a pull request, even in a deliver=pr repo.
+  if (job.workflow === "investigation") return outcome("Findings approved");
+  // A review job's pull request is the one it reviewed, not one it merged.
+  if (job.workflow === "review") return outcome(job.reviewUrl ? "Comment posted" : "Approved");
+  if (job.prNumber) return outcome(`Merged #${job.prNumber}`, "Merged");
+  if (job.prUrl || job.deliver === "pr") return outcome("Merged");
+  return outcome("Landed locally");
+}
+
+/**
+ * The one rule for a stepper's label. A finished job (done, rejected,
+ * cancelled) names its outcome, so a merged job never reads "Land". Otherwise
+ * a running or failed step is named, then an in-review or gated job names its
+ * outcome. Any other job keeps the last done step. `short`
+ * drops the pull request number.
+ */
+export function stepFocus(
+  job: Pick<JobView, "state" | "workflow" | "deliver" | "prNumber" | "prUrl" | "reviewUrl" | "steps" | "inbox">,
+): StepFocus | undefined {
+  // A finished job names its outcome even if a step was left running or failed when it stopped.
+  const finished = finishedOutcome(job);
+  if (finished) return finished;
+  const live = job.steps.find((step) => step.status === "running") ?? job.steps.find((step) => step.status === "failed");
+  if (live) return { kind: "step", step: live };
+  if (job.state === "in-review") return outcome(job.prNumber ? `Pull request #${job.prNumber} open` : "Pull request open", "Pull request open");
+  const gate = job.steps.find((step) => step.id === "approve");
+  if (job.inbox || (job.state === "needs-human" && gate?.status === "pending")) return outcome("Your decision");
+  const last = [...job.steps].reverse().find((step) => step.status === "done");
+  return last ? { kind: "step", step: last } : undefined;
 }
 
 export function columnOf(job: StatusJobView): PipelineColumn {
@@ -363,6 +409,7 @@ export function projectJob(job: StatusJobView, events: readonly KilnEvent[]): Jo
     eventCount: activity.count,
     ...(target.prUrl || job.prUrl ? { prUrl: target.prUrl ?? job.prUrl } : {}),
     ...(target.prNumber || job.prNumber ? { prNumber: target.prNumber ?? job.prNumber } : {}),
+    ...(job.deliver ? { deliver: job.deliver } : {}),
     ...(job.launchBlock ? { launchBlock: job.launchBlock } : {}),
     dependsOn: job.dependsOn.map((dep) => ({
       jobId: dep.jobId,

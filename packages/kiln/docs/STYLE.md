@@ -95,6 +95,19 @@ the icon: the color only helps the eye group cards.
   "Your decision".
 - A loop (or map) container is not a step. Its body steps appear in the list and the container does not. In
   `feature`, the `revise` loop is not shown; Build, Verify, and the reviews are.
+- The label names where the job is, from one rule (`stepFocus` in `src/job-view.ts`) that every stepper, step
+  track, and done card uses:
+  - A done, rejected, or cancelled job names its outcome: `Merged #N` (`Merged` without a number), `Landed
+    locally`, `Findings approved` (an investigation), `Comment posted` or `Approved` (a review), `Rejected`, or
+    `Cancelled`.
+  - Otherwise a running step is named, then a failed step.
+  - Otherwise an in-review job reads `Pull request #N open` (`Pull request open` without a number), and a job
+    waiting on the gate reads `Your decision`.
+  - Anything else (queued, blocked, approved between steps) names the last done step.
+- A step label is hidden from screen readers, because the current step already carries `aria-current="step"`. An
+  outcome is plain text in `--muted` and is read: the step list carries no outcome words. Color never carries it
+  alone.
+- A finished job marks no step as current: no `aria-current` on any step.
 - A pipeline card uses the step track (see Pipeline board), not this stepper.
 - Repo and history rows use the stepper. Wide rows show the names. The job page uses its own progress row (see Job
   page), not this stepper.
@@ -122,8 +135,9 @@ the icon: the color only helps the eye group cards.
   holds Approve, Reject, and Revise.
 - Needs a hand: the track with the failed step in `--state-failed`, the reason with a `triangle-alert` icon in
   `--state-needs-hand`, then the cost and Retry (a CSRF form) when the job can be retried.
-- Done: three tight lines. The title clamped to one line. The outcome (`Merged #88` with `git-merge`, `Landed`,
-  `Rejected`, `Cancelled`) with the repo on the right. Then the metrics Kiln has, each an icon and a number with a
+- Done: three tight lines. The title clamped to one line. The outcome, the stepper's outcome word from Steps
+  (`Merged #88` with `git-merge`, `Landed locally` with `circle-check`, `Rejected` with `circle-x`, `Cancelled` with
+  `ban`), with the repo on the right. Then the metrics Kiln has, each an icon and a number with a
   hidden name: cost `coins`, run time `clock`, lines `file-diff` (`+412 -38`), files `files`, fix rounds `wrench`.
   A metric Kiln cannot derive is left out, not shown as zero. No metric, no line.
 
@@ -132,8 +146,9 @@ the icon: the color only helps the eye group cards.
 - One segment per `job.steps` entry, `--space-1` tall, `--radius-sm`, gap `--space-2xs`.
 - Done segments are `--muted`. Upcoming segments are `--line`. A failed segment is `--state-failed`.
 - Only a Running card has a current segment. It is three times as wide, `--primary`, and carries the sweep.
-- The track is `role="img"` with `aria-label`: `Step N of M: <step>`, `Failed at <step>`, or `All M steps done`.
-  Each segment's `title` is the step name.
+- The track is `role="img"` with `aria-label`: `Step N of M: <step>`, `Failed at <step>`, or, once every step is
+  done, the outcome from Steps (`Pull request #92 open`). `All M steps done` is left only for a job with no outcome
+  word. Each segment's `title` is the step name.
 
 ### Motion
 
@@ -158,6 +173,8 @@ the icon: the color only helps the eye group cards.
    job id, branch and pull request when present). Stop job, Remove job, Run next, Hold, and Release sit here.
 2. Progress (`aria-label="Progress"`): one segment per step. The four reviews (security, UX, UI, code) are one
    segment named Reviews. A done segment has a check and its duration. Upcoming segments print no status word.
+   Below the row, a job with an outcome (see Steps) says it in one `p.prog-outcome` line, `--muted`. A finished job
+   has no current segment.
 3. One middle card, picked by state: "Now" while the job runs (the step, last activity, the newest note, the
    running command), "Your decision" while it waits on you (the approver's and each review's verdict, then Approve,
    Reject, and Revise with a note), or "What went wrong" when it failed or needs a hand (the failure and Retry). A
