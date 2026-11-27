@@ -217,7 +217,7 @@ function viewJob(overrides: Partial<StatusJobView> & Pick<StatusJobView, "jobId"
   };
 }
 
-function page(jobs: StatusJobView[], section: "inbox" | "hand" | "repos" | "history" = "inbox"): string {
+function page(jobs: StatusJobView[], section: "pipeline" | "repos" | "history" = "pipeline"): string {
   return renderConsole("/* kiln-serve */", buildAttention(jobs), { csrf: "", repos: [], workflows: [], section });
 }
 
@@ -433,9 +433,9 @@ describe("serve pages", () => {
     assert.match(html, /\(1\) Kiln/);
     assert.match(html, /Needs a hand/);
     assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
-    assert.match(html, /&lt;b&gt;Approve\?&lt;\/b&gt;/);
+    assert.doesNotMatch(html, /<b>Approve/);
     assert.doesNotMatch(html, /<script>alert/);
-    assert.match(html, /action="\/api\/jobs\/job-1\/approve"/);
+    assert.match(html, /<a class="card-btn" href="\/jobs\/job-1">Review<\/a>/);
 
     const settled = page([viewJob({ jobId: "job-1", state: "done", title: "Done", prUrl: "javascript:alert(1)" })], "history");
     assert.match(settled, /javascript:alert\(1\)/);
@@ -475,13 +475,16 @@ describe("serve pages", () => {
         canRevise: true,
       }),
     ];
-    const hand = page(jobs, "hand");
+    const board = page(jobs);
+    const column = (name: string) => {
+      const start = board.indexOf(`<section class="col" data-column="${name}"`);
+      return board.slice(start, board.indexOf("</section>", start));
+    };
+    const hand = column("needs-hand");
+    const inbox = column("needs-you");
     const repos = page(jobs, "repos");
-    const inbox = page(jobs, "inbox");
-    assert.match(inbox, /\(1\) Kiln/);
+    assert.match(board, /\(1\) Kiln/);
     assert.match(hand, /id="job-dead-1"/);
-    assert.match(hand, /Needs a decision/);
-    assert.match(hand, /attempt 3\/3 · stalled/);
     assert.doesNotMatch(hand, /id="job-fail-1"/);
     assert.match(repos, /id="job-fail-1"/);
     assert.match(repos, /class="job retrying"/);
@@ -490,13 +493,12 @@ describe("serve pages", () => {
     const failStart = repos.indexOf('id="job-fail-1"');
     const failEnd = repos.indexOf('id="job-', failStart + 1);
     const fail = repos.slice(failStart, failEnd === -1 ? undefined : failEnd);
-    assert.doesNotMatch(fail, /Needs a decision/);
     assert.doesNotMatch(fail, /next retry /);
     const gateStart = inbox.indexOf('id="job-gate-1"');
     const gateEnd = inbox.indexOf('id="job-', gateStart + 1);
     const gate = inbox.slice(gateStart, gateEnd === -1 ? undefined : gateEnd);
     assert.doesNotMatch(gate, /attempt /);
-    assert.match(gate, /Needs a decision/);
+    assert.match(gate, /Waiting for your decision/);
     assert.match(hand, /action="\/api\/jobs\/dead-1\/retry"/);
   });
 
@@ -572,16 +574,15 @@ describe("serve pages", () => {
       launchError: "builder exploded",
       logTail: "verify: expected 1 received 0",
     });
-    const inbox = page([probe, feature]);
-    const hand = page([probe, feature], "hand");
+    const inbox = page([probe, feature], "repos");
+    const hand = page([probe, feature]);
     assert.match(inbox, /href="\/jobs\/probe-1\/findings"/);
     assert.match(inbox, />Findings</);
-    assert.match(inbox, /Which runner\?/);
     assert.doesNotMatch(inbox, /href="\/jobs\/feat-1\/findings"/);
     assert.match(hand, /action="\/api\/jobs\/feat-1\/retry"/);
     assert.match(hand, /builder exploded/);
     assert.match(hand, /Failed: builder exploded/);
-    assert.match(inbox, /\(1\) Kiln/);
+    assert.match(hand, /\(1\) Kiln/);
   });
 });
 
@@ -695,7 +696,23 @@ describe("kiln serve", () => {
       assert.match(landing.body, /data-column="queued"/);
       assert.match(landing.body, /data-column="needs-you"/);
 
-      const inbox = await text(`${server.url}/inbox`);
+      assert.deepEqual(
+        [...landing.body.matchAll(/<section class="col" data-column="([^"]+)"/g)].map((match) => match[1]),
+        ["queued", "running", "needs-you", "needs-hand", "done"],
+      );
+      assert.match(landing.body, /<title>\(1\) Kiln<\/title>/);
+      const nav = landing.body.slice(landing.body.indexOf('<nav class="side"'), landing.body.indexOf("</nav>"));
+      assert.match(nav, /<a class="nav-link" href="\/" aria-current="page"><span class="nav-label">[^]*?Pipeline<\/span><span class="badge">1<\/span><\/a>/);
+      assert.match(nav, /href="\/report"/);
+      assert.doesNotMatch(nav, /href="\/inbox"|href="\/hand"/);
+      for (const old of ["/inbox", "/hand"]) {
+        const moved = await fetch(`${server.url}${old}`, { redirect: "manual" });
+        assert.equal(moved.status, 303, old);
+        assert.equal(moved.headers.get("location"), "/", old);
+        await moved.text();
+      }
+      assert.match(landing.body, new RegExp(`<a class="card-btn" href="/jobs/${upstream}">Review</a>`));
+      const inbox = await text(`${server.url}/jobs/${upstream}`);
       assert.equal(inbox.status, 200);
       assert.match(inbox.body, /Show the weekly summary/);
       assert.match(inbox.body, /web/);
@@ -718,7 +735,7 @@ describe("kiln serve", () => {
       const board = await text(`${server.url}/board`);
       assert.equal(board.status, 200);
       assert.match(board.body, /Needs a hand/);
-      assert.match(board.body, /Inbox/);
+      assert.doesNotMatch(board.body, /href="\/inbox"/);
       assert.match(board.body, /id="drawer"/);
       assert.doesNotMatch(board.body, /id="graph-panel"/);
       const repos = await text(`${server.url}/repos`);
@@ -962,9 +979,9 @@ describe("kiln serve", () => {
         assert.match(repos.body, /attempt 1\/3 · failed/);
         const rowStart = repos.body.indexOf(`id="job-${id}"`);
         const row = repos.body.slice(rowStart, repos.body.indexOf("</article>", rowStart));
-        assert.doesNotMatch(row, /Needs a decision/);
-        const hand = await text(`${server.url}/hand`);
-        assert.doesNotMatch(hand.body, new RegExp(`id="job-${id}"`));
+        const handStart = html.body.indexOf('data-column="needs-hand"');
+        const hand = html.body.slice(handStart, html.body.indexOf("</section>", handStart));
+        assert.doesNotMatch(hand, new RegExp(`id="job-${id}"`));
 
         const denied = await text(`${server.url}/api/jobs/${id}/retry`, {
           method: "POST",
@@ -1137,7 +1154,7 @@ describe("queue routes and board", () => {
       assert.match(after.body, /<span class="chip">Held<\/span>/);
 
       const pipeline = await text(`${server.url}/`);
-      const order = [...pipeline.body.matchAll(/<article class="card" id="job-([^"]+)"/g)].map((match) => match[1]);
+      const order = [...pipeline.body.matchAll(/<article class="card queued" id="job-([^"]+)"/g)].map((match) => match[1]);
       assert.deepEqual(order, [c, a, b]);
       assert.match(pipeline.body, new RegExp(`id="job-${b}"[^]*?<span class="chip">Held</span>`));
 

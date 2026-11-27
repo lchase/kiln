@@ -196,9 +196,8 @@ describe("board style", () => {
       "ledger",
       "studio",
     ]);
-    const inbox = renderConsole(css, attention, { csrf: "abc", repos: many, workflows, section: "inbox" });
+    const inbox = renderConsole(css, attention, { csrf: "abc", repos: many, workflows, section: "pipeline" });
     const inboxForm = addForm(inbox);
-    assert.match(inbox, /Inbox/);
     assert.match(inbox, /SAMPLE-1/);
     assert.match(inboxForm, /id="repo-pick"[^>]*data-mode="select"/);
     assert.match(inboxForm, /role="combobox"/);
@@ -326,6 +325,105 @@ describe("board style", () => {
     assert.match(block(".job, .card, .trigger, .stat-grid .stat"), /border-radius:\s*var\(--radius-lg\)/);
     assert.doesNotMatch(block(".job"), /border-left/);
     assert.equal(css.includes(".repo-block h3"), false);
+  });
+});
+
+/** `@media (...) { ... }` bodies, matched to their closing brace. */
+function mediaBlocks(source: string, query: RegExp): string[] {
+  const blocks: string[] = [];
+  for (const match of source.matchAll(/@media[^{]*\{/g)) {
+    if (!query.test(match[0])) continue;
+    let depth = 1;
+    let index = (match.index ?? 0) + match[0].length;
+    const start = index;
+    while (index < source.length && depth > 0) {
+      if (source[index] === "{") depth += 1;
+      if (source[index] === "}") depth -= 1;
+      index += 1;
+    }
+    blocks.push(source.slice(start, index - 1));
+  }
+  return blocks;
+}
+
+/** Innermost `selector { body }` rules. A media query's own head is not part of a selector. */
+function cssRules(source: string): { selectors: string[]; body: string }[] {
+  return [...source.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((match) => ({
+    selectors: (match[1] ?? "").split(",").map((part) => part.trim()).filter(Boolean),
+    body: match[2] ?? "",
+  }));
+}
+
+describe("pipeline board style", () => {
+  const script = readFileSync(join(packageRoot(), "assets", "serve.js"), "utf8");
+
+  it("never gives a card a one-sided border", () => {
+    const bad = cssRules(css)
+      .filter((rule) => rule.selectors.some((selector) => selector.includes(".card")))
+      .filter((rule) => /(?:^|[\s;])border-(?:left|right|top|bottom|inline-start|inline-end|inline)\b[\w-]*\s*:/.test(rule.body))
+      .map((rule) => rule.selectors.join(", "));
+    assert.deepEqual(bad, []);
+  });
+
+  it("switches every animation off under prefers-reduced-motion", () => {
+    const reduced = mediaBlocks(css, /prefers-reduced-motion:\s*reduce/);
+    assert.ok(reduced.length > 0);
+    const still = new Set(
+      reduced.flatMap((block) => cssRules(block).filter((rule) => /animation:\s*none/.test(rule.body)).flatMap((rule) => rule.selectors)),
+    );
+    let rest = css;
+    for (const block of reduced) rest = rest.replace(block, "");
+    const animated = cssRules(rest)
+      .filter((rule) => /(?:^|[\s;])animation:(?!\s*none\b)/.test(rule.body))
+      .flatMap((rule) => rule.selectors);
+    for (const name of [".track .seg.sweep", ".step-pulse", ".board-pulse"]) assert.ok(animated.includes(name), name);
+    const missing = animated.filter((selector) => !still.has(selector));
+    assert.deepEqual(missing, []);
+    for (const name of ["track-sweep", "step-pulse", "board-pulse"]) assert.match(css, new RegExp(`@keyframes ${name} \\{`));
+  });
+
+  it("stacks the board into one column at the narrow breakpoint with no sideways scroll", () => {
+    const narrow = mediaBlocks(css, /max-width:\s*960px/).join("\n");
+    const board = cssRules(narrow).filter((rule) => rule.selectors.includes(".board"));
+    assert.ok(board.length > 0);
+    for (const rule of board) assert.doesNotMatch(rule.body, /min-width/);
+    assert.ok(board.some((rule) => /grid-template-columns:\s*minmax\(0, 1fr\);/.test(rule.body)));
+    assert.ok(cssRules(narrow).some((rule) => rule.selectors.includes(".board-scroll") && /overflow-x:\s*visible/.test(rule.body)));
+    // The wide minimum only applies above the breakpoint.
+    let wide = css;
+    for (const block of mediaBlocks(css, /./)) wide = wide.replace(block, "");
+    for (const rule of cssRules(wide).filter((item) => item.selectors.includes(".board"))) assert.doesNotMatch(rule.body, /min-width/);
+    assert.match(mediaBlocks(css, /min-width:\s*961px/).join("\n"), /\.board \{ min-width: var\(--board-min\); \}/);
+  });
+
+  it("gives every theme six repo colors and paints the repo icon with them", () => {
+    for (const [id, block] of themeBlocks(css)) {
+      for (let tone = 1; tone <= 6; tone += 1) assert.match(block, new RegExp(`--repo-${tone}:`), `${id} --repo-${tone}`);
+    }
+    for (let tone = 1; tone <= 6; tone += 1) assert.match(css, new RegExp(`\\.repo-${tone} \\.icon \\{ color: var\\(--repo-${tone}\\); \\}`));
+  });
+
+  it("swaps the board in place on poll and keeps the title and notification", () => {
+    const start = script.indexOf("function swapBoard(");
+    assert.ok(start >= 0);
+    const swap = script.slice(start, script.indexOf("\n  function poll()", start));
+    assert.match(swap, /new DOMParser\(\)\.parseFromString\(html, "text\/html"\)/);
+    assert.match(swap, /fetch\("\/"/);
+    assert.match(swap, /if \(actionPending \|\| boardFocused\(\)\) return;/);
+    assert.match(swap, /document\.getElementById\(fresh\[c\]\.id\)/);
+    assert.match(swap, /document\.title = "\(" \+ n \+ "\) Kiln";/);
+    assert.match(swap, /note\(n\);/);
+    assert.match(swap, /applyRepo\(\);/);
+    assert.match(swap, /paintLiveness\(\);/);
+    assert.match(swap, /setAttribute\("data-needs-you"/);
+    assert.match(swap, /board-status/);
+    assert.doesNotMatch(swap, /location\.reload/);
+    const pollStart = script.indexOf("\n  function poll()");
+    const poll = script.slice(pollStart, script.indexOf("\n  }\n", pollStart));
+    assert.match(poll, /var onBoard = body\.getAttribute\("data-section"\) === "pipeline";/);
+    assert.match(poll, /if \(!onBoard\) \{\s*location\.reload\(\);\s*return;\s*\}\s*swapBoard\(rev\);/);
+    assert.match(poll, /\.col\[data-column="running"\] \.card/);
+    assert.equal(poll.split("location.reload()").length - 1, 1, "only other sections reload");
   });
 });
 
