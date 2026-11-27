@@ -358,6 +358,33 @@ token like every POST, and a GET changes nothing. A job id with `/`, `..`, or an
 button before it posts. `kiln ledger` counts a stop of a running, approved, or gated job as `stopped by hand`. A
 queued cancel is not counted.
 
+Kiln launches the oldest ready job first, by the time it was added. Three commands change that for a job that has
+not started (queued, blocked, or failed and waiting to retry):
+
+- `kiln next <jobId>` moves it to the front. When several jobs have been moved, the most recent move goes first.
+  Dependencies still win: a blocked job keeps its front place and launches first once its dependencies are met.
+- `kiln hold <jobId>` keeps it from launching and from retrying on its own, across ticks and restarts, until
+  released. A held job takes no slot.
+- `kiln release <jobId>` ends the hold. The job goes back to where its other ordering puts it.
+
+Each writes one event (`job.prioritized`, `job.held`, `job.released`) and nothing else; the order is read back from
+the event log, never from the job file, so a job with no such events launches exactly as before. A running, gated,
+in-review, done, rejected, or cancelled job is refused with `kiln: <id> is <state>; <command> only applies to jobs
+that have not started`, and nothing is written. A repeat writes nothing: `<id> already first`, `<id> already held`,
+or `<id> is not held`. `kiln pause` still stops every launch, and `kiln cancel` still cancels a held job.
+
+`kiln queue` prints every job that has not started, in the order the next ticks will launch them, one line each:
+position, id, repo, title, and why it is there. Due retries come first, then ready jobs, then blocked jobs and retries
+that are not due yet, then held jobs. The reason is `moved to front`, `ready`, `waits for <job>`,
+`retries at <time>`, or `held`. Prints `queue empty` when nothing is waiting.
+
+`POST /api/jobs/<id>/next`, `POST /api/jobs/<id>/hold`, and `POST /api/jobs/<id>/release` call the same functions.
+They need the CSRF token like every POST, reject a bad job id before any file is read, answer 404 for an unknown
+job, and return `{ ok, changed, message, job }` for JSON or redirect back for a form. On the board, a job that has
+not started shows "Run next" and "Hold" on the Repos list and the job page, and a held job shows "Release" and the
+word "Held". The Queued column lists cards in launch order. `kiln ledger` counts a move to the front as
+`moved to front by hand` and a hold as `held by hand`. A release is not counted.
+
 Jira search sends `JIRA_API_TOKEN` only as a Basic header in a child process. The token is not written into the job, the spec, or the event log. Polling is the only Jira ingress. A webhook can later call the same issue-to-event function.
 
 ## Tick, status, approve
@@ -390,6 +417,7 @@ State is derived from the yak journal, the gate files, and (for `deliver=pr`) `g
 | State | Meaning |
 | --- | --- |
 | `queued` | Dependencies are met, and the job has not started |
+| held | Not a state: a held job keeps its derived state (`queued`, `blocked`, or `failed` awaiting retry). It never launches or retries on its own and takes no slot. Status prints `held`, `kiln queue` prints reason `held`, and the board says "Held" |
 | `cancelled` | Any job that was not done or rejected, stopped by `kiln cancel`. Tick does not launch, retry, deliver, or watch it. Dependents, after-merged and stacked, stay `blocked`. No branch is deleted |
 | `blocked` | An after-merged dependency is not `done`, or a stacked dependency has not landed. A missing job id is named |
 | `running` | Yak is alive, or the launch process is alive and has not written a journal |

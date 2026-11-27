@@ -12,6 +12,7 @@ import {
   isDone,
   isLanded,
   jobState,
+  launchOrder,
   type Action,
   type FailureReason,
   type Observation,
@@ -219,6 +220,12 @@ export interface StatusJobView {
   launchError?: string;
   /** Set while a config precondition is refusing launch. The state stays `queued`. */
   launchBlock?: LaunchBlock;
+  /** `kiln hold`. The state stays queued, blocked, or failed; it never launches or retries. */
+  held?: boolean;
+  /** 1-based place in launch order (`kiln queue`). Omitted once the job has started. */
+  queuePosition?: number;
+  /** Why the job sits there: `ready`, `moved to front`, `held`, `waits for <job>`, `retries at <time>`. */
+  queueReason?: string;
   /** Recorded attempts. `0` when the job has no attempt ledger. */
   attemptCount: number;
   /** Configured budget. The board prints `attempt N/M`. */
@@ -294,12 +301,21 @@ export interface StatusView {
  * Derived state for every job, or for one id.
  * Throws `No job <id>` when that id is not on disk, same as `kiln status`.
  */
-export function statusView(observation: Observation, jobId?: string): StatusView {
+export function statusView(observation: Observation, jobId?: string, now = new Date()): StatusView {
   const selected = jobId ? observation.jobs.filter((job) => job.jobId === jobId) : observation.jobs;
   if (jobId && selected.length === 0) {
     throw new Error(`No job ${jobId}.`);
   }
-  return { jobs: selected.map((job) => toStatusJob(job, observation)) };
+  const queue = new Map(
+    launchOrder(observation, now).map((entry, index) => [entry.job.jobId, { queuePosition: index + 1, queueReason: entry.reason }]),
+  );
+  return {
+    jobs: selected.map((job) => {
+      const view = toStatusJob(job, observation);
+      const place = job.error ? undefined : queue.get(job.jobId);
+      return { ...view, ...(place && job.held ? { held: true } : {}), ...(place ?? {}) };
+    }),
+  };
 }
 
 export function renderStatus(view: StatusView): string {
@@ -332,6 +348,7 @@ export function statusDetails(job: StatusJobView): string[] {
   if (job.state === "failed" && job.launchFailed && job.logPath) lines.push(`log ${job.logPath}`);
   if (job.state === "failed" && job.launchError) lines.push(job.launchError);
   if (job.launchBlock) lines.push(launchBlockLabel(job.launchBlock));
+  if (job.held) lines.push("held");
   if (job.sandboxError && (job.state === "failed" || job.state === "dead" || job.state === "needs-human")) {
     lines.push(`sandbox ${job.sandboxError}`);
   }

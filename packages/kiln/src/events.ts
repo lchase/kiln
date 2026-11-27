@@ -30,6 +30,9 @@ export const EVENT_NAMES = [
   "job.cancelled",
   "job.removed",
   "job.retried",
+  "job.prioritized",
+  "job.held",
+  "job.released",
   "launch.blocked",
   "launch.cleared",
   "run.started",
@@ -98,6 +101,12 @@ const JobCancelled = z.object({
   repo: z.string().min(1),
   workflow: z.string().min(1),
   was: z.enum(JOB_STATES).optional(),
+  once,
+});
+/** `kiln next`, `kiln hold`, `kiln release`. `was` is the derived state at the time. */
+const JobQueueControl = z.object({
+  repo: z.string().min(1),
+  was: z.enum(JOB_STATES),
   once,
 });
 /** Kiln deleted its own records for the job. Git is untouched; `branch` is what the operator may delete. */
@@ -258,6 +267,9 @@ export const EventSchema = z.discriminatedUnion("event", [
   z.object({ ...envelope, event: z.literal("job.cancelled"), job_id: z.string().min(1), properties: JobCancelled }),
   z.object({ ...envelope, event: z.literal("job.removed"), job_id: z.string().min(1), properties: JobRemoved }),
   z.object({ ...envelope, event: z.literal("job.retried"), job_id: z.string().min(1), properties: JobRetried }),
+  z.object({ ...envelope, event: z.literal("job.prioritized"), job_id: z.string().min(1), properties: JobQueueControl }),
+  z.object({ ...envelope, event: z.literal("job.held"), job_id: z.string().min(1), properties: JobQueueControl }),
+  z.object({ ...envelope, event: z.literal("job.released"), job_id: z.string().min(1), properties: JobQueueControl }),
   z.object({ ...envelope, event: z.literal("launch.blocked"), job_id: z.string().min(1), properties: LaunchBlocked }),
   z.object({ ...envelope, event: z.literal("launch.cleared"), job_id: z.string().min(1), properties: LaunchCleared }),
   z.object({ ...envelope, event: z.literal("run.started"), job_id: z.string().min(1), properties: RunStarted }),
@@ -444,6 +456,26 @@ export function activeLaunchBlocks(events: readonly KilnEvent[], jobId: string):
 export function activeLaunchBlock(events: readonly KilnEvent[], jobId: string): LaunchBlock | undefined {
   const blocks = activeLaunchBlocks(events, jobId);
   return blocks.at(-1);
+}
+
+/** Operator ordering for one job, derived from the log. Nothing is stored on the job. */
+export interface QueueControls {
+  /** Log index of the job's latest `job.prioritized`. Bigger means moved to the front more recently. */
+  prioritizedIndex?: number;
+  /** Last of `job.held` and `job.released` wins. */
+  held: boolean;
+}
+
+export function queueControls(events: readonly KilnEvent[], jobId: string): QueueControls {
+  let prioritizedIndex: number | undefined;
+  let held = false;
+  events.forEach((event, index) => {
+    if (event.job_id !== jobId) return;
+    if (event.event === "job.prioritized") prioritizedIndex = index;
+    else if (event.event === "job.held") held = true;
+    else if (event.event === "job.released") held = false;
+  });
+  return { ...(prioritizedIndex !== undefined ? { prioritizedIndex } : {}), held };
 }
 
 function buildEvent(draft: EventDraft): KilnEvent {

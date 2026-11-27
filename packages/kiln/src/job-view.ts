@@ -161,6 +161,10 @@ export interface JobView {
   canStop: boolean;
   /** Remove job: not running, approved, gated, or in review, and nothing depends on it. */
   canRemove: boolean;
+  /** `kiln hold`. The board says "Held" in words. */
+  held: boolean;
+  /** 1-based place in launch order. Set only for a job that has not started. */
+  queuePosition?: number;
   attemptCount: number;
   maxAttempts: number;
   scheduledRetry: boolean;
@@ -270,6 +274,8 @@ export function projectJob(job: StatusJobView, events: readonly KilnEvent[]): Jo
     canRevise: job.canRevise,
     canStop: !["done", "rejected", "cancelled"].includes(job.state),
     canRemove: !["running", "approved", "needs-human", "in-review"].includes(job.state) && !job.dependents?.length,
+    held: job.held === true,
+    ...(job.queuePosition !== undefined ? { queuePosition: job.queuePosition } : {}),
     attemptCount: job.attemptCount,
     maxAttempts: job.maxAttempts,
     scheduledRetry: waiting,
