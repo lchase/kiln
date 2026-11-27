@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.0](https://github.com/lchase/kiln/compare/kiln-v0.22.0...kiln-v0.23.0) (2026-11-27)
+
+
+### Features
+
+* limits and sandbox settings in plain language ([#109](https://github.com/lchase/kiln/issues/109)) ([91a8eb5](https://github.com/lchase/kiln/commit/91a8eb55706262c596654c39b5f50cc59ab60f6b))
+
 ## [0.22.0](https://github.com/lchase/kiln/compare/kiln-v0.21.1...kiln-v0.22.0) (2026-11-27)
 
 
