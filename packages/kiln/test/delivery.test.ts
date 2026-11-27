@@ -104,6 +104,7 @@ function recordingGit(): { git: GitRemote; pushes: string[] } {
     },
     isAncestor: (checkout, ancestor, descendant) => realGitRemote.isAncestor(checkout, ancestor, descendant),
     defaultBranch: (checkout) => realGitRemote.defaultBranch(checkout),
+    mergeBaseIntoBranch: (checkout, input) => realGitRemote.mergeBaseIntoBranch(checkout, input),
   };
   return { git, pushes };
 }

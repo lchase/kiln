@@ -194,6 +194,8 @@ export interface ObservedJob {
   feedbackAmbiguous?: boolean;
   /** `<kilnDir>/feedback/<id>.json` could not be parsed. Watching stays off. */
   feedbackLedgerError?: string;
+  /** The pull request conflicts with its base. Kiln is fixing it, or the rounds ran out. */
+  prConflict?: { base: string; files: string[] };
   /**
    * A fix round is open. The selected `run` is that fix, or absent when the
    * journal has not appeared yet. The original landed run is not `run`.
@@ -236,7 +238,7 @@ export type Action =
   | { type: "deliver"; jobId: string; repo: string }
   | { type: "record-findings"; jobId: string }
   | { type: "start-fix"; jobId: string; repo: string }
-  | { type: "mark-feedback"; jobId: string; reason: "feedback-exhausted" | "feedback-ambiguous" };
+  | { type: "mark-feedback"; jobId: string; reason: "feedback-exhausted" | "feedback-ambiguous" | "pr-conflict" };
 
 export function inFlightCount(observation: Observation): number {
   return observation.jobs.filter((job) => inFlight(job, observation)).length;
@@ -416,7 +418,7 @@ export function decide(observation: Observation, now = new Date()): Action[] {
 
   for (const job of observation.jobs) {
     if (job.feedbackPlan?.action === "exhaust") {
-      actions.push({ type: "mark-feedback", jobId: job.jobId, reason: "feedback-exhausted" });
+      actions.push({ type: "mark-feedback", jobId: job.jobId, reason: job.feedbackPlan.reason });
     } else if (job.feedbackPlan?.action === "ambiguous") {
       actions.push({ type: "mark-feedback", jobId: job.jobId, reason: "feedback-ambiguous" });
     }

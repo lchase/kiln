@@ -13,7 +13,8 @@ import { jobBasename } from "./paths.js";
  * append a round. `at` is when the round was opened, so a later review can
  * be told from one this round already included.
  *
- * Kiln reads pull request state. It does not merge, approve, or comment.
+ * Kiln reads pull request state. It does not merge the pull request,
+ * approve, or comment.
  */
 
 const EXCERPT_LINES = 40;
@@ -29,7 +30,7 @@ const ItemSchema = z.object({
 const RoundSchema = z.object({
   round: z.number().int().min(1),
   headSha: z.string().min(1),
-  trigger: z.enum(["ci", "review"]),
+  trigger: z.enum(["ci", "review", "conflict"]),
   items: z.array(ItemSchema).min(1),
   fixRunId: z.string().min(1).optional(),
   outcome: z.enum(["fixed", "pushed"]).optional(),
@@ -44,6 +45,12 @@ const LedgerSchema = z.object({
   exhausted: z.boolean().optional(),
   /** Feedback Kiln could not classify. The job is needs-human. No fix is launched. */
   ambiguous: z.boolean().optional(),
+  /** `kiln retry` set this to `rounds.length`. Only later rounds count against `maxFixRounds`. */
+  retryFrom: z.number().int().min(0).optional(),
+  /** The pull request conflicts with its base. Cleared once it reads `MERGEABLE` or Kiln pushes a merge. */
+  conflict: z
+    .object({ headSha: z.string().min(1), base: z.string().min(1), files: z.array(z.string()) })
+    .optional(),
 });
 
 export type FeedbackItem = z.infer<typeof ItemSchema>;
@@ -93,7 +100,14 @@ export interface PullRequestFeedback {
   checks: FeedbackCheck[];
   reviews: FeedbackReview[];
   comments: FeedbackComment[];
+  /** GitHub's `mergeable`. Missing counts as `UNKNOWN`: no answer yet. */
+  mergeable?: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+  /** `baseRefName`. */
+  base?: string;
 }
+
+export type FixTrigger = "ci" | "review" | "conflict";
+export type ExhaustReason = "feedback-exhausted" | "pr-conflict";
 
 export interface PullRequestFeedbackSource {
   /**
@@ -105,8 +119,9 @@ export interface PullRequestFeedbackSource {
 
 export type FeedbackPlan =
   | { action: "none" }
-  | { action: "fix"; headSha: string; trigger: "ci" | "review"; items: FeedbackItem[] }
-  | { action: "exhaust" }
+  | { action: "fix"; headSha: string; trigger: FixTrigger; items: FeedbackItem[] }
+  | { action: "conflict"; headSha: string; base?: string }
+  | { action: "exhaust"; reason: ExhaustReason }
   | { action: "ambiguous" };
 
 const FAILING = new Set(["failure", "timed_out", "startup_failure", "error"]);
@@ -143,6 +158,11 @@ export function writeFeedbackLedger(kilnDir: string, ledger: FeedbackLedger): vo
 export function openFeedbackRound(ledger: FeedbackLedger | undefined): FeedbackRound | undefined {
   if (!ledger || ledger.exhausted || ledger.ambiguous) return undefined;
   return [...ledger.rounds].reverse().find((round) => round.outcome !== "pushed" && round.outcome !== "fixed");
+}
+
+/** Rounds since the last manual retry. These count against `maxFixRounds`. */
+export function roundsSinceRetry(ledger: FeedbackLedger | undefined): FeedbackRound[] {
+  return ledger?.rounds.slice(ledger.retryFrom ?? 0) ?? [];
 }
 
 /** Last 40 lines, and at most 2000 characters, keeping the tail. */
@@ -201,6 +221,20 @@ export function planFeedback(input: {
   const ledger = input.ledger;
   if (ledger?.exhausted || ledger?.ambiguous) return { action: "none" };
   if (openFeedbackRound(ledger)) return { action: "none" };
+
+  // A conflict comes before checks and reviews: CI on a branch that cannot merge says little.
+  // A retry clears the stop, so only rounds since then count as already seen.
+  if (input.snapshot.mergeable === "CONFLICTING") {
+    const source = conflictSource(input.snapshot.headSha);
+    const tried = roundsSinceRetry(ledger).some((round) => round.items.some((item) => item.source === source));
+    if (!tried) {
+      return {
+        action: "conflict",
+        headSha: input.snapshot.headSha,
+        ...(input.snapshot.base ? { base: input.snapshot.base } : {}),
+      };
+    }
+  }
 
   const seen = new Set<string>();
   for (const round of ledger?.rounds ?? []) {
@@ -302,22 +336,47 @@ export function planFeedback(input: {
   }
 
   if (items.length === 0) return ambiguous ? { action: "ambiguous" } : { action: "none" };
-  if ((ledger?.rounds.length ?? 0) >= input.maxFixRounds) return { action: "exhaust" };
+  if (roundsSinceRetry(ledger).length >= input.maxFixRounds) return { action: "exhaust", reason: "feedback-exhausted" };
   const trigger = items.some((item) => item.kind === "check") ? "ci" : "review";
   return { action: "fix", headSha: input.snapshot.headSha, trigger, items };
 }
 
+/** Item source for a conflict on one head commit. */
+export function conflictSource(headSha: string): string {
+  return `conflict:${headSha}`;
+}
+
+/** Item summary for a conflict round: the conflicting files, or the failing test output after a clean merge. */
+export function conflictSummary(base: string, result: { files: readonly string[] } | { output: string }): string {
+  if ("files" in result) {
+    const files = result.files.map((file) => `- ${file}`).join("\n");
+    return files ? `Conflicts with ${base}\n\n${files}` : `Conflicts with ${base}`;
+  }
+  const output = truncateExcerpt(result.output);
+  return output ? `Tests failed after merging ${base}\n\n${output}` : `Tests failed after merging ${base}`;
+}
+
 /** Original spec plus the feedback items the fix agent has to address. */
-export function feedbackSpec(spec: string, items: readonly FeedbackItem[]): string {
+export function feedbackSpec(spec: string, items: readonly FeedbackItem[], base?: string): string {
   const blocks = items.map((item) => {
     const body = item.summary.trim();
     return item.url ? `${body}\n\n${item.url}` : body;
   });
+  const conflict = items.some((item) => item.kind === "conflict")
+    ? [
+        `This pull request conflicts with its base branch \`${base ?? "the base"}\`.`,
+        `Run \`git merge origin/${base ?? "<base>"}\` on the current branch. Do not rebase.`,
+        "Resolve every conflict, keeping the intent of both sides. Run the repo's test command and make it pass.",
+        "Commit the merge on the current branch.",
+        "",
+      ]
+    : [];
   return [
     spec.trim(),
     "",
     "## Pull request feedback",
     "",
+    ...conflict,
     "Address every item below. Commit on the current branch.",
     "Do not push. Do not force-push. Do not open a pull request. Do not approve one. Do not comment on one.",
     "",
@@ -327,8 +386,9 @@ export function feedbackSpec(spec: string, items: readonly FeedbackItem[]): stri
 }
 
 /** Chip text for one feedback round. Outcome, when set, follows the trigger. */
-export function feedbackRoundLabel(round: { trigger: "ci" | "review"; outcome?: "fixed" | "pushed" }): string {
-  const trigger = round.trigger === "ci" ? "CI failed" : "changes requested";
+export function feedbackRoundLabel(round: { trigger: FixTrigger; outcome?: "fixed" | "pushed" }): string {
+  const trigger =
+    round.trigger === "ci" ? "CI failed" : round.trigger === "conflict" ? "base conflict" : "changes requested";
   if (round.outcome === "pushed") return `${trigger} · pushed`;
   if (round.outcome === "fixed") return `${trigger} · fixed`;
   return trigger;
@@ -362,7 +422,7 @@ export const realPullRequestFeedback: PullRequestFeedbackSource = {
   read(checkout, prNumber) {
     const operatorLogin = ghLogin(checkout);
     const repo = ghRepo(checkout);
-    const view = ghJson(checkout, ["pr", "view", String(prNumber), "--json", "headRefOid,statusCheckRollup,reviews,url"]);
+    const view = ghJson(checkout, ["pr", "view", String(prNumber), "--json", "headRefOid,statusCheckRollup,reviews,url,mergeable,baseRefName"]);
     const headSha = stringField(view, "headSha") || stringField(view, "headRefOid");
     if (!/^[0-9a-f]{40}$/.test(headSha)) {
       throw new HostError(`gh pr view did not return a head sha for pull request #${prNumber}.`);
@@ -372,7 +432,10 @@ export const realPullRequestFeedback: PullRequestFeedbackSource = {
     attachCheckExcerpts(checkout, repo, headSha, checks);
     const reviews = reviewsFrom(view, prUrl);
     const comments = threadsFrom(checkout, repo, prNumber);
-    return { operatorLogin, headSha, checks, reviews, comments };
+    const raw = stringField(view, "mergeable");
+    const mergeable = raw === "MERGEABLE" || raw === "CONFLICTING" ? raw : "UNKNOWN";
+    const base = stringField(view, "baseRefName");
+    return { operatorLogin, headSha, checks, reviews, comments, mergeable, ...(base ? { base } : {}) };
   },
 };
 
