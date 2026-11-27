@@ -956,28 +956,83 @@
     if (prInput) prInput.placeholder = title;
     if (branchInput) branchInput.placeholder = template;
     fillRepoHints();
-    var attempts = document.getElementById("hint-attempts");
-    var stall = document.getElementById("hint-stall");
-    var rounds = document.getElementById("hint-fix");
-    if (attempts) attempts.textContent = "Default " + (settingsDefaults.maxAttempts != null ? settingsDefaults.maxAttempts : 3) + ". Transient failures before the job needs a person.";
-    var fingerprint = document.getElementById("hint-fingerprint");
-    var cap = document.getElementById("hint-cap");
-    if (fingerprint) fingerprint.textContent = "Default " + (settingsDefaults.maxSameFingerprint != null ? settingsDefaults.maxSameFingerprint : 3) + ". Identical fingerprints before the job needs a person.";
-    if (cap) cap.textContent = "Empty means no daily cap. Recorded dollars, local day.";
-    if (stall) stall.textContent = "Default " + (settingsDefaults.stallTimeoutMs != null ? settingsDefaults.stallTimeoutMs : 900000) + " (15 minutes). 0 disables stall detection.";
-    if (rounds) rounds.textContent = "Default " + (settingsDefaults.maxFixRounds != null ? settingsDefaults.maxFixRounds : 2) + ". Fix rounds before the job needs a person.";
-    var concurrent = document.getElementById("hint-concurrent");
-    var adapterHint = document.getElementById("hint-adapter");
-    if (concurrent) concurrent.textContent = "Default " + (settingsDefaults.maxConcurrent != null ? settingsDefaults.maxConcurrent : 2) + ". Jobs in flight at once. Empty uses that default.";
-    if (adapterHint) adapterHint.textContent = "Default " + (settingsDefaults.adapter || "claude-code") + ".";
-    var attemptInput = document.getElementById("max-attempts");
+    // A blank limit uses the built-in default, so the placeholder shows it.
+    var placeholders = [
+      ["max-attempts", settingsDefaults.maxAttempts != null ? settingsDefaults.maxAttempts : 3],
+      ["max-fix-rounds", settingsDefaults.maxFixRounds != null ? settingsDefaults.maxFixRounds : 2],
+      ["max-same-fingerprint", settingsDefaults.maxSameFingerprint != null ? settingsDefaults.maxSameFingerprint : 3],
+      ["max-concurrent", settingsDefaults.maxConcurrent != null ? settingsDefaults.maxConcurrent : 2],
+    ];
+    for (var p = 0; p < placeholders.length; p++) {
+      var input = document.getElementById(placeholders[p][0]);
+      if (input) input.placeholder = String(placeholders[p][1]);
+    }
     var stallInput = document.getElementById("stall-timeout");
-    var roundInput = document.getElementById("max-fix-rounds");
-    if (attemptInput) attemptInput.placeholder = String(settingsDefaults.maxAttempts != null ? settingsDefaults.maxAttempts : 3);
-    if (stallInput) stallInput.placeholder = String(settingsDefaults.stallTimeoutMs != null ? settingsDefaults.stallTimeoutMs : 900000);
-    if (roundInput) roundInput.placeholder = String(settingsDefaults.maxFixRounds != null ? settingsDefaults.maxFixRounds : 2);
-    var fingerprintInput = document.getElementById("max-same-fingerprint");
-    if (fingerprintInput) fingerprintInput.placeholder = String(settingsDefaults.maxSameFingerprint != null ? settingsDefaults.maxSameFingerprint : 3);
+    if (stallInput) stallInput.placeholder = minutesText(settingsDefaults.stallTimeoutMs != null ? settingsDefaults.stallTimeoutMs : 900000);
+  }
+
+  // The stall timeout is stored in milliseconds and edited in minutes.
+  // A whole number of minutes shows as an integer, anything else to one decimal.
+  function minutesText(ms) {
+    var minutes = Number(ms) / 60000;
+    return minutes === Math.floor(minutes) ? String(minutes) : minutes.toFixed(1);
+  }
+
+  // The loaded milliseconds and the text shown for them. Unedited text saves the
+  // loaded value, so a value that is not whole minutes is not rounded by a save.
+  var stallLoaded = null;
+
+  function stallPayload() {
+    var text = inputValue("stall-timeout").trim();
+    if (!text) return undefined;
+    if (stallLoaded && text === stallLoaded.text) return stallLoaded.ms;
+    if (!/^-?\d+(\.\d+)?$/.test(text)) return text;
+    return Math.round(Number(text) * 60000);
+  }
+
+  function setWarn(id, message) {
+    var slot = document.getElementById(id);
+    if (!slot) return;
+    slot.innerHTML = message ? '<p class="setting-warn-line">' + esc(message) + "</p>" : "";
+    slot.hidden = !message;
+  }
+
+  function sandboxSwitch() {
+    return document.getElementById("sandbox-mode");
+  }
+
+  function sandboxOn() {
+    var toggle = sandboxSwitch();
+    return Boolean(toggle && toggle.getAttribute("aria-checked") === "true");
+  }
+
+  function setSandboxSwitch(on) {
+    var toggle = sandboxSwitch();
+    if (toggle) toggle.setAttribute("aria-checked", on ? "true" : "false");
+  }
+
+  // Warnings are words, and follow the form as it is typed.
+  function syncLimitWarnings() {
+    var stall = inputValue("stall-timeout").trim();
+    setWarn("stall-timeout-warn", stall !== "" && Number(stall) === 0 ? "Off. A run that hangs will not be stopped." : "");
+    setWarn("sandbox-mode-warn", sandboxSwitch() && !sandboxOn() ? "Off. Agents run on this machine with your access." : "");
+  }
+
+  function fillSpend(dollars) {
+    var spent = document.getElementById("daily-dollar-cap-spent");
+    if (!spent) return;
+    spent.textContent = typeof dollars === "number" && isFinite(dollars) ? "$" + dollars.toFixed(2) + " spent today." : "";
+  }
+
+  // What `kiln sandbox` reports when the sandbox is on and a run cannot start. Nothing when off.
+  function fillSandboxCheck(check) {
+    var slot = document.getElementById("sandbox-check");
+    if (!slot) return;
+    var problem = check && check.on && check.problem ? String(check.problem) : "";
+    slot.innerHTML = problem
+      ? problem.split("\n").filter(Boolean).map(function (line) { return '<p class="setting-warn-line">' + esc(line) + "</p>"; }).join("")
+      : "";
+    slot.hidden = !problem;
   }
 
   // "Empty uses the global setting, N." N is the saved global value, else the built-in default.
@@ -1001,7 +1056,8 @@
     var stall = document.getElementById("stall-timeout");
     var rounds = document.getElementById("max-fix-rounds");
     if (attempts) attempts.value = data.maxAttempts != null ? String(data.maxAttempts) : "";
-    if (stall) stall.value = data.stallTimeoutMs != null ? String(data.stallTimeoutMs) : "";
+    stallLoaded = data.stallTimeoutMs != null ? { ms: data.stallTimeoutMs, text: minutesText(data.stallTimeoutMs) } : null;
+    if (stall) stall.value = stallLoaded ? stallLoaded.text : "";
     var keepTrees = document.getElementById("keep-worktrees");
     if (keepTrees) keepTrees.checked = data.keepWorktrees === true;
     if (rounds) rounds.value = data.maxFixRounds != null ? String(data.maxFixRounds) : "";
@@ -1012,9 +1068,12 @@
     var concurrentInput = document.getElementById("max-concurrent");
     if (concurrentInput) concurrentInput.value = data.maxConcurrent != null ? String(data.maxConcurrent) : "";
     setPressed("#adapter-mode [data-adapter]", "data-adapter", data.adapter === "mock" ? "mock" : "claude-code");
-    setPressed("#sandbox-mode [data-sandbox]", "data-sandbox", data.sandbox && data.sandbox.mode === "docker" ? "docker" : "off");
+    setSandboxSwitch(Boolean(data.sandbox && data.sandbox.mode === "docker"));
     var domains = document.getElementById("sandbox-domains");
     if (domains) domains.value = data.sandbox && data.sandbox.allowDomains ? data.sandbox.allowDomains.join("\n") : "";
+    fillSpend(data.spentToday);
+    fillSandboxCheck(data.sandboxCheck);
+    syncLimitWarnings();
   }
 
   // Pull request base for the table. A blank base falls back to "main" here;
@@ -1664,7 +1723,7 @@
     }
     var body = { revision: settingsDoc ? settingsDoc.revision : "", repos: repos };
     var attempts = optionalInt(inputValue("max-attempts"));
-    var stall = optionalInt(inputValue("stall-timeout"));
+    var stall = stallPayload();
     var rounds = optionalInt(inputValue("max-fix-rounds"));
     if (attempts !== undefined) body.maxAttempts = attempts;
     if (stall !== undefined) body.stallTimeoutMs = stall;
@@ -1675,7 +1734,7 @@
     var cap = optionalNumber(inputValue("daily-dollar-cap"));
     if (fingerprint !== undefined) body.maxSameFingerprint = fingerprint;
     if (cap !== undefined) body.dailyDollarCap = cap;
-    var mode = selectedAttr("#sandbox-mode [data-sandbox]", "data-sandbox", "off");
+    var mode = sandboxOn() ? "docker" : "off";
     var domains = domainList(inputValue("sandbox-domains"));
     var sandbox = {};
     if (mode) sandbox.mode = mode;
@@ -1748,16 +1807,16 @@
     ["maxFixRounds", "max fix rounds"],
   ];
   var SETTINGS_FIELDS = [
-    ["limits", "maxAttempts", "Max attempts"],
-    ["limits", "stallTimeoutMs", "Stall timeout (ms)"],
-    ["limits", "keepWorktrees", "Keep worktrees"],
-    ["limits", "maxFixRounds", "Max fix rounds"],
-    ["limits", "maxSameFingerprint", "Same fingerprint limit"],
-    ["limits", "dailyDollarCap", "Daily dollar cap"],
-    ["limits", "maxConcurrent", "Max concurrent"],
-    ["limits", "adapter", "Adapter"],
-    ["sandbox", "sandbox.mode", "Sandbox mode"],
-    ["sandbox", "sandbox.allowDomains", "Allow domains"],
+    ["limits", "maxConcurrent", "Jobs at once"],
+    ["limits", "dailyDollarCap", "Daily spending cap"],
+    ["limits", "stallTimeoutMs", "Stop a silent run after"],
+    ["limits", "maxAttempts", "Attempts per job"],
+    ["limits", "maxSameFingerprint", "Stop after the same failure"],
+    ["limits", "maxFixRounds", "Fix rounds on a pull request"],
+    ["limits", "adapter", "Agent"],
+    ["limits", "keepWorktrees", "Keep finished worktrees"],
+    ["sandbox", "sandbox.mode", "Run agents in Docker"],
+    ["sandbox", "sandbox.allowDomains", "Sites agents may reach"],
     ["jira", "jira.baseUrl", "Base URL"],
     ["jira", "jira.email", "Email"],
     ["jira", "jira.acceptanceField", "Acceptance field"],
@@ -2384,9 +2443,16 @@
       markSettingsDirty();
       return;
     }
-    var sandboxBtn = target.closest("#sandbox-mode [data-sandbox]");
-    if (sandboxBtn) {
-      setPressed("#sandbox-mode [data-sandbox]", "data-sandbox", sandboxBtn.getAttribute("data-sandbox") || "off");
+    if (target.closest("#sandbox-mode")) {
+      setSandboxSwitch(!sandboxOn());
+      syncLimitWarnings();
+      markSettingsDirty();
+      return;
+    }
+    var resetDomains = target.closest("#sandbox-domains-reset");
+    if (resetDomains) {
+      var domainBox = document.getElementById("sandbox-domains");
+      if (domainBox) domainBox.value = (resetDomains.getAttribute("data-default-domains") || "").split(" ").filter(Boolean).join("\n");
       markSettingsDirty();
       return;
     }
@@ -2838,6 +2904,7 @@
       saveSettings();
     });
     settingsForm.addEventListener("input", function () {
+      syncLimitWarnings();
       markSettingsDirty();
       clearSettingsErrors();
     });

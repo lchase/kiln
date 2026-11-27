@@ -223,7 +223,7 @@ describe("serve settings", () => {
       assert.match(page.body, /id="settings-json"/);
       assert.match(page.body, /JIRA_API_TOKEN/);
       assert.match(page.body, /aria-label="Settings sections"/);
-      assert.match(page.body, /<input id="keep-worktrees" type="checkbox">/);
+      assert.match(page.body, /<input id="keep-worktrees" type="checkbox"/);
       assert.match(page.body, /renders as \[ABC-123\] Title/);
       assert.match(page.body, /renders as ABC-123-slug/);
       assert.equal(page.body.includes(TOKEN), false);
@@ -343,7 +343,7 @@ describe("serve settings", () => {
     }
   });
 
-  it("round-trips every overlay setting byte for byte, and ignores an echoed skills report", async () => {
+  it("round-trips every overlay setting byte for byte, and ignores an echoed skills report, spend, and sandbox check", async () => {
     const { cwd, home, configPath } = workDir("kiln-settings-overlay-");
     mkdirSync(join(home, "plug", "skills", "foo"), { recursive: true });
     writeFileSync(join(home, "plug", "skills", "foo", "SKILL.md"), "# foo\n");
@@ -366,8 +366,12 @@ describe("serve settings", () => {
       const doc = JSON.parse(loaded.body) as SettingsDoc & {
         overlay: Record<string, unknown>;
         skillCheck: { skills: string[]; folders: { typed: string; exists: boolean }[] };
+        spentToday: number;
+        sandboxCheck: { on: boolean; problem?: string };
       };
       assert.deepEqual(doc.overlay, config.overlay);
+      assert.equal(doc.spentToday, 0);
+      assert.deepEqual(doc.sandboxCheck, { on: false }, "the sandbox is off, so docker is not probed");
       assert.deepEqual(doc.skillCheck.skills, ["foo"]);
       assert.deepEqual(
         doc.skillCheck.folders.map((folder) => [folder.typed, folder.exists]),
@@ -382,8 +386,13 @@ describe("serve settings", () => {
         jira: { baseUrl: "https://example.atlassian.net", email: "dev@example.com", acceptanceField: "" },
         overlay: doc.overlay,
         skillCheck: doc.skillCheck,
+        spentToday: 12.5,
+        sandboxCheck: { on: true, problem: "echoed" },
       });
       assert.equal(saved.status, 200, saved.body);
+      const savedDoc = JSON.parse(saved.body) as { spentToday: number; sandboxCheck: unknown };
+      assert.equal(savedDoc.spentToday, 0);
+      assert.deepEqual(savedDoc.sandboxCheck, { on: false });
       assert.equal(readFileSync(configPath, "utf8"), contents);
     } finally {
       await stop(server.child);
@@ -660,13 +669,17 @@ const SECTIONS = [
   ["file", "Edit the file"],
 ] as const;
 
-/** Every control id the form had before the sections were split (repo editor, Global, Triggers, Routes, Jira, Overlay, Appearance, Advanced). */
+/**
+ * Every control id the form had before the sections were split (repo editor, Global, Triggers, Routes, Jira, Overlay,
+ * Appearance, Advanced). The Limits hint lines became each row's `-explain` line.
+ */
 const OLD_CONTROL_IDS = [
   "repo-editor", "repo-name", "repo-path", "repo-browse", "repo-browser", "repo-test", "repo-deliver", "repo-base",
   "repo-pr-title", "hint-pr-title", "repo-branch", "hint-branch", "repo-max-attempts", "repo-max-fix-rounds", "repo-done",
-  "repo-list", "repo-add", "sandbox-mode", "sandbox-domains", "max-attempts", "hint-attempts", "stall-timeout", "hint-stall",
-  "keep-worktrees", "max-fix-rounds", "hint-fix", "max-same-fingerprint", "hint-fingerprint", "daily-dollar-cap", "hint-cap",
-  "max-concurrent", "hint-concurrent", "adapter-mode", "hint-adapter", "trigger-editor", "trigger-id", "trigger-enabled",
+  "repo-list", "repo-add", "sandbox-mode", "sandbox-domains", "max-attempts", "max-attempts-explain", "stall-timeout",
+  "stall-timeout-explain", "keep-worktrees", "max-fix-rounds", "max-fix-rounds-explain", "max-same-fingerprint",
+  "max-same-fingerprint-explain", "daily-dollar-cap", "daily-dollar-cap-explain", "max-concurrent", "max-concurrent-explain",
+  "adapter-mode", "adapter-mode-explain", "trigger-editor", "trigger-id", "trigger-enabled",
   "trigger-kind", "trigger-cron", "trigger-label", "trigger-max-new", "trigger-max-queued", "trigger-every", "trigger-jql",
   "trigger-jira-label", "trigger-status", "trigger-repo", "trigger-list", "route-editor", "route-id", "route-trigger",
   "route-action", "route-workflow", "route-repo", "route-list", "jira-base", "jira-email", "jira-acceptance", "jira-token",
@@ -733,7 +746,7 @@ describe("settings sections", () => {
         assert.equal(page.body.split(`id="${id}"`).length - 1, 1, id);
       }
       assert.match(found.get("limits")?.body ?? "", /id="stall-timeout"/);
-      assert.match(found.get("limits")?.body ?? "", /Stall timeout \(ms\)/);
+      assert.match(found.get("limits")?.body ?? "", /Stop a silent run after/);
       assert.match(found.get("sandbox")?.body ?? "", /id="sandbox-domains"/);
       const triggers = found.get("triggers")?.body ?? "";
       assert.ok(triggers.indexOf('id="trigger-list"') < triggers.indexOf("<h3>Routes</h3>"));

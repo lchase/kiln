@@ -60,7 +60,7 @@ import {
 import { startedPhaseIds } from "./job-view.js";
 import { STEP_NAME, readStepResult } from "./step-result.js";
 import { isPaused, pauseFactory, resumeFactory, spendFor } from "./rails.js";
-import { readSettings, saveSettings } from "./settings.js";
+import { readSettings, saveSettings, settingsStatus } from "./settings.js";
 import type { TickReply, TickRequest } from "./tick-worker.js";
 import { effectiveTriggers, triggerRows } from "./triggers.js";
 import { formatServeStartup } from "./version.js";
@@ -259,7 +259,7 @@ async function handle(
       sendJson(res, result.status, result.body, secrets);
       return;
     }
-    sendJson(res, 200, result.document, secrets);
+    sendJson(res, 200, { ...result.document, ...settingsStatus(config) }, secrets);
     return;
   }
 
@@ -955,7 +955,7 @@ async function putSettings(req: IncomingMessage, res: ServerResponse, state: Liv
   state.mtimeMs = -1;
   state.size = -1;
   refreshLiveConfig(state);
-  sendJson(res, 200, result.document, state.secrets);
+  sendJson(res, 200, { ...result.document, ...settingsStatus(state.config) }, state.secrets);
 }
 
 async function createJob(req: IncomingMessage, res: ServerResponse, state: LiveConfig, raw: string): Promise<void> {

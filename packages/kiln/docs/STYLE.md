@@ -356,6 +356,17 @@ Kiln notifies only when the needs-you count grows, and only while sending is on.
   key.
 - A warning about a saved value (`.setting-warn-line`, `--state-needs-hand`) sits under the explanation and says what
   is wrong in words, naming the value as typed (`Folder not found: ~/skills`). A warning never blocks Save.
+- A risky value warns in words as it is typed, in the row's warning slot: "Off. A run that hangs will not be stopped."
+  The words carry the meaning; the color only repeats it.
+- A unit or prefix sits beside its control (`.setting-unit`, `.setting-affix` in `--muted`): `$ [5]`, `[15] minutes`.
+  A unit the explanation does not already say goes in the control's `aria-describedby`.
+- Show a duration in the unit a person thinks in. A config value in milliseconds is edited in minutes: whole minutes
+  show as an integer, anything else to one decimal, and an unedited value saves back the exact milliseconds it loaded.
+- An on/off setting that takes effect for the whole factory is a switch (`.switch`, a `<button role="switch"
+  aria-checked>` with a `<label for>`), not a two-chip segment. The knob sits left (`--faint`) when off and right
+  (`--ink`) when on. A risky Off says so in the row's warning.
+- A group control (a `.seg`) cannot take `<label for>`: its row label is a `<p id="<id>-label">` and the group has
+  `aria-labelledby` and `aria-describedby`.
 - At narrow width (the `960px` media rule) the section list stacks above the section at full width. No fixed widths, no
   sideways scrolling.
 

@@ -41,6 +41,7 @@ import {
 } from "./job-view.js";
 import type { ActivityEvent, ActivityFeed } from "./activity.js";
 import { icon, type IconName } from "./icons.js";
+import { DEFAULT_SANDBOX_DOMAINS } from "./sandbox.js";
 import { renderMarkdown } from "./markdown.js";
 import type { StepRead } from "./step-result.js";
 import { kilnVersion } from "./project.js";
@@ -1627,6 +1628,11 @@ interface SettingRow {
   warn?: boolean;
   /** A second muted line, such as how to fill the control. */
   hint?: string;
+  /**
+   * The control is a group (a `.seg`), which a `<label for>` cannot name. The
+   * label is then a `<p id="<id>-label">` the group names with `aria-labelledby`.
+   */
+  group?: boolean;
   /** Control markup, given the `aria-describedby` value to put on it. */
   control: (describedBy: string) => string;
 }
@@ -1635,7 +1641,7 @@ interface SettingRow {
 function settingRow(row: SettingRow): string {
   const ids = [`${row.id}-explain`, ...(row.hint ? [`${row.id}-hint`] : []), ...(row.warn ? [`${row.id}-warn`] : []), `${row.id}-error`];
   return `<div class="setting-row">
-<div class="setting-text"><label class="setting-label" for="${row.id}">${escapeHtml(row.label)}</label>
+<div class="setting-text">${row.group ? `<p class="setting-label" id="${row.id}-label">${escapeHtml(row.label)}</p>` : `<label class="setting-label" for="${row.id}">${escapeHtml(row.label)}</label>`}
 <p class="setting-explain" id="${row.id}-explain">${row.explain}</p>${row.hint ? `
 <p class="setting-explain" id="${row.id}-hint">${escapeHtml(row.hint)}</p>` : ""}${row.warn ? `
 <div class="setting-warn" id="${row.id}-warn" hidden></div>` : ""}
@@ -1720,48 +1726,100 @@ function settingsForm(theme: BoardThemeId, active: SettingsSectionId, facts: Set
     settingsPane(
       "limits",
       active,
-      "How many times a job is tried, when it counts as stalled, and how much may run at once.",
-      `<label class="field"><span class="k">Max attempts</span><input id="max-attempts" type="number" min="1" step="1"></label>
-<p class="hint" id="hint-attempts"></p>
-<p class="field-error" data-error="maxAttempts" hidden></p>
-<label class="field"><span class="k">Stall timeout (ms)</span><input id="stall-timeout" type="number" step="1"></label>
-<p class="hint" id="hint-stall"></p>
-<p class="field-error" data-error="stallTimeoutMs" hidden></p>
-<label class="field"><span class="k">Keep worktrees</span><input id="keep-worktrees" type="checkbox"></label>
-<p class="hint">Off: each tick removes a finished run's worktree. On: only kiln clean --apply removes them.</p>
-<p class="field-error" data-error="keepWorktrees" hidden></p>
-<label class="field"><span class="k">Max fix rounds</span><input id="max-fix-rounds" type="number" min="1" step="1"></label>
-<p class="hint" id="hint-fix"></p>
-<p class="field-error" data-error="maxFixRounds" hidden></p>
-<label class="field"><span class="k">Same fingerprint limit</span><input id="max-same-fingerprint" type="number" min="1" step="1"></label>
-<p class="hint" id="hint-fingerprint"></p>
-<p class="field-error" data-error="maxSameFingerprint" hidden></p>
-<label class="field"><span class="k">Daily dollar cap</span><input id="daily-dollar-cap" type="number" min="0" step="0.01"></label>
-<p class="hint" id="hint-cap"></p>
-<p class="field-error" data-error="dailyDollarCap" hidden></p>
-<label class="field"><span class="k">Max concurrent</span><input id="max-concurrent" type="number" min="1" step="1"></label>
-<p class="hint" id="hint-concurrent"></p>
-<p class="field-error" data-error="maxConcurrent" hidden></p>
-<div class="field"><span class="k">Adapter</span><div class="seg" id="adapter-mode" role="group" aria-label="Adapter">
-<button type="button" data-adapter="claude-code" aria-pressed="true">claude-code</button>
-<button type="button" data-adapter="mock" aria-pressed="false">mock</button>
-</div>
-<p class="hint" id="hint-adapter"></p>
-<p class="field-error" data-error="adapter" hidden></p></div>`,
+      "How many jobs run, how much they may spend, and when Kiln stops retrying.",
+      `<div class="setting-rows">
+${settingRow({
+  id: "max-concurrent",
+  label: "Jobs at once",
+  explain: "How many jobs may run at the same time.",
+  error: "maxConcurrent",
+  control: (describedBy) => `<input id="max-concurrent" type="number" min="1" step="1" aria-describedby="${describedBy}">`,
+})}
+${settingRow({
+  id: "daily-dollar-cap",
+  label: "Daily spending cap",
+  explain: `No new job starts once today's cost reaches this. Blank means no cap. <span id="daily-dollar-cap-spent"></span>`,
+  error: "dailyDollarCap",
+  control: (describedBy) =>
+    `<div class="setting-unit"><span class="setting-affix">$</span><input id="daily-dollar-cap" type="number" min="0" step="0.01" placeholder="no cap" aria-describedby="${describedBy}"></div>`,
+})}
+${settingRow({
+  id: "stall-timeout",
+  label: "Stop a silent run after",
+  explain: "A run that prints nothing for this long is stopped and retried. 0 turns this off.",
+  error: "stallTimeoutMs",
+  warn: true,
+  control: (describedBy) =>
+    `<div class="setting-unit"><input id="stall-timeout" type="number" min="0" step="any" aria-describedby="${describedBy} stall-timeout-unit"><span class="setting-affix" id="stall-timeout-unit">minutes</span></div>`,
+})}
+${settingRow({
+  id: "max-attempts",
+  label: "Attempts per job",
+  explain: "A crashed or stalled run is retried up to this many times, then waits for you.",
+  error: "maxAttempts",
+  control: (describedBy) => `<input id="max-attempts" type="number" min="1" step="1" aria-describedby="${describedBy}">`,
+})}
+${settingRow({
+  id: "max-same-fingerprint",
+  label: "Stop after the same failure",
+  explain: "A job waits for you after this many times in a row with an identical error.",
+  error: "maxSameFingerprint",
+  control: (describedBy) =>
+    `<div class="setting-unit"><input id="max-same-fingerprint" type="number" min="1" step="1" aria-describedby="${describedBy} max-same-fingerprint-unit"><span class="setting-affix" id="max-same-fingerprint-unit">times</span></div>`,
+})}
+${settingRow({
+  id: "max-fix-rounds",
+  label: "Fix rounds on a pull request",
+  explain: "How many times Kiln answers failed checks or review comments before it stops.",
+  error: "maxFixRounds",
+  control: (describedBy) => `<input id="max-fix-rounds" type="number" min="1" step="1" aria-describedby="${describedBy}">`,
+})}
+${settingRow({
+  id: "adapter-mode",
+  label: "Agent",
+  explain: "What runs each agent step. Mock makes no model calls and is for testing Kiln.",
+  error: "adapter",
+  group: true,
+  control: (describedBy) => `<div class="seg" id="adapter-mode" role="group" aria-labelledby="adapter-mode-label" aria-describedby="${describedBy}">
+<button type="button" data-adapter="claude-code" aria-pressed="true">Claude Code</button>
+<button type="button" data-adapter="mock" aria-pressed="false">Mock (no model calls, for testing)</button>
+</div>`,
+})}
+${settingRow({
+  id: "keep-worktrees",
+  label: "Keep finished worktrees",
+  explain: "Off: Kiln removes a finished run's worktree. On: only <code>kiln clean --apply</code> removes them.",
+  error: "keepWorktrees",
+  control: (describedBy) => `<input id="keep-worktrees" type="checkbox" aria-describedby="${describedBy}">`,
+})}
+</div>`,
     ),
     settingsPane(
       "sandbox",
       active,
-      "Whether agent steps run in a container, and which hosts they may reach.",
-      `<div class="field"><span class="k">Sandbox</span><div class="seg" id="sandbox-mode" role="group" aria-label="Sandbox mode">
-<button type="button" data-sandbox="off" aria-pressed="true">Off</button>
-<button type="button" data-sandbox="docker" aria-pressed="false">Docker</button>
+      "Whether agent steps run in a container, and which sites they may reach.",
+      `<div class="setting-rows">
+${settingRow({
+  id: "sandbox-mode",
+  label: "Run agents in Docker",
+  explain: "Each agent step runs in a container that can reach only the sites below.",
+  error: "sandbox.mode",
+  warn: true,
+  control: (describedBy) =>
+    `<button type="button" class="switch" id="sandbox-mode" role="switch" aria-checked="false" aria-describedby="${describedBy} sandbox-check"><span class="switch-knob" aria-hidden="true"></span></button>`,
+})}
+${settingRow({
+  id: "sandbox-domains",
+  label: "Sites agents may reach",
+  explain: "Used only when the sandbox is on. Blank uses the default list: the Anthropic API, npm, and GitHub.",
+  error: "sandbox.allowDomains",
+  hint: "One host per line.",
+  control: (describedBy) =>
+    `<textarea id="sandbox-domains" rows="4" spellcheck="false" placeholder="${DEFAULT_SANDBOX_DOMAINS.map(escapeHtml).join("&#10;")}" aria-describedby="${describedBy}"></textarea>
+<button type="button" class="btn setting-reset" id="sandbox-domains-reset" data-default-domains="${escapeHtml(DEFAULT_SANDBOX_DOMAINS.join(" "))}">Reset to default list</button>`,
+})}
 </div>
-<p class="hint">Off leaves the agent unsandboxed. Docker runs agent steps in the sandbox.</p>
-<p class="field-error" data-error="sandbox.mode" hidden></p></div>
-<label class="field"><span class="k">Allow domains</span><textarea id="sandbox-domains" rows="3" placeholder="example.com" spellcheck="false"></textarea></label>
-<p class="hint">One hostname per line. When set, this replaces the built-in host list.</p>
-<p class="field-error" data-error="sandbox.allowDomains" hidden></p>`,
+<div class="setting-warn setting-check" id="sandbox-check" role="status" hidden></div>`,
     ),
     settingsPane(
       "triggers",

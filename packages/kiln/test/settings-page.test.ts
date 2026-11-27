@@ -7,7 +7,9 @@ import vm from "node:vm";
 import { buildAttention } from "../src/attention.js";
 import { packageRoot } from "../src/paths.js";
 import { renderApp, type SettingsSectionId } from "../src/serve-page.js";
-import { readSettings, saveSettings } from "../src/settings.js";
+import { loadKilnConfig } from "../src/config.js";
+import { DEFAULT_SANDBOX_DOMAINS, sandboxPreflightMessage, type SandboxFacts } from "../src/sandbox.js";
+import { readSettings, saveSettings, settingsStatus } from "../src/settings.js";
 import { buildBoard } from "../src/board-view.js";
 
 const script = readFileSync(join(packageRoot(), "assets", "serve.js"), "utf8");
@@ -381,7 +383,13 @@ interface Page {
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 
-async function openPage(fx: Fixture, path = "/settings", section: SettingsSectionId = "repos"): Promise<Page> {
+/** `status` stands in for the read-only fields `GET`/`PUT /api/settings` add in serve.ts (`settingsStatus`). */
+async function openPage(
+  fx: Fixture,
+  path = "/settings",
+  section: SettingsSectionId = "repos",
+  status: Record<string, unknown> = {},
+): Promise<Page> {
   const html = pageHtml(section);
   const root = new Node("#root");
   parseInto(root, html);
@@ -420,7 +428,7 @@ async function openPage(fx: Fixture, path = "/settings", section: SettingsSectio
       return json(next.status, next.data);
     }
     const result = method === "PUT" ? saveSettings(fx.configPath, body, fx.home, {}) : readSettings(fx.configPath, {}, fx.home);
-    return result.ok ? json(200, result.document) : json(result.status, result.body);
+    return result.ok ? json(200, { ...result.document, ...status }) : json(result.status, result.body);
   };
   const window = {
     location,
@@ -592,7 +600,7 @@ describe("settings page script", () => {
     assert.equal(page.byId("settings-repos").hidden, true);
     assert.equal(nav(page)[1]?.getAttribute("aria-current"), "page");
 
-    page.type("stall-timeout", "700000");
+    page.type("stall-timeout", "20");
     const event = page.click(nav(page)[3] as Node);
     assert.equal(event.defaultPrevented, true, "a nav click does not load a new page");
     assert.deepEqual(page.history.pushed, ["/settings/triggers"]);
@@ -600,7 +608,7 @@ describe("settings page script", () => {
     assert.equal(page.byId("settings-limits").hidden, true);
     assert.equal(nav(page)[3]?.getAttribute("aria-current"), "page");
     assert.equal(nav(page)[1]?.getAttribute("aria-current"), null);
-    assert.equal(page.byId("stall-timeout").value, "700000", "edits in other sections stay in the form");
+    assert.equal(page.byId("stall-timeout").value, "20", "edits in other sections stay in the form");
 
     page.pop("/settings/limits");
     assert.equal(page.byId("settings-limits").hidden, false);
@@ -706,10 +714,10 @@ describe("settings page script", () => {
   it("shows the bar for a change, names it, and hides it when the value goes back", async () => {
     const page = await openPage(fixture());
     assert.equal(bar(page).hidden, true);
-    page.type("stall-timeout", "700000");
-    assert.deepEqual(bar(page), { hidden: false, text: "1 unsaved change, in Limits and retries: Stall timeout (ms)" });
+    page.type("stall-timeout", "20");
+    assert.deepEqual(bar(page), { hidden: false, text: "1 unsaved change, in Limits and retries: Stop a silent run after" });
     assert.equal(page.unload().defaultPrevented, true);
-    page.type("stall-timeout", "600000");
+    page.type("stall-timeout", "10");
     assert.equal(bar(page).hidden, true);
     assert.equal(page.unload().defaultPrevented, false);
 
@@ -785,9 +793,9 @@ describe("settings page script", () => {
     const loaded = readSettings(fx.configPath, {});
     assert.ok(loaded.ok);
     const page = await openPage(fx);
-    page.type("stall-timeout", "700000");
+    page.type("stall-timeout", "20");
     page.type("jira-email", "qa@example.com");
-    assert.equal(bar(page).text, "2 unsaved changes, in Limits and retries: Stall timeout (ms); in Jira: Email");
+    assert.equal(bar(page).text, "2 unsaved changes, in Limits and retries: Stop a silent run after; in Jira: Email");
     page.click(page.byId("settings-save"));
     page.submit();
     await settle();
@@ -797,18 +805,18 @@ describe("settings page script", () => {
     assert.equal(bar(page).hidden, true);
     assert.equal(page.byId("settings-saved").hidden, false);
     assert.equal(page.byId("settings-saved").textContent, "Saved");
-    assert.equal(page.byId("stall-timeout").value, "700000");
+    assert.equal(page.byId("stall-timeout").value, "20");
   });
 
   it("keeps the edits and the bar when a save is refused", async () => {
     const page = await openPage(fixture());
-    page.type("stall-timeout", "700000");
+    page.type("stall-timeout", "20");
 
     page.respond.next = { status: 409, data: { error: "The settings file changed on disk. Reload and try again." } };
     page.submit();
     await settle();
     assert.equal(puts(page).length, 1);
-    assert.equal(page.byId("stall-timeout").value, "700000");
+    assert.equal(page.byId("stall-timeout").value, "20");
     assert.equal(bar(page).hidden, false);
     assert.equal(page.byId("settings-error").hidden, false);
     assert.match(page.byId("settings-error").textContent, /changed on disk/);
@@ -820,7 +828,7 @@ describe("settings page script", () => {
     page.submit();
     await settle();
     assert.equal(puts(page).length, 2);
-    assert.equal(page.byId("stall-timeout").value, "700000");
+    assert.equal(page.byId("stall-timeout").value, "20");
     assert.equal(bar(page).hidden, false);
     const slot = page.byId("settings-limits").querySelector('[data-error="stallTimeoutMs"]');
     assert.equal(slot?.hidden, false);
@@ -836,13 +844,13 @@ describe("settings page script", () => {
     page.type("settings-json", JSON.stringify({ ...file, maxAttempts: 6 }, null, 2));
     assert.deepEqual(bar(page), { hidden: false, text: "1 unsaved change, in Edit the file: kiln.config.json" });
 
-    page.type("stall-timeout", "700000");
+    page.type("stall-timeout", "20");
     page.submit();
     await settle();
     assert.equal(puts(page).length, 0);
     assert.match(page.byId("settings-error").textContent, /Edit the file and other sections/);
 
-    page.type("stall-timeout", "600000");
+    page.type("stall-timeout", "10");
     page.submit();
     await settle();
     const sent = puts(page);
@@ -968,6 +976,246 @@ describe("local workflows and skills section", () => {
     assert.equal(page.byId("overlay-skills-warn").textContent, "Folder not found: ~/nope");
     assert.equal(page.byId("overlay-skill-paths-warn").hidden, true);
     assert.equal(page.byId("overlay-skill-names").textContent, "No skills found.");
+  });
+});
+
+function pane(section: SettingsSectionId): string {
+  const html = pageHtml(section);
+  const start = html.indexOf(`id="settings-${section}"`);
+  assert.notEqual(start, -1);
+  return html.slice(start, html.indexOf("</section>", start));
+}
+
+function writeConfig(fx: Fixture, change: (config: Record<string, unknown>) => void): string {
+  const config = JSON.parse(readFileSync(fx.configPath, "utf8")) as Record<string, unknown>;
+  change(config);
+  const contents = `${JSON.stringify(config, null, 2)}\n`;
+  writeFileSync(fx.configPath, contents);
+  return contents;
+}
+
+const NO_DOCKER: SandboxFacts = { dockerBinary: false, dockerDaemon: false, images: [], yakVersion: "0.0.0", yakDist: "", env: {} };
+
+const CONFIG_KEYS = /^(maxConcurrent|dailyDollarCap|stallTimeoutMs|maxAttempts|maxSameFingerprint|maxFixRounds|keepWorktrees|adapter|sandbox(\..*)?|mode|allowDomains)$/i;
+
+describe("limits and sandbox sections", () => {
+  it("labels every row in plain words and ties each control to its explanation", () => {
+    const expected: Record<string, string[]> = {
+      limits: [
+        "Jobs at once",
+        "Daily spending cap",
+        "Stop a silent run after",
+        "Attempts per job",
+        "Stop after the same failure",
+        "Fix rounds on a pull request",
+        "Agent",
+        "Keep finished worktrees",
+      ],
+      sandbox: ["Run agents in Docker", "Sites agents may reach"],
+    };
+    const controls: Record<string, string[]> = {
+      limits: ["max-concurrent", "daily-dollar-cap", "stall-timeout", "max-attempts", "max-same-fingerprint", "max-fix-rounds", "adapter-mode", "keep-worktrees"],
+      sandbox: ["sandbox-mode", "sandbox-domains"],
+    };
+    for (const section of ["limits", "sandbox"] as const) {
+      const html = pane(section);
+      const labels = [...html.matchAll(/class="setting-label"[^>]*>([^<]*)</g)].map((match) => match[1] ?? "");
+      assert.deepEqual(labels, expected[section]);
+      const every = [
+        ...labels,
+        ...[...html.matchAll(/<label[^>]*>([^<]*)</g)].map((match) => match[1] ?? ""),
+        ...[...html.matchAll(/aria-label="([^"]*)"/g)].map((match) => match[1] ?? ""),
+      ];
+      for (const label of every) {
+        assert.doesNotMatch(label, CONFIG_KEYS, label);
+        assert.equal(label.includes("(ms)"), false, label);
+      }
+      const ids = new Set([...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]));
+      for (const id of controls[section] ?? []) {
+        const tag = new RegExp(`<(?:input|textarea|button|div)[^>]* id="${id}"[^>]*>`).exec(html)?.[0] ?? "";
+        assert.ok(tag, id);
+        const named = html.includes(`<label class="setting-label" for="${id}">`) || tag.includes(`aria-labelledby="${id}-label"`);
+        assert.ok(named, `${id} has a label`);
+        const described = /aria-describedby="([^"]+)"/.exec(tag)?.[1]?.split(" ") ?? [];
+        assert.ok(described.includes(`${id}-explain`), `${id} -> its explanation`);
+        for (const ref of described) assert.ok(ids.has(ref), `${id} -> #${ref}`);
+      }
+    }
+    const limits = pane("limits");
+    assert.match(limits, /<button type="button" data-adapter="claude-code" aria-pressed="true">Claude Code<\/button>/);
+    assert.match(limits, /<button type="button" data-adapter="mock" aria-pressed="false">Mock \(no model calls, for testing\)<\/button>/);
+    assert.match(limits, /id="stall-timeout-unit">minutes</);
+    assert.match(pane("sandbox"), /id="sandbox-mode" role="switch" aria-checked="false"/);
+
+    // The unsaved-changes bar uses the same words.
+    const fields = [...script.matchAll(/\["(limits|sandbox)", "([^"]+)", "([^"]+)"\]/g)].map((match) => match[3] ?? "");
+    assert.deepEqual(fields.sort(), [...(expected.limits ?? []), ...(expected.sandbox ?? [])].sort());
+  });
+
+  it("shows the stall timeout in minutes and stores milliseconds", async () => {
+    const fx = fixture();
+    writeConfig(fx, (config) => {
+      config.stallTimeoutMs = 900000;
+    });
+    const page = await openPage(fx, "/settings/limits", "limits");
+    assert.equal(page.byId("stall-timeout").value, "15");
+    page.type("stall-timeout", "20");
+    assert.equal(bar(page).text, "1 unsaved change, in Limits and retries: Stop a silent run after");
+    page.submit();
+    await settle();
+    assert.equal(puts(page)[0]?.body?.stallTimeoutMs, 1200000);
+    assert.equal((JSON.parse(readFileSync(fx.configPath, "utf8")) as { stallTimeoutMs: number }).stallTimeoutMs, 1200000);
+    assert.equal(page.byId("stall-timeout").value, "20");
+
+    page.type("stall-timeout", "");
+    page.submit();
+    await settle();
+    assert.equal(Object.hasOwn(puts(page)[1]?.body ?? {}, "stallTimeoutMs"), false, "blank uses the default");
+    assert.equal((page.byId("stall-timeout") as unknown as { placeholder: string }).placeholder, "15", "the default, in minutes");
+  });
+
+  it("shows a value that is not whole minutes to one decimal and saves it back unchanged", async () => {
+    const fx = fixture();
+    writeConfig(fx, (config) => {
+      config.stallTimeoutMs = 1000000;
+    });
+    const page = await openPage(fx, "/settings/limits", "limits");
+    assert.equal(page.byId("stall-timeout").value, "16.7");
+    page.type("max-attempts", "6");
+    page.submit();
+    await settle();
+    assert.equal(puts(page)[0]?.body?.stallTimeoutMs, 1000000);
+    assert.equal((JSON.parse(readFileSync(fx.configPath, "utf8")) as { stallTimeoutMs: number }).stallTimeoutMs, 1000000);
+  });
+
+  it("removes a blank spending cap from the file rather than saving 0, and shows today's spend", async () => {
+    const fx = fixture();
+    const page = await openPage(fx, "/settings/limits", "limits", { spentToday: 52.13 });
+    assert.equal(page.byId("daily-dollar-cap").value, "5");
+    assert.equal(page.byId("daily-dollar-cap-spent").textContent, "$52.13 spent today.");
+    assert.equal(page.byId("daily-dollar-cap").getAttribute("placeholder"), "no cap");
+    page.type("daily-dollar-cap", "");
+    assert.equal(bar(page).text, "1 unsaved change, in Limits and retries: Daily spending cap");
+    page.submit();
+    await settle();
+    const body = puts(page)[0]?.body ?? {};
+    assert.equal(Object.hasOwn(body, "dailyDollarCap"), false);
+    const saved = JSON.parse(readFileSync(fx.configPath, "utf8")) as Record<string, unknown>;
+    assert.equal(Object.hasOwn(saved, "dailyDollarCap"), false);
+  });
+
+  it("warns in words when the stall timeout is 0 and when the sandbox is off", async () => {
+    const fx = fixture();
+    writeConfig(fx, (config) => {
+      config.stallTimeoutMs = 0;
+      config.sandbox = { mode: "off" };
+    });
+    const page = await openPage(fx, "/settings/limits", "limits");
+    assert.equal(page.byId("stall-timeout").value, "0");
+    assert.equal(page.byId("stall-timeout-warn").hidden, false);
+    assert.equal(page.byId("stall-timeout-warn").textContent, "Off. A run that hangs will not be stopped.");
+    page.type("stall-timeout", "15");
+    assert.equal(page.byId("stall-timeout-warn").hidden, true, "the warning follows the input");
+    page.type("stall-timeout", "0");
+    assert.equal(page.byId("stall-timeout-warn").textContent, "Off. A run that hangs will not be stopped.");
+
+    const toggle = page.byId("sandbox-mode");
+    assert.equal(toggle.getAttribute("aria-checked"), "false");
+    assert.equal(page.byId("sandbox-mode-warn").hidden, false);
+    assert.equal(page.byId("sandbox-mode-warn").textContent, "Off. Agents run on this machine with your access.");
+    page.click(toggle);
+    assert.equal(toggle.getAttribute("aria-checked"), "true");
+    assert.equal(page.byId("sandbox-mode-warn").hidden, true);
+    assert.match(bar(page).text, /in Sandbox: Run agents in Docker/);
+    page.type("stall-timeout", "15");
+    page.submit();
+    await settle();
+    assert.deepEqual((puts(page)[0]?.body?.sandbox as { mode: string }).mode, "docker");
+    page.click(toggle);
+    assert.equal(page.byId("sandbox-mode-warn").textContent, "Off. Agents run on this machine with your access.");
+  });
+
+  it("shows what kiln sandbox reports when the sandbox is on and cannot start, and nothing when off", async () => {
+    const fx = fixture();
+    const config = loadKilnConfig(fx.configPath);
+    const expected = sandboxPreflightMessage(config, NO_DOCKER);
+    assert.ok(expected, "the fixture's sandbox is docker, with no docker");
+    const status = settingsStatus(config, NO_DOCKER);
+    assert.deepEqual(status.sandboxCheck, { on: true, problem: expected });
+    const page = await openPage(fx, "/settings/sandbox", "sandbox", { ...status });
+    const check = page.byId("sandbox-check");
+    assert.equal(check.hidden, false);
+    assert.deepEqual(check.querySelectorAll("p").map((line) => line.textContent), expected.split("\n"));
+    assert.equal(page.byId("sandbox-mode-warn").hidden, true);
+
+    writeConfig(fx, (file) => {
+      file.sandbox = { mode: "off" };
+    });
+    const off = settingsStatus(loadKilnConfig(fx.configPath), NO_DOCKER);
+    assert.deepEqual(off.sandboxCheck, { on: false });
+    const offPage = await openPage(fx, "/settings/sandbox", "sandbox", { ...off });
+    assert.equal(offPage.byId("sandbox-check").hidden, true);
+    assert.equal(offPage.byId("sandbox-check").textContent, "");
+  });
+
+  it("resets the allowed sites to exactly the default list", async () => {
+    const fx = fixture();
+    const page = await openPage(fx, "/settings/sandbox", "sandbox");
+    assert.equal(page.byId("sandbox-domains").value, "example.com");
+    page.click(page.byId("sandbox-domains-reset"));
+    assert.equal(page.byId("sandbox-domains").value, DEFAULT_SANDBOX_DOMAINS.join("\n"));
+    assert.equal(bar(page).text, "1 unsaved change, in Sandbox: Sites agents may reach");
+    page.submit();
+    await settle();
+    const sandbox = puts(page)[0]?.body?.sandbox as { allowDomains: string[] };
+    assert.deepEqual(sandbox.allowDomains, [...DEFAULT_SANDBOX_DOMAINS]);
+  });
+
+  it("round-trips every limit and the sandbox byte for byte", async () => {
+    const fx = fixture();
+    const config = {
+      repos: { kiln: { path: join(fx.home, "kiln"), test: "npm test", deliver: "local" } },
+      maxConcurrent: 3,
+      dailyDollarCap: 7.5,
+      stallTimeoutMs: 1000000,
+      maxAttempts: 4,
+      maxSameFingerprint: 2,
+      maxFixRounds: 5,
+      keepWorktrees: true,
+      adapter: "mock",
+      sandbox: { mode: "docker", allowDomains: ["example.com", "api.example.com"] },
+      board: { theme: "nord" },
+    };
+    const contents = `${JSON.stringify(config, null, 2)}\n`;
+    writeFileSync(fx.configPath, contents);
+    const page = await openPage(fx, "/settings/limits", "limits", { spentToday: 1.5, sandboxCheck: { on: true } });
+    assert.equal(page.byId("stall-timeout").value, "16.7");
+    // Save without touching these values: one other edit, saved, then put back and saved.
+    page.type("max-concurrent", "4");
+    page.submit();
+    await settle();
+    page.type("max-concurrent", "3");
+    page.submit();
+    await settle();
+    const sent = puts(page);
+    assert.equal(sent.length, 2);
+    for (const request of sent) {
+      assert.equal(request.body?.stallTimeoutMs, 1000000);
+      assert.equal(request.body?.dailyDollarCap, 7.5);
+    }
+    assert.equal(readFileSync(fx.configPath, "utf8"), contents);
+
+    // A PUT that echoes the read-only fields writes nothing for them.
+    const loaded = readSettings(fx.configPath, {}, fx.home);
+    assert.ok(loaded.ok);
+    const echoed = saveSettings(
+      fx.configPath,
+      { ...sent[1]?.body, revision: loaded.document.revision, spentToday: 1.5, sandboxCheck: { on: true, problem: "x" } },
+      fx.home,
+      {},
+    );
+    assert.ok(echoed.ok, JSON.stringify(echoed));
+    assert.equal(readFileSync(fx.configPath, "utf8"), contents);
   });
 });
 
