@@ -112,6 +112,33 @@ export function readRunActivity(
   };
 }
 
+const parsedSessions = new Map<string, { stamp: string; parsed: SourceFile }>();
+
+/**
+ * A session file parsed once per change. The board reads every run's
+ * sessions on every status read to find its newest activity, and a session
+ * runs to megabytes. Callers do not mutate the result.
+ */
+function sessionOf(file: string, phase: string, name: string): SourceFile {
+  let stamp = "";
+  try {
+    const stat = statSync(file);
+    stamp = `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    // Unreadable: parse what textOf returns and do not keep it.
+  }
+  const hit = parsedSessions.get(file);
+  if (stamp && hit?.stamp === stamp) return hit.parsed;
+  const parsed = parseSession(textOf(file), phase, name, mtimeOf(file));
+  if (stamp) {
+    parsedSessions.delete(file);
+    parsedSessions.set(file, { stamp, parsed });
+    // ponytail: oldest-inserted eviction at 200 files. Make it LRU if a board ever shows more runs than that.
+    if (parsedSessions.size > 200) parsedSessions.delete(parsedSessions.keys().next().value as string);
+  }
+  return parsed;
+}
+
 function loadSources(runDir: string): SourceFile[] {
   const order = phaseState(runDir).order;
   const sessions = new Set<string>();
@@ -121,7 +148,7 @@ function loadSources(runDir: string): SourceFile[] {
     if (!phase) continue;
     sessions.add(phase);
     const file = join(runDir, "sessions", name);
-    sources.push(parseSession(textOf(file), phase, name, mtimeOf(file)));
+    sources.push(sessionOf(file, phase, name));
   }
   for (const name of dirNames(join(runDir, "artifacts"))) {
     const match = ARTIFACT_FILE.exec(name);
