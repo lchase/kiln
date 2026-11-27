@@ -374,7 +374,9 @@ interface Page {
   submit(): void;
   unload(): FakeEvent;
   pop(path: string): void;
-  confirmAnswer: { value: boolean };
+  /** Checks a radio (unchecking its group), then fires click and change as a browser does. */
+  check(node: Node): void;
+  confirmAnswer: { value: boolean; calls: number };
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
@@ -393,7 +395,7 @@ async function openPage(fx: Fixture, path = "/settings", section: SettingsSectio
   const history = { pushed: [] as string[], replaced: [] as string[] };
   const [pathname, search = ""] = path.split("?");
   const location = { pathname: pathname ?? "/settings", search: search ? `?${search}` : "", hash: "", reload() {} };
-  const confirmAnswer = { value: true };
+  const confirmAnswer = { value: true, calls: 0 };
   const document = {
     body: bodyEl,
     documentElement: htmlEl,
@@ -422,7 +424,10 @@ async function openPage(fx: Fixture, path = "/settings", section: SettingsSectio
   };
   const window = {
     location,
-    confirm: () => confirmAnswer.value,
+    confirm: () => {
+      confirmAnswer.calls += 1;
+      return confirmAnswer.value;
+    },
     addEventListener: (type: string, fn: Listener) => {
       (winListeners[type] ??= []).push(fn);
     },
@@ -535,6 +540,14 @@ async function openPage(fx: Fixture, path = "/settings", section: SettingsSectio
       };
       for (const fn of winListeners.beforeunload ?? []) fn(event);
       return event;
+    },
+    check: (node) => {
+      const name = node.getAttribute("name");
+      for (const other of root.querySelectorAll("input")) if (name && other.getAttribute("name") === name) other.checked = false;
+      node.checked = true;
+      dispatch(node, "click");
+      dispatch(node, "input");
+      dispatch(node, "change");
     },
     pop: (next) => {
       location.pathname = next;
@@ -716,7 +729,21 @@ describe("settings page script", () => {
     assert.deepEqual(bar(page), { hidden: false, text: "1 unsaved change, in Repos: kiln test command" });
     page.click(page.byId("repo-done"));
 
-    page.click(page.byId("repo-list").querySelector('[data-repo-remove="web"]') as Node);
+    const fileBefore = readFileSync(fx.configPath, "utf8");
+    page.click(page.byId("repo-list").querySelector('[data-repo-edit="web"]') as Node);
+    page.click(page.byId("repo-remove"));
+    assert.equal(page.byId("repo-remove-confirm").hidden, false);
+    assert.equal(page.byId("repo-remove-text").textContent, "Remove web? The checkout on disk is left as it is.");
+    assert.equal(page.byId("repo-remove-keep").focused > 0, true, "focus moves to Keep");
+    page.click(page.byId("repo-remove-keep"));
+    assert.equal(page.byId("repo-remove-confirm").hidden, true);
+    assert.equal(bar(page).text.includes("web removed"), false, "Keep removes nothing");
+    page.click(page.byId("repo-remove"));
+    page.click(page.byId("repo-remove-yes"));
+    assert.equal(page.confirmAnswer.calls, 0, "no browser dialog");
+    assert.equal(page.byId("repo-editor").hidden, true);
+    assert.equal(page.byId("repo-list").querySelector('[data-repo-edit="web"]'), null, "the removed repo leaves the table");
+    assert.equal(readFileSync(fx.configPath, "utf8"), fileBefore, "nothing is written before Save");
     page.click(page.byId("repo-add"));
     page.type("repo-name", "docs");
     page.type("repo-path", join(fx.home, "docs"));
@@ -833,5 +860,266 @@ describe("settings page script", () => {
     const facts = page.byId("settings-nav");
     assert.equal(facts.querySelector('[data-settings-fact="jira"]')?.textContent, "not set up");
     assert.equal(facts.querySelector('[data-settings-fact="jira"]')?.getAttribute("data-state"), null);
+  });
+});
+
+function editConfig(fx: Fixture, change: (config: { repos: Record<string, Record<string, unknown>> }) => void): void {
+  const config = JSON.parse(readFileSync(fx.configPath, "utf8")) as { repos: Record<string, Record<string, unknown>> };
+  change(config);
+  writeFileSync(fx.configPath, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+function repoRows(page: Page): Node[] {
+  return page.byId("repo-list").querySelectorAll("tr");
+}
+
+function cells(row: Node): string[] {
+  return row.querySelectorAll("td").map((cell) => cell.textContent);
+}
+
+function rowOf(page: Page, name: string): Node {
+  const row = repoRows(page).find((tr) => tr.querySelector(".repo-name")?.textContent === name);
+  assert.ok(row, `row ${name}`);
+  return row;
+}
+
+function radio(page: Page, value: string): Node {
+  const node = page.byId("repo-deliver").querySelector(`input[value="${value}"]`);
+  assert.ok(node, value);
+  return node;
+}
+
+function savedRepos(fx: Fixture): Record<string, Record<string, unknown>> {
+  return (JSON.parse(readFileSync(fx.configPath, "utf8")) as { repos: Record<string, Record<string, unknown>> }).repos;
+}
+
+describe("settings repos table", () => {
+  it("renders a table with one row per repo, Add repo above it, and the missing-test warning", async () => {
+    const fx = fixture();
+    editConfig(fx, (config) => {
+      delete config.repos.web?.test;
+      config.repos.api = { path: join(fx.home, "kiln"), deliver: "pr" };
+    });
+    const html = pageHtml("repos");
+    const pane = html.slice(html.indexOf('id="settings-repos"'), html.indexOf('id="settings-limits"'));
+    assert.ok(pane.indexOf('id="repo-add"') < pane.indexOf("<table"), "Add repo comes before the table");
+    assert.doesNotMatch(pane, /repo-row/);
+
+    const page = await openPage(fx);
+    const table = page.byId("settings-repos").querySelector("table.repo-table");
+    assert.ok(table);
+    assert.ok(table.closest(".repo-table-wrap"));
+    const heads = table.querySelectorAll("thead th");
+    assert.deepEqual(heads.map((th) => th.getAttribute("scope")), ["col", "col", "col", "col"]);
+    assert.deepEqual(heads.map((th) => th.textContent), ["Name", "Delivers as", "Test command", "Actions"]);
+    assert.ok(heads[3]?.querySelector(".sr-only"), "Actions is visually hidden");
+
+    assert.deepEqual(repoRows(page).map((row) => row.querySelector(".repo-name")?.textContent), ["api", "kiln", "web"]);
+    assert.deepEqual(cells(rowOf(page, "kiln")), [`kiln${join(fx.home, "kiln")}`, "Pull request to main", "npm test", "Edit"]);
+    assert.deepEqual(cells(rowOf(page, "web")), [`web${join(fx.home, "web")}`, "Local branch", "Not set. Jobs cannot start.", "Edit"]);
+    assert.equal(cells(rowOf(page, "api"))[1], "Pull request to main", "a blank base reads as main");
+    assert.ok(rowOf(page, "web").querySelector(".repo-test-missing"));
+    assert.equal(page.byId("settings-repos").querySelector(".repo-row"), null);
+  });
+
+  it("opens one repo's form under the table with described fields, and Add shows name and path first", async () => {
+    const page = await openPage(fixture());
+    assert.equal(page.byId("repo-editor").hidden, true);
+    page.click(rowOf(page, "kiln").querySelector("[data-repo-edit]") as Node);
+    const editor = page.byId("repo-editor");
+    assert.equal(editor.hidden, false);
+    const pane = page.byId("settings-repos");
+    const order = pane.elements();
+    assert.ok(order.indexOf(editor) > order.indexOf(pane.querySelector(".repo-table-wrap") as Node), "the form is under the table");
+
+    assert.equal(cells(rowOf(page, "kiln"))[3], "Editing");
+    assert.equal(rowOf(page, "kiln").querySelector("[data-repo-edit]"), null);
+    assert.ok(rowOf(page, "web").querySelector("[data-repo-edit]"));
+    assert.equal(page.byId("repo-editor-title").textContent, "kiln");
+    assert.equal(page.byId("repo-editor-head").hidden, false);
+    assert.equal(editor.querySelector('[data-repo-ident="name"]')?.hidden, true, "name is read-only on Edit");
+    assert.equal(editor.querySelector('[data-repo-ident="path"]')?.hidden, true, "path is read-only on Edit");
+    assert.equal(page.byId("repo-name").value, "kiln", "the name input keeps its value");
+    assert.equal(page.byId("repo-remove").hidden, false);
+
+    assert.equal(page.byId("hint-repo-test").textContent, "Runs in the job's worktree after each build.");
+    assert.equal(page.byId("hint-repo-base").textContent, "Pull requests target this branch.");
+    const deliver = page.byId("repo-deliver");
+    assert.equal(deliver.tagName, "FIELDSET");
+    assert.equal(deliver.querySelector("legend")?.textContent, "When a job is approved");
+    const choices = deliver.querySelectorAll("label");
+    assert.deepEqual(
+      choices.map((label) => [label.querySelector("input")?.getAttribute("type"), label.querySelector("input")?.getAttribute("value"), label.textContent]),
+      [
+        ["radio", "pr", "Open a draft pull requestKiln pushes the branch. You merge."],
+        ["radio", "local", "Keep a local branchNothing is pushed."],
+      ],
+    );
+    assert.equal(radio(page, "pr").checked, true);
+
+    const more = page.byId("repo-more");
+    assert.equal(more.tagName, "DETAILS");
+    assert.equal("open" in more.attrs, false, "closed by default");
+    assert.equal(more.querySelector("summary")?.textContent, "Naming and limits for this repo");
+    for (const id of ["repo-pr-title", "repo-branch", "repo-max-attempts", "repo-max-fix-rounds"]) {
+      assert.ok(more.querySelector(`#${id}`), id);
+    }
+    assert.match(page.byId("hint-pr-title").textContent, /^Empty uses the default, \[\{issue\}\] \{title\}/);
+    assert.match(page.byId("hint-branch").textContent, /^Empty uses the default, \{issue\}-\{slug\}/);
+    assert.equal(page.byId("hint-repo-attempts").textContent, "Empty uses the global setting, 3.");
+    assert.equal(page.byId("hint-repo-rounds").textContent, "Empty uses the global setting, 2.");
+
+    page.click(page.byId("repo-add"));
+    assert.equal(page.byId("repo-editor-head").hidden, true);
+    assert.equal(editor.querySelector('[data-repo-ident="name"]')?.hidden, false);
+    assert.equal(editor.querySelector('[data-repo-ident="path"]')?.hidden, false);
+    assert.ok(page.byId("repo-browse"));
+    assert.equal(page.byId("repo-remove").hidden, true, "nothing to remove on Add");
+    assert.equal(page.byId("repo-name").focused > 0, true);
+    assert.equal(radio(page, "local").checked, true);
+    assert.ok(rowOf(page, "kiln").querySelector("[data-repo-edit]"), "kiln is no longer the open row");
+  });
+
+  it("hides Base branch for a local branch and saves the deliver choice", async () => {
+    const fx = fixture();
+    const page = await openPage(fx);
+    page.click(rowOf(page, "kiln").querySelector("[data-repo-edit]") as Node);
+    assert.equal(page.byId("repo-base-field").hidden, false);
+    page.check(radio(page, "local"));
+    assert.equal(page.byId("repo-base-field").hidden, true);
+    assert.deepEqual(bar(page), { hidden: false, text: "1 unsaved change, in Repos: kiln deliver" });
+    page.submit();
+    await settle();
+    assert.equal(savedRepos(fx).kiln?.deliver, "local");
+
+    page.click(rowOf(page, "web").querySelector("[data-repo-edit]") as Node);
+    assert.equal(page.byId("repo-base-field").hidden, true);
+    page.check(radio(page, "pr"));
+    assert.equal(page.byId("repo-base-field").hidden, false);
+    page.type("repo-base", "develop");
+    page.submit();
+    await settle();
+    assert.equal(savedRepos(fx).web?.deliver, "pr");
+    assert.equal(savedRepos(fx).web?.base, "develop");
+    assert.equal(cells(rowOf(page, "web"))[1], "Pull request to develop");
+  });
+
+  it("saves every repo field under the same keys, numbers as numbers, and keeps unknown keys", async () => {
+    const fx = fixture();
+    mkdirSync(join(fx.home, "docs"));
+    editConfig(fx, (config) => {
+      (config.repos.web as Record<string, unknown>).custom = "keep-me";
+    });
+    const page = await openPage(fx);
+
+    page.click(rowOf(page, "web").querySelector("[data-repo-edit]") as Node);
+    page.type("repo-test", "npm ci && npm test");
+    page.check(radio(page, "pr"));
+    page.type("repo-base", "trunk");
+    page.type("repo-pr-title", "{issue}: {title}");
+    page.type("repo-branch", "kiln/{issue}");
+    page.type("repo-max-attempts", "5");
+    page.type("repo-max-fix-rounds", "1");
+
+    page.click(page.byId("repo-add"));
+    page.type("repo-name", "docs");
+    page.type("repo-path", join(fx.home, "docs"));
+    page.type("repo-test", "make check");
+    page.check(radio(page, "local"));
+    page.click(page.byId("repo-done"));
+    page.click(page.byId("settings-save"));
+    page.submit();
+    await settle();
+
+    const sent = puts(page);
+    assert.equal(sent.length, 1);
+    const repos = (sent[0]?.body?.repos ?? {}) as Record<string, Record<string, unknown>>;
+    const web = {
+      path: join(fx.home, "web"),
+      test: "npm ci && npm test",
+      deliver: "pr",
+      base: "trunk",
+      prTitle: "{issue}: {title}",
+      branch: "kiln/{issue}",
+      maxAttempts: 5,
+      maxFixRounds: 1,
+    };
+    const docs = { path: join(fx.home, "docs"), test: "make check", deliver: "local" };
+    assert.deepEqual(repos.web, web);
+    assert.deepEqual(repos.docs, docs);
+    assert.deepEqual(repos.kiln, {
+      path: join(fx.home, "kiln"),
+      test: "npm test",
+      deliver: "pr",
+      base: "main",
+      prTitle: "[{issue}] {title}",
+      branch: "{issue}-{slug}",
+      maxAttempts: 4,
+      maxFixRounds: 3,
+    });
+    const file = savedRepos(fx);
+    assert.deepEqual(file.web, { ...web, custom: "keep-me" });
+    assert.deepEqual(file.docs, docs);
+    assert.equal(bar(page).hidden, true);
+  });
+
+  it("shows a rejected path or name on its field, keeps the form open, and keeps edits across forms", async () => {
+    const fx = fixture();
+    const page = await openPage(fx);
+    page.click(rowOf(page, "kiln").querySelector("[data-repo-edit]") as Node);
+    page.type("repo-test", "npm run all");
+    page.click(rowOf(page, "web").querySelector("[data-repo-edit]") as Node);
+    assert.equal(page.byId("repo-name").value, "web");
+    assert.equal(cells(rowOf(page, "web"))[3], "Editing");
+    page.click(rowOf(page, "kiln").querySelector("[data-repo-edit]") as Node);
+    assert.equal(page.byId("repo-test").value, "npm run all", "the first form's edit is kept");
+    assert.deepEqual(bar(page), { hidden: false, text: "1 unsaved change, in Repos: kiln test command" });
+
+    page.respond.next = { status: 400, data: { error: "Settings are invalid.", fields: { "repos.web.path": "Path does not exist." } } };
+    page.submit();
+    await settle();
+    const editor = page.byId("repo-editor");
+    assert.equal(editor.hidden, false);
+    assert.equal(page.byId("repo-name").value, "web", "the rejected repo's form opens");
+    assert.equal(editor.querySelector('[data-repo-ident="path"]')?.hidden, false, "path is revealed on Edit");
+    const pathSlot = editor.querySelector('[data-error="path"]');
+    assert.equal(pathSlot?.hidden, false);
+    assert.equal(pathSlot?.textContent, "Path does not exist.");
+    assert.equal(bar(page).hidden, false);
+
+    page.respond.next = { status: 400, data: { error: "Settings are invalid.", fields: { "repos.kiln.maxFixRounds": "Too small." } } };
+    page.submit();
+    await settle();
+    assert.equal(page.byId("repo-name").value, "kiln");
+    assert.equal("open" in page.byId("repo-more").attrs || (page.byId("repo-more") as unknown as { open?: boolean }).open === true, true);
+    assert.equal(editor.querySelector('[data-error="repoRounds"]')?.textContent, "Too small.");
+
+    page.click(page.byId("repo-add"));
+    page.type("repo-name", "bad name");
+    page.type("repo-path", join(fx.home, "web"));
+    page.respond.next = { status: 400, data: { error: "Settings are invalid.", fields: { "repos.bad name": "Invalid repo name." } } };
+    page.submit();
+    await settle();
+    assert.equal(editor.hidden, false, "a refused save leaves the added repo's form open");
+    assert.equal(page.byId("repo-name").value, "bad name");
+    const nameSlot = editor.querySelector('[data-error="name"]');
+    assert.equal(nameSlot?.hidden, false);
+    assert.equal(nameSlot?.textContent, "Invalid repo name.");
+    assert.equal(editor.querySelector('[data-repo-ident="name"]')?.hidden, false);
+  });
+
+  it("opens the rejected repo's form even when the open form no longer flushes", async () => {
+    const fx = fixture();
+    const page = await openPage(fx);
+    page.click(page.byId("repo-add"));
+    page.type("repo-name", "docs");
+    page.type("repo-path", join(fx.home, "web"));
+    page.respond.next = { status: 400, data: { error: "Settings are invalid.", fields: { "repos.web.test": "Test is required." } } };
+    page.submit();
+    page.type("repo-name", "");
+    await settle();
+    assert.equal(page.byId("repo-editor").hidden, false);
+    assert.equal(page.byId("repo-name").value, "web", "the rejected repo's form opens");
+    assert.equal(page.byId("repo-editor").querySelector('[data-error="test"]')?.textContent, "Test is required.");
   });
 });

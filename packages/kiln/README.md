@@ -391,6 +391,13 @@ down the side: Repos, Limits and retries, Sandbox, Triggers (with routes under t
 Appearance, and Edit the file. Each has its own address, such as `/settings/triggers`. A bar at the bottom lists unsaved
 changes and has Discard and Save changes.
 
+Repos is a table: each repo's name and path, how it delivers ("Pull request to main" or "Local branch"), and its test
+command. A repo with no test command says "Not set. Jobs cannot start." Edit opens that repo's form under the table:
+the test command, the base branch (shown only for a pull request), "When a job is approved" (open a draft pull request,
+or keep a local branch), and a closed "Naming and limits for this repo" section with the pull request title and branch
+templates, max attempts, and max fix rounds. Add repo asks for a name and a path first. Remove repo asks on the page,
+and the repo stays in the file until Save changes. To rename a repo or change its path, use Edit the file.
+
 A cron fires once per slot. While serve was down, startup fires the latest missed slot once and does not replay the ones behind it. A Jira poll that was missed does the same: one search, not one per skipped interval. The router writes `trigger.routed` with a `dedupe` property (`review:<repo>:<number>:<head sha>`, `jira:<trigger>:<issue>`, `pr:<job>:<comment>`). A later tick that sees that value does not create another job. Comments and commits from `kiln`, a `[bot]` login, a `kiln:` subject, or a `Kiln-Job` trailer are ignored.
 
 A failed fire stores `last_error` and `lastErrorAt` under `<kiln-home>/triggers/state.json`, appends `trigger.failed`, and waits for the next slot. It does not retry on the next tick. Pause and the daily dollar cap append `trigger.skipped` with reason `paused` or `capped` and do not queue the fire. A review over the per-fire cap is `burst-cap`. A review that would pass the number of queued or running review jobs is `queued-cap`. Those two are not queued, so the next fire can pick them up. A disable is read again after the pull-request list returns and before each job is created, including the startup fire, so a trigger that is already disabled does not fire.
