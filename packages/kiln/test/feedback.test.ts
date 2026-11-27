@@ -7,7 +7,10 @@ import { after, describe, it } from "node:test";
 import { buildAttention } from "../src/attention.js";
 import { loadKilnConfig, type LoadedKilnConfig } from "../src/config.js";
 import { writeDelivery } from "../src/delivery.js";
-import { readStatus, runStatus, runTick } from "../src/driver.js";
+import { readStatus, retryJob, runStatus, runTick } from "../src/driver.js";
+import { readEvents } from "../src/events.js";
+import { projectJob } from "../src/job-view.js";
+import { ledgerRows } from "../src/ledger.js";
 import {
   readFeedbackLedger,
   writeFeedbackLedger,
@@ -90,7 +93,14 @@ interface World {
   host: KilnHost;
 }
 
-function world(options: { maxFixRounds?: number } = {}): World {
+interface WorldOptions {
+  maxFixRounds?: number;
+  test?: string;
+  deliver?: "pr" | "local";
+  prState?: PullRequestState;
+}
+
+function world(options: WorldOptions = {}): World {
   const root = mkdtempSync(join(tmpdir(), "kiln-feedback-"));
   keep.push(root);
   const { checkout, origin, head } = initRepo(root);
@@ -107,8 +117,8 @@ function world(options: { maxFixRounds?: number } = {}): World {
         repos: {
           sample: {
             path: checkout,
-            test: "node --test test.mjs",
-            deliver: "pr",
+            test: options.test ?? "node --test test.mjs",
+            deliver: options.deliver ?? "pr",
             base: "main",
           },
         },
@@ -152,6 +162,10 @@ function world(options: { maxFixRounds?: number } = {}): World {
     prUrl: "https://example.com/sample/widget/pull/4",
   });
   const github = new ClosedGitHub();
+  if (options.prState) {
+    const state = options.prState;
+    github.view = () => ({ state, mergedAt: state === "MERGED" ? "2026-10-26T00:30:00Z" : null });
+  }
   const reads: PullRequestFeedback[] = [];
   const starts: string[][] = [];
   const feedback = {
@@ -620,5 +634,282 @@ describe("pull request feedback", { concurrency: 1 }, () => {
     assert.match(closedHtml, /Needs a decision/);
     assert.match(closedHtml, /data-state="needs-human"/);
     assert.match(closedHtml, /Fix round cap/);
+  });
+});
+
+const PR_BRANCH = "kiln/sample-widget";
+
+/**
+ * Open pull request on `kiln/sample-widget` that changed `widget.txt`. Then the base moves:
+ * `same` edits that line too, `other` edits a different file.
+ */
+function conflictWorld(change: "same" | "other", options: WorldOptions = {}): World & { prHead: string } {
+  const box = world(options);
+  writeFileSync(join(box.checkout, "widget.txt"), "base\n");
+  git(box.checkout, ["add", "widget.txt"]);
+  git(box.checkout, ["commit", "-q", "-m", "widget"]);
+  git(box.checkout, ["push", "-q", "origin", "main"]);
+  git(box.checkout, ["checkout", "-q", "-b", "pr-work"]);
+  writeFileSync(join(box.checkout, "widget.txt"), "from the pull request\n");
+  git(box.checkout, ["commit", "-q", "-am", "pull request change"]);
+  const prHead = git(box.checkout, ["rev-parse", "HEAD"]).trim();
+  git(box.checkout, ["push", "-q", "origin", `HEAD:refs/heads/${PR_BRANCH}`]);
+  git(box.checkout, ["checkout", "-q", "main"]);
+  if (change === "same") {
+    writeFileSync(join(box.checkout, "widget.txt"), "from the base\n");
+    git(box.checkout, ["commit", "-q", "-am", "base change"]);
+  } else {
+    writeFileSync(join(box.checkout, "other.txt"), "base only\n");
+    git(box.checkout, ["add", "other.txt"]);
+    git(box.checkout, ["commit", "-q", "-m", "base change"]);
+  }
+  git(box.checkout, ["push", "-q", "origin", "main"]);
+  writeDelivery(box.config.kilnDir, {
+    jobId: box.jobId,
+    runId: "base01",
+    branch: PR_BRANCH,
+    base: "main",
+    sha: prHead,
+    pushed: true,
+    prNumber: 4,
+    prUrl: "https://example.com/sample/widget/pull/4",
+  });
+  return { ...box, prHead };
+}
+
+/** `null` leaves `mergeable` out, the way an older gh answer would. */
+function conflicting(headSha: string, mergeable: PullRequestFeedback["mergeable"] | null = "CONFLICTING"): PullRequestFeedback {
+  return {
+    operatorLogin: "kiln-operator",
+    headSha,
+    checks: [],
+    reviews: [],
+    comments: [],
+    ...(mergeable ? { mergeable } : {}),
+    base: "main",
+  };
+}
+
+function originHead(box: World): string {
+  return git(box.checkout, ["ls-remote", "origin", `refs/heads/${PR_BRANCH}`]).split(/\s+/)[0] ?? "";
+}
+
+function eventsNamed(box: World, name: string) {
+  return readEvents(box.config.kilnDir, { warn: () => {} }).filter((event) => event.event === name);
+}
+
+const PASS = `node -e "process.exit(0)"`;
+const FAIL = `node -e "console.log('BOOM-TEST-OUTPUT'); process.exit(1)"`;
+
+describe("pull request conflicts with the base", { concurrency: 1 }, () => {
+  it("starts one conflict round naming the base and the file, and nothing more on the same head", () => {
+    const box = conflictWorld("same", { test: PASS });
+    box.reads.push(conflicting(box.prHead));
+    const first = runTick(box.config, box.host, { now: new Date("2026-10-27T01:00:00.000Z") });
+    assert.match(first, /fix widget/);
+    assert.equal(box.starts.length, 1);
+    assert.equal(originHead(box), box.prHead);
+    const conflicted = eventsNamed(box, "pr.conflicted");
+    assert.equal(conflicted.length, 1);
+    assert.deepEqual(conflicted[0]?.properties, {
+      headSha: box.prHead,
+      base: "main",
+      once: `pr.conflicted:${box.prHead}`,
+    });
+    const ledger = readFeedbackLedger(box.config.kilnDir, box.jobId);
+    assert.ok(ledger && ledger !== "corrupt");
+    assert.equal(ledger.rounds.length, 1);
+    assert.equal(ledger.rounds[0]?.trigger, "conflict");
+    assert.equal(ledger.rounds[0]?.headSha, box.prHead);
+    assert.deepEqual(ledger.conflict, { headSha: box.prHead, base: "main", files: ["widget.txt"] });
+    const description = (box.starts[0] ?? []).find((arg) => arg.startsWith("description=")) ?? "";
+    assert.match(description, /git merge origin\/main/);
+    assert.match(description, /Do not rebase/);
+    assert.match(description, /Conflicts with main/);
+    assert.match(description, /widget\.txt/);
+
+    const status = readStatus(box.config, box.jobId, box.host);
+    const job = status.jobs[0];
+    assert.ok(job);
+    const view = projectJob(job, readEvents(box.config.kilnDir, { warn: () => {} }));
+    assert.equal(view.column, "running");
+    assert.equal(view.reason, "Conflicts with main, fixing");
+    assert.equal(buildAttention(status.jobs).needsYouCount, 0);
+
+    box.reads[0] = conflicting(box.prHead);
+    runTick(box.config, box.host, { now: new Date("2026-10-27T01:00:05.000Z") });
+    assert.equal(box.starts.length, 1);
+    const again = readFeedbackLedger(box.config.kilnDir, box.jobId);
+    assert.ok(again && again !== "corrupt");
+    assert.equal(again.rounds.length, 1);
+    assert.equal(eventsNamed(box, "pr.conflicted").length, 1);
+  });
+
+  it("merges a base that changed another file, runs the tests, and pushes with no agent", () => {
+    const box = conflictWorld("other", { test: PASS });
+    box.reads.push(conflicting(box.prHead));
+    const tick = runTick(box.config, box.host, { now: new Date("2026-10-27T02:00:00.000Z") });
+    assert.match(tick, /merged main into widget/);
+    assert.equal(box.starts.length, 0);
+    assert.equal(readFeedbackLedger(box.config.kilnDir, box.jobId), undefined);
+    const pushed = originHead(box);
+    assert.notEqual(pushed, box.prHead);
+    git(box.checkout, ["fetch", "-q", "origin"]);
+    assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", box.prHead, pushed], { cwd: box.checkout }).status, 0);
+    const mainHead = git(box.checkout, ["rev-parse", "origin/main"]).trim();
+    const parents = git(box.checkout, ["rev-list", "--parents", "-n", "1", pushed]).trim().split(" ").slice(1);
+    assert.deepEqual(parents, [box.prHead, mainHead]);
+    const updated = eventsNamed(box, "pr.updated");
+    assert.equal(updated.length, 1);
+    assert.deepEqual(updated[0]?.properties, { from: box.prHead, sha: pushed, agent: false, once: `pr.updated:${pushed}` });
+    assert.equal(git(box.checkout, ["worktree", "list"]).trim().split("\n").length, 1);
+    const status = readStatus(box.config, box.jobId, box.host);
+    assert.equal(status.jobs[0]?.state, "in-review");
+    assert.equal(status.jobs[0]?.prConflict, undefined);
+  });
+
+  it("starts a conflict round with the failing output when the merge is clean but the tests fail", () => {
+    const box = conflictWorld("other", { test: FAIL });
+    box.reads.push(conflicting(box.prHead));
+    const tick = runTick(box.config, box.host, { now: new Date("2026-10-27T03:00:00.000Z") });
+    assert.match(tick, /fix widget/);
+    assert.equal(box.starts.length, 1);
+    assert.equal(originHead(box), box.prHead);
+    assert.equal(eventsNamed(box, "pr.updated").length, 0);
+    const description = (box.starts[0] ?? []).find((arg) => arg.startsWith("description=")) ?? "";
+    assert.match(description, /Tests failed after merging main/);
+    assert.match(description, /BOOM-TEST-OUTPUT/);
+    const ledger = readFeedbackLedger(box.config.kilnDir, box.jobId);
+    assert.ok(ledger && ledger !== "corrupt");
+    assert.equal(ledger.rounds[0]?.trigger, "conflict");
+  });
+
+  it("changes nothing on UNKNOWN, a missing answer, or a failed read, and reads again next tick", () => {
+    for (const mergeable of ["UNKNOWN", null] as const) {
+      const box = conflictWorld("same", { test: PASS });
+      box.reads.push(conflicting(box.prHead, mergeable));
+      runTick(box.config, box.host, { now: new Date("2026-10-27T04:00:00.000Z") });
+      runTick(box.config, box.host, { now: new Date("2026-10-27T04:00:05.000Z") });
+      assert.equal(box.starts.length, 0);
+      assert.equal(readFeedbackLedger(box.config.kilnDir, box.jobId), undefined);
+      assert.equal(eventsNamed(box, "pr.conflicted").length, 0);
+      assert.equal(originHead(box), box.prHead);
+    }
+    const box = conflictWorld("same", { test: PASS });
+    let reads = 0;
+    box.host.feedback = {
+      read() {
+        reads += 1;
+        throw new Error("gh is down");
+      },
+    };
+    const tick = runTick(box.config, box.host, { now: new Date("2026-10-27T04:10:00.000Z") });
+    assert.match(tick, /feedback widget failed: gh is down/);
+    runTick(box.config, box.host, { now: new Date("2026-10-27T04:10:05.000Z") });
+    assert.equal(reads, 2);
+    assert.equal(box.starts.length, 0);
+    assert.equal(readFeedbackLedger(box.config.kilnDir, box.jobId), undefined);
+    assert.equal(eventsNamed(box, "pr.conflicted").length, 0);
+  });
+
+  it("never reads or merges a merged, closed, or deliver=local job", () => {
+    for (const options of [{ prState: "MERGED" }, { prState: "CLOSED" }, { deliver: "local" }] as const) {
+      const box = conflictWorld("other", { test: PASS, ...options });
+      let reads = 0;
+      box.host.feedback = {
+        read() {
+          reads += 1;
+          return conflicting(box.prHead);
+        },
+      };
+      runTick(box.config, box.host, { now: new Date("2026-10-27T05:00:00.000Z") });
+      assert.equal(reads, 0, JSON.stringify(options));
+      assert.equal(originHead(box), box.prHead);
+      assert.equal(eventsNamed(box, "pr.conflicted").length, 0);
+    }
+  });
+
+  it("stops at needs-human pr-conflict after maxFixRounds, and kiln retry lets a round start again", () => {
+    const box = conflictWorld("same", { test: PASS, maxFixRounds: 1 });
+    const older = "a".repeat(40);
+    writeFeedbackLedger(box.config.kilnDir, {
+      jobId: box.jobId,
+      rounds: [
+        {
+          round: 1,
+          headSha: older,
+          trigger: "conflict",
+          items: [{ kind: "conflict", source: `conflict:${older}`, summary: "Conflicts with main" }],
+          at: "2026-10-27T05:00:00.000Z",
+          outcome: "pushed",
+          fixRunId: "fix01",
+        },
+      ],
+    });
+    box.reads.push(conflicting(box.prHead));
+    const tick = runTick(box.config, box.host, { now: new Date("2026-10-27T06:00:00.000Z") });
+    assert.match(tick, /pr-conflict widget/);
+    assert.equal(box.starts.length, 0);
+    const status = readStatus(box.config, box.jobId, box.host);
+    const job = status.jobs[0];
+    assert.ok(job);
+    assert.equal(job.state, "needs-human");
+    assert.equal(job.feedbackReason, "pr-conflict");
+    const view = projectJob(job, readEvents(box.config.kilnDir, { warn: () => {} }));
+    assert.equal(view.column, "needs-hand");
+    assert.equal(view.reason, "Conflicts with main: widget.txt");
+    assert.equal(view.retry, true);
+    const hand = renderConsole("", buildAttention(status.jobs), { csrf: "", repos: [], workflows: [], section: "hand" });
+    assert.match(hand, /Conflicts with main: widget\.txt/);
+    const needsHuman = eventsNamed(box, "needs-human");
+    assert.equal(needsHuman.length, 1);
+
+    runTick(box.config, box.host, { now: new Date("2026-10-27T06:00:05.000Z") });
+    assert.equal(box.starts.length, 0);
+
+    const retried = retryJob(box.config, box.jobId, box.host);
+    assert.match(retried, /retry widget/);
+    const cleared = readFeedbackLedger(box.config.kilnDir, box.jobId);
+    assert.ok(cleared && cleared !== "corrupt");
+    assert.equal(cleared.exhausted, undefined);
+    assert.equal(cleared.conflict, undefined);
+    assert.equal(cleared.retryFrom, 1);
+    assert.equal(box.starts.length, 0);
+
+    const next = runTick(box.config, box.host, { now: new Date("2026-10-27T06:10:00.000Z") });
+    assert.match(next, /fix widget/);
+    assert.equal(box.starts.length, 1);
+    const reopened = readFeedbackLedger(box.config.kilnDir, box.jobId);
+    assert.ok(reopened && reopened !== "corrupt");
+    assert.equal(reopened.rounds.length, 2);
+    assert.equal(reopened.rounds[1]?.trigger, "conflict");
+  });
+
+  it("keeps a recorded conflict out of needs-you and out of the intervention ledger", () => {
+    const box = conflictWorld("same", { test: PASS });
+    writeFeedbackLedger(box.config.kilnDir, {
+      jobId: box.jobId,
+      rounds: [],
+      conflict: { headSha: box.prHead, base: "main", files: ["widget.txt"] },
+    });
+    const status = readStatus(box.config, box.jobId, box.host);
+    const job = status.jobs[0];
+    assert.ok(job);
+    assert.equal(job.state, "in-review");
+    const attention = buildAttention(status.jobs);
+    assert.equal(attention.needsYouCount, 0);
+    assert.equal(attention.inFlight.length, 1);
+    assert.equal(attention.inFlight[0]?.reason, "Conflicts with main, fixing");
+    const view = projectJob(job, []);
+    assert.equal(view.column, "running");
+    assert.equal(view.reason, "Conflicts with main, fixing");
+
+    const other = conflictWorld("other", { test: PASS });
+    other.reads.push(conflicting(other.prHead));
+    runTick(other.config, other.host, { now: new Date("2026-10-27T07:00:00.000Z") });
+    const events = readEvents(other.config.kilnDir, { warn: () => {} });
+    assert.ok(events.some((event) => event.event === "pr.conflicted"));
+    assert.ok(events.some((event) => event.event === "pr.updated"));
+    assert.deepEqual(ledgerRows(events), []);
   });
 });

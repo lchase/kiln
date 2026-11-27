@@ -7,8 +7,9 @@ import { isPublishableBranch } from "./pr-names.js";
 
 /**
  * Git remote and GitHub CLI, behind one seam so tests can fake `gh` and point
- * `origin` at a local bare repo. Nothing here merges a pull request or pushes
- * the base branch.
+ * `origin` at a local bare repo. Nothing here merges the pull request or
+ * pushes the base branch. `mergeBaseIntoBranch` merges the base into the pull
+ * request branch, never the other way.
  */
 export class HostError extends Error {
   constructor(message: string) {
@@ -95,7 +96,27 @@ export interface GitRemote {
   isAncestor(checkout: string, ancestor: string, descendant: string): boolean;
   /** Origin's default branch name, without the `origin/` prefix. */
   defaultBranch(checkout: string): string;
+  /**
+   * Merge `origin/<base>` into `headSha` in a throwaway worktree, run `test`,
+   * and push the merge commit onto `refs/heads/<branch>`. No rebase, no force.
+   * A rejected push throws. The worktree is always removed.
+   */
+  mergeBaseIntoBranch(checkout: string, input: MergeBaseInput): MergeBaseResult;
 }
+
+export interface MergeBaseInput {
+  branch: string;
+  base: string;
+  headSha: string;
+  /** Repo test command. Missing counts as `tests-failed`, so an agent takes over. */
+  test?: string;
+  timeoutMs: number;
+}
+
+export type MergeBaseResult =
+  | { status: "pushed"; sha: string }
+  | { status: "conflict"; files: string[] }
+  | { status: "tests-failed"; output: string };
 
 /** How a tick starts yak. Tests pass a stub. Production spawns the yak CLI. */
 export interface AgentStart {
@@ -383,6 +404,63 @@ export const realGitRemote: GitRemote = {
   isAncestor(checkout, ancestor, descendant) {
     const result = gitResult(checkout, ["merge-base", "--is-ancestor", ancestor, descendant]);
     return result.status === 0;
+  },
+
+  mergeBaseIntoBranch(checkout, input) {
+    const { branch, base, headSha } = input;
+    if (branch === base || branch === `refs/heads/${base}`) {
+      throw new HostError(`Refusing to push ${branch}: that is the base branch.`);
+    }
+    if (!isPublishableBranch(branch) || !isPublishableBranch(base)) {
+      throw new HostError(`Refusing to merge ${base} into ${branch}: that branch name is not safe.`);
+    }
+    if (!/^[0-9a-f]{40}$/.test(headSha)) throw new HostError(`Refusing to merge onto ${headSha}: not a commit sha.`);
+    realGitRemote.fetch(checkout);
+    const dir = mkdtempSync(join(tmpdir(), "kiln-merge-"));
+    const added = gitResult(checkout, ["worktree", "add", "--detach", dir, headSha]);
+    if (added.status !== 0) {
+      rmSync(dir, { recursive: true, force: true });
+      throw new HostError(`Could not check out ${headSha}: ${added.stderr.trim() || "git worktree add failed"}`);
+    }
+    try {
+      const merged = gitResult(dir, ["merge", "--no-ff", "--no-edit", `origin/${base}`]);
+      if (merged.status !== 0) {
+        const files = gitResult(dir, ["diff", "--name-only", "--diff-filter=U"]).stdout
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+        if (files.length === 0) {
+          throw new HostError(`Could not merge origin/${base}: ${(merged.stderr || merged.stdout).trim() || "git merge failed"}`);
+        }
+        return { status: "conflict", files };
+      }
+      const sha = realGitRemote.revParse(dir, "HEAD");
+      if (sha === headSha) throw new HostError(`${branch} already contains origin/${base}. Waiting for GitHub to agree.`);
+      if (!input.test?.trim()) return { status: "tests-failed", output: "No test command is set for this repo." };
+      // ponytail: the suite runs inside the tick. Move it to a background job if suites get slow.
+      const tested = spawnSync("sh", ["-c", input.test], {
+        cwd: dir,
+        encoding: "utf8",
+        env: gitEnv(),
+        timeout: input.timeoutMs,
+        maxBuffer: 16 * 1024 * 1024,
+      });
+      if (tested.status !== 0) {
+        const timedOut = tested.error && (tested.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
+        const output = [tested.stdout, tested.stderr, timedOut ? `Timed out after ${input.timeoutMs} ms.` : ""]
+          .filter(Boolean)
+          .join("\n");
+        return { status: "tests-failed", output: output || `Test command exited ${tested.status ?? "on a signal"}.` };
+      }
+      const pushed = gitResult(dir, ["push", "origin", `HEAD:refs/heads/${branch}`]);
+      if (pushed.status !== 0) {
+        throw new HostError(`Could not push the merge onto ${branch}: ${pushed.stderr.trim() || "git push failed"}`);
+      }
+      return { status: "pushed", sha };
+    } finally {
+      gitResult(checkout, ["worktree", "remove", "--force", dir]);
+      rmSync(dir, { recursive: true, force: true });
+    }
   },
 
   defaultBranch(checkout) {
