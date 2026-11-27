@@ -1606,13 +1606,44 @@ function settingsFact(id: SettingsSectionId, facts: SettingsFacts): string {
   return "";
 }
 
+interface SettingRow {
+  /** The control's id. The explanation, error, and warning ids derive from it. */
+  id: string;
+  label: string;
+  /** One line on what the setting does and what blank means. Trusted markup. */
+  explain: string;
+  /** `data-error` key for server validation errors. */
+  error: string;
+  /** Add a warning slot the script fills when the saved value is a problem. */
+  warn?: boolean;
+  /** A second muted line, such as how to fill the control. */
+  hint?: string;
+  /** Control markup, given the `aria-describedby` value to put on it. */
+  control: (describedBy: string) => string;
+}
+
+/** A setting row: label, one line of explanation, warning and error slots, then the control. */
+function settingRow(row: SettingRow): string {
+  const ids = [`${row.id}-explain`, ...(row.hint ? [`${row.id}-hint`] : []), ...(row.warn ? [`${row.id}-warn`] : []), `${row.id}-error`];
+  return `<div class="setting-row">
+<div class="setting-text"><label class="setting-label" for="${row.id}">${escapeHtml(row.label)}</label>
+<p class="setting-explain" id="${row.id}-explain">${row.explain}</p>${row.hint ? `
+<p class="setting-explain" id="${row.id}-hint">${escapeHtml(row.hint)}</p>` : ""}${row.warn ? `
+<div class="setting-warn" id="${row.id}-warn" hidden></div>` : ""}
+<p class="field-error" id="${row.id}-error" data-error="${row.error}" hidden></p></div>
+<div class="setting-control">${row.control(ids.join(" "))}</div>
+</div>`;
+}
+
 /** Section heading and one line on what it holds. */
-function settingsPane(id: SettingsSectionId, active: SettingsSectionId, description: string, body: string, extraClass = ""): string {
+function settingsPane(id: SettingsSectionId, active: SettingsSectionId, description: string, body: string, extraClass = "", action = ""): string {
   const title = SETTINGS_SECTIONS.find((section) => section.id === id)?.title ?? id;
   const hidden = id === active ? "" : " hidden";
   const cls = extraClass ? `settings-pane ${extraClass}` : "settings-pane";
+  const head = `<header class="settings-pane-head"><h2 id="settings-${id}-title">${escapeHtml(title)}</h2><p class="meta">${escapeHtml(description)}</p></header>`;
+  const top = action ? `<div class="settings-pane-top">${head}${action}</div>` : head;
   return `<section class="${cls}" id="settings-${id}" aria-labelledby="settings-${id}-title"${hidden}>
-<header class="settings-pane-head"><h2 id="settings-${id}-title">${escapeHtml(title)}</h2><p class="meta">${escapeHtml(description)}</p></header>
+${top}
 ${body}</section>`;
 }
 
@@ -1622,37 +1653,60 @@ function settingsForm(theme: BoardThemeId, active: SettingsSectionId, facts: Set
       "repos",
       active,
       "Checkouts Kiln may run jobs in. A job works in its own worktree and leaves your files alone.",
-      `<div id="repo-editor" hidden>
-<label class="field"><span class="k">Name</span><input id="repo-name" type="text" autocomplete="off" spellcheck="false"></label>
-<p class="field-error" data-error="name" hidden></p>
-<div class="field"><span class="k">Path</span><div class="path-row"><input id="repo-path" type="text" autocomplete="off" spellcheck="false" placeholder="~/code/web"><button type="button" class="pick" id="repo-browse">Browse</button></div></div>
-<div class="fs" id="repo-browser" hidden></div>
-<p class="field-error" data-error="path" hidden></p>
-<label class="field"><span class="k">Test command</span><input id="repo-test" type="text" autocomplete="off" spellcheck="false" placeholder="npm test"></label>
-<p class="field-error" data-error="test" hidden></p>
-<div class="field"><span class="k">Deliver</span><div class="seg" id="repo-deliver" role="group" aria-label="Deliver mode">
-<button type="button" data-deliver="local" aria-pressed="true">local</button>
-<button type="button" data-deliver="pr" aria-pressed="false">pr</button>
-</div></div>
-<p class="field-error" data-error="deliver" hidden></p>
-<label class="field"><span class="k">Base branch</span><input id="repo-base" type="text" autocomplete="off" spellcheck="false" placeholder="main"></label>
-<p class="field-error" data-error="base" hidden></p>
-<label class="field"><span class="k">PR title template</span><input id="repo-pr-title" type="text" autocomplete="off" spellcheck="false"></label>
-<p class="hint" id="hint-pr-title">Default [{issue}] {title}, which renders as [ABC-123] Title.</p>
-<p class="field-error" data-error="prTitle" hidden></p>
-<label class="field"><span class="k">Branch template</span><input id="repo-branch" type="text" autocomplete="off" spellcheck="false"></label>
-<p class="hint" id="hint-branch">Default {issue}-{slug}, which renders as ABC-123-slug.</p>
-<p class="field-error" data-error="branch" hidden></p>
-<label class="field"><span class="k">Max attempts</span><input id="repo-max-attempts" type="number" min="1" step="1" placeholder="inherit"></label>
-<p class="hint">Overrides the global attempt cap for this repo. Empty inherits.</p>
-<p class="field-error" data-error="repoAttempts" hidden></p>
-<label class="field"><span class="k">Max fix rounds</span><input id="repo-max-fix-rounds" type="number" min="1" step="1" placeholder="inherit"></label>
-<p class="hint">Overrides the global fix-round cap for this repo. Empty inherits.</p>
-<p class="field-error" data-error="repoRounds" hidden></p>
-<div class="d-actions"><button type="button" id="repo-done">Done</button></div>
+      `<div class="repo-table-wrap">
+<table class="repo-table">
+<thead><tr><th scope="col">Name</th><th scope="col">Delivers as</th><th scope="col">Test command</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+<tbody id="repo-list"></tbody>
+</table>
 </div>
-<div id="repo-list"></div>
-<div class="d-actions"><button type="button" id="repo-add">Add repo</button></div>`,
+<div id="repo-editor" class="repo-editor" hidden>
+<div class="repo-editor-head" id="repo-editor-head"><h3 id="repo-editor-title"></h3><span class="repo-editor-path" id="repo-editor-path"></span></div>
+<div class="repo-ident" data-repo-ident="name"><label class="field"><span class="k">Name</span><input id="repo-name" type="text" autocomplete="off" spellcheck="false"></label>
+<p class="field-error" data-error="name" hidden></p></div>
+<div class="repo-ident" data-repo-ident="path"><div class="field"><span class="k">Path</span><div class="path-row"><input id="repo-path" type="text" autocomplete="off" spellcheck="false" placeholder="~/code/web" aria-label="Path"><button type="button" class="pick" id="repo-browse">Browse</button></div></div>
+<div class="fs" id="repo-browser" hidden></div>
+<p class="field-error" data-error="path" hidden></p></div>
+<div class="repo-grid">
+<div class="field"><label class="k" for="repo-test">Test command</label><input id="repo-test" type="text" autocomplete="off" spellcheck="false" placeholder="npm test" aria-describedby="hint-repo-test">
+<p class="hint" id="hint-repo-test">Runs in the job's worktree after each build.</p>
+<p class="field-error" data-error="test" hidden></p></div>
+<div class="field" id="repo-base-field"><label class="k" for="repo-base">Base branch</label><input id="repo-base" type="text" autocomplete="off" spellcheck="false" placeholder="main" aria-describedby="hint-repo-base">
+<p class="hint" id="hint-repo-base">Pull requests target this branch.</p>
+<p class="field-error" data-error="base" hidden></p></div>
+</div>
+<fieldset id="repo-deliver" class="field repo-deliver"><legend class="k">When a job is approved</legend>
+<div class="repo-choices">
+<label class="repo-choice"><input type="radio" name="repo-deliver" value="pr"><span><span class="repo-choice-title">Open a draft pull request</span><span class="repo-choice-note">Kiln pushes the branch. You merge.</span></span></label>
+<label class="repo-choice"><input type="radio" name="repo-deliver" value="local" checked><span><span class="repo-choice-title">Keep a local branch</span><span class="repo-choice-note">Nothing is pushed.</span></span></label>
+</div>
+<p class="field-error" data-error="deliver" hidden></p>
+</fieldset>
+<details class="repo-more" id="repo-more">
+<summary>Naming and limits for this repo</summary>
+<p class="hint">Pull request title, branch name, attempts, and fix rounds. Each falls back to the global setting.</p>
+<div class="repo-grid">
+<div class="field"><label class="k" for="repo-pr-title">Pull request title template</label><input id="repo-pr-title" type="text" autocomplete="off" spellcheck="false" aria-describedby="hint-pr-title">
+<p class="hint" id="hint-pr-title">Empty uses the default, [{issue}] {title}, which renders as [ABC-123] Title.</p>
+<p class="field-error" data-error="prTitle" hidden></p></div>
+<div class="field"><label class="k" for="repo-branch">Branch name template</label><input id="repo-branch" type="text" autocomplete="off" spellcheck="false" aria-describedby="hint-branch">
+<p class="hint" id="hint-branch">Empty uses the default, {issue}-{slug}, which renders as ABC-123-slug.</p>
+<p class="field-error" data-error="branch" hidden></p></div>
+<div class="field"><label class="k" for="repo-max-attempts">Max attempts</label><input id="repo-max-attempts" type="number" min="1" step="1" aria-describedby="hint-repo-attempts">
+<p class="hint" id="hint-repo-attempts">Empty uses the global setting.</p>
+<p class="field-error" data-error="repoAttempts" hidden></p></div>
+<div class="field"><label class="k" for="repo-max-fix-rounds">Max fix rounds</label><input id="repo-max-fix-rounds" type="number" min="1" step="1" aria-describedby="hint-repo-rounds">
+<p class="hint" id="hint-repo-rounds">Empty uses the global setting.</p>
+<p class="field-error" data-error="repoRounds" hidden></p></div>
+</div>
+</details>
+<div class="repo-editor-foot">
+<button type="button" class="repo-remove" id="repo-remove">Remove repo</button>
+<div class="repo-remove-confirm" id="repo-remove-confirm" role="group" aria-labelledby="repo-remove-text" hidden><span id="repo-remove-text"></span><button type="button" class="repo-remove" id="repo-remove-yes">Remove</button><button type="button" id="repo-remove-keep">Keep</button></div>
+<button type="button" id="repo-done">Done</button>
+</div>
+</div>`,
+      "",
+      `<button type="button" class="btn" id="repo-add">Add repo</button>`,
     ),
     settingsPane(
       "limits",
@@ -1779,19 +1833,49 @@ function settingsForm(theme: BoardThemeId, active: SettingsSectionId, facts: Set
     settingsPane(
       "workflows",
       active,
-      "Your own workflow, prompt, and skill directories.",
-      `<label class="field"><span class="k">Workflows</span><input id="overlay-workflows" type="text" autocomplete="off" spellcheck="false" placeholder="workflows"></label>
-<p class="hint">Directory of local workflow files. Empty uses the kiln home workflows directory.</p>
-<p class="field-error" data-error="overlay.workflows" hidden></p>
-<label class="field"><span class="k">Prompts</span><input id="overlay-prompts" type="text" autocomplete="off" spellcheck="false" placeholder="prompts"></label>
-<p class="hint">Directory of prompt overrides. Empty uses the kiln home prompts directory.</p>
-<p class="field-error" data-error="overlay.prompts" hidden></p>
-<label class="field"><span class="k">Skills</span><input id="overlay-skills" type="text" autocomplete="off" spellcheck="false" placeholder="skills"></label>
-<p class="hint">Directory of skills. Empty uses the kiln home skills directory.</p>
-<p class="field-error" data-error="overlay.skills" hidden></p>
-<label class="field"><span class="k">Skill paths</span><textarea id="overlay-skill-paths" rows="3" spellcheck="false" placeholder="/home/dev/skills"></textarea></label>
-<p class="hint">One extra skill directory per line.</p>
-<p class="field-error" data-error="overlay.skillPaths" hidden></p>`,
+      "Your own workflows, prompts, and skills. Agents get skills only from here.",
+      `<div class="setting-rows">
+${settingRow({
+  id: "overlay-workflows",
+  label: "Local workflows",
+  explain: "A folder of your own workflow files. Blank uses the Kiln home <code>workflows</code> folder.",
+  error: "overlay.workflows",
+  control: (describedBy) =>
+    `<input id="overlay-workflows" type="text" autocomplete="off" spellcheck="false" placeholder="workflows" aria-describedby="${describedBy}">`,
+})}
+${settingRow({
+  id: "overlay-prompts",
+  label: "Prompt overrides",
+  explain: "A folder of prompt files that replace the shipped ones. Blank uses the Kiln home <code>prompts</code> folder.",
+  error: "overlay.prompts",
+  control: (describedBy) =>
+    `<input id="overlay-prompts" type="text" autocomplete="off" spellcheck="false" placeholder="prompts" aria-describedby="${describedBy}">`,
+})}
+${settingRow({
+  id: "overlay-skills",
+  label: "Skills folder",
+  explain: "A folder holding one folder per skill, each with a <code>SKILL.md</code>. Blank uses the Kiln home <code>skills</code> folder.",
+  error: "overlay.skills",
+  warn: true,
+  control: (describedBy) =>
+    `<input id="overlay-skills" type="text" autocomplete="off" spellcheck="false" placeholder="skills" aria-describedby="${describedBy}">`,
+})}
+${settingRow({
+  id: "overlay-skill-paths",
+  label: "More skill folders",
+  explain: "Agents do not see your Claude Code plugins or skills. List a plugin's <code>skills</code> folder here to give agents that skill.",
+  error: "overlay.skillPaths",
+  warn: true,
+  control: (describedBy) =>
+    `<textarea id="overlay-skill-paths" rows="3" spellcheck="false" placeholder="~/skills" aria-describedby="${describedBy}"></textarea>`,
+  hint: "One folder per line.",
+})}
+<div class="setting-row">
+<div class="setting-text"><p class="setting-label" id="overlay-skill-names-label">Skills agents will see</p>
+<p class="setting-explain">From the saved folders. Save to check new ones.</p></div>
+<div class="setting-control" id="overlay-skill-names" role="region" aria-labelledby="overlay-skill-names-label" aria-live="polite"></div>
+</div>
+</div>`,
     ),
     settingsPane("appearance", active, "How this board looks.", `<p class="hint">Color palette for this board. The choice applies immediately and is saved here.</p>
 ${themePicker(theme)}

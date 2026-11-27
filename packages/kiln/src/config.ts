@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { KilnConfigError } from "./errors.js";
@@ -430,7 +430,7 @@ function pathToStore(userPath: string, cwd: string, home: string): string {
 function overlayFrom(
   configDir: string,
   home: string,
-  overlay: { workflows?: string; prompts?: string; skills?: string; skillPaths?: string[] } | undefined,
+  overlay: OverlayPaths | undefined,
 ): LoadedKilnConfig["overlay"] {
   const workflowsDir = optionalDirectory(
     overlay?.workflows ? resolveConfiguredPath(configDir, overlay.workflows, home) : join(configDir, "workflows"),
@@ -440,14 +440,84 @@ function overlayFrom(
     overlay?.prompts ? resolveConfiguredPath(configDir, overlay.prompts, home) : join(configDir, "prompts"),
     "overlay.prompts",
   );
-  const skillsRoot = optionalDirectory(
-    overlay?.skills ? resolveConfiguredPath(configDir, overlay.skills, home) : join(configDir, "skills"),
-    "overlay.skills",
-  );
-  const extras = (overlay?.skillPaths ?? []).map((value, index) =>
-    optionalDirectory(resolveConfiguredPath(configDir, value, home), `overlay.skillPaths.${index}`),
-  );
-  return { workflowsDir, promptsDir, skillDirs: existingSkillDirs([skillsRoot, ...extras]) };
+  const report = overlaySkillReport(configDir, home, overlay);
+  const [root, ...extras] = report.folders;
+  if (root) optionalDirectory(root.resolved, "overlay.skills");
+  extras.forEach((folder, index) => optionalDirectory(folder.resolved, `overlay.skillPaths.${index}`));
+  return { workflowsDir, promptsDir, skillDirs: report.skillDirs };
+}
+
+export interface OverlayPaths {
+  workflows?: string;
+  prompts?: string;
+  skills?: string;
+  skillPaths?: string[];
+}
+
+/** One skill folder as the operator typed it, and what is in it. A path that is a file does not exist. */
+export interface SkillFolderReport {
+  /** The stored value, `~` kept. The skills folder is the default path when the setting is blank. */
+  typed: string;
+  resolved: string;
+  exists: boolean;
+  /** `<name>` of each `<name>/SKILL.md` directly in the folder, sorted. */
+  skills: string[];
+}
+
+export interface OverlaySkillReport {
+  /** What agents get. {@link loadKilnConfig} uses this same list. */
+  skillDirs: string[];
+  /** The skills folder, then every `skillPaths` entry in order. */
+  folders: SkillFolderReport[];
+  /** Sorted, de-duplicated skill names under `skillDirs`. */
+  skills: string[];
+}
+
+/** The skill folders agents get and the skill names in them. Reads the disk, never throws for a bad path. */
+export function overlaySkillReport(configDir: string, home: string, overlay: OverlayPaths | undefined): OverlaySkillReport {
+  const root = overlay?.skills
+    ? { typed: overlay.skills, resolved: resolveConfiguredPath(configDir, overlay.skills, home) }
+    : { typed: join(configDir, "skills"), resolved: join(configDir, "skills") };
+  const entries = [
+    root,
+    ...(overlay?.skillPaths ?? []).map((typed) => ({ typed, resolved: resolveConfiguredPath(configDir, typed, home) })),
+  ];
+  const folders = entries.map(({ typed, resolved }) => {
+    const exists = isDirectory(resolved);
+    return { typed, resolved, exists, skills: exists ? skillNames(resolved) : [] };
+  });
+  const skillDirs = existingSkillDirs(folders.map((folder) => folder.resolved));
+  const names = new Set<string>();
+  for (const folder of folders) {
+    if (skillDirs.includes(folder.resolved)) for (const name of folder.skills) names.add(name);
+  }
+  return { skillDirs, folders, skills: [...names].sort((left, right) => left.localeCompare(right)) };
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function skillNames(dir: string): string[] {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return names.filter((name) => isFile(join(dir, name, "SKILL.md"))).sort((left, right) => left.localeCompare(right));
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /** A missing path is empty. A path that exists and is not a directory is a config error. */

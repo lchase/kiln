@@ -949,12 +949,13 @@
     var branch = document.getElementById("hint-branch");
     var title = settingsDefaults.prTitle || "[{issue}] {title}";
     var template = settingsDefaults.branch || "{issue}-{slug}";
-    if (pr) pr.textContent = "Default " + title + ", which renders as [ABC-123] Title.";
-    if (branch) branch.textContent = "Default " + template + ", which renders as ABC-123-slug.";
+    if (pr) pr.textContent = "Empty uses the default, " + title + ", which renders as [ABC-123] Title.";
+    if (branch) branch.textContent = "Empty uses the default, " + template + ", which renders as ABC-123-slug.";
     var prInput = document.getElementById("repo-pr-title");
     var branchInput = document.getElementById("repo-branch");
     if (prInput) prInput.placeholder = title;
     if (branchInput) branchInput.placeholder = template;
+    fillRepoHints();
     var attempts = document.getElementById("hint-attempts");
     var stall = document.getElementById("hint-stall");
     var rounds = document.getElementById("hint-fix");
@@ -979,6 +980,21 @@
     if (fingerprintInput) fingerprintInput.placeholder = String(settingsDefaults.maxSameFingerprint != null ? settingsDefaults.maxSameFingerprint : 3);
   }
 
+  // "Empty uses the global setting, N." N is the saved global value, else the built-in default.
+  function fillRepoHints() {
+    var doc = settingsDoc || {};
+    var attempts = doc.maxAttempts != null ? doc.maxAttempts : settingsDefaults.maxAttempts != null ? settingsDefaults.maxAttempts : 3;
+    var rounds = doc.maxFixRounds != null ? doc.maxFixRounds : settingsDefaults.maxFixRounds != null ? settingsDefaults.maxFixRounds : 2;
+    var attemptsHint = document.getElementById("hint-repo-attempts");
+    var roundsHint = document.getElementById("hint-repo-rounds");
+    if (attemptsHint) attemptsHint.textContent = "Empty uses the global setting, " + attempts + ".";
+    if (roundsHint) roundsHint.textContent = "Empty uses the global setting, " + rounds + ".";
+    var attemptsInput = document.getElementById("repo-max-attempts");
+    var roundsInput = document.getElementById("repo-max-fix-rounds");
+    if (attemptsInput) attemptsInput.placeholder = String(attempts);
+    if (roundsInput) roundsInput.placeholder = String(rounds);
+  }
+
   function fillGlobal(data) {
     fillHints(data.defaults || {});
     var attempts = document.getElementById("max-attempts");
@@ -1001,6 +1017,12 @@
     if (domains) domains.value = data.sandbox && data.sandbox.allowDomains ? data.sandbox.allowDomains.join("\n") : "";
   }
 
+  // Pull request base for the table. A blank base falls back to "main" here;
+  // the runtime default is origin's default branch, which the page does not know.
+  function deliversAs(repo) {
+    return repo.deliver === "pr" ? "Pull request to " + (repo.base || "main") : "Local branch";
+  }
+
   function renderRepoList() {
     var host = document.getElementById("repo-list");
     if (!host) return;
@@ -1008,14 +1030,21 @@
     var html = "";
     for (var i = 0; i < names.length; i++) {
       var name = names[i];
-      if (editing && editing.original === name) continue;
       var repo = repoDraft[name];
-      var bits = [repo.deliver || "local"];
-      if (repo.base) bits.push("base " + repo.base);
-      if (repo.test) bits.push(repo.test);
-      html += '<div class="repo-row"><div><div class="num">' + esc(name) + '</div><div class="branch">' + esc(repo.path || "") + '</div><div class="meta">' + esc(bits.join(" · ")) + '</div></div><div class="d-actions"><button type="button" data-repo-edit="' + esc(name) + '">Edit</button><button type="button" data-repo-remove="' + esc(name) + '">Remove</button></div></div>';
+      var open = Boolean(editing && editing.original === name);
+      var test = repo.test
+        ? '<td class="repo-test">' + esc(repo.test) + "</td>"
+        : '<td class="repo-test-missing">Not set. Jobs cannot start.</td>';
+      var action = open
+        ? '<span class="repo-editing">Editing</span>'
+        : '<button type="button" data-repo-edit="' + esc(name) + '">Edit</button>';
+      html += "<tr" + (open ? ' class="selected" aria-current="true"' : "") + ">"
+        + '<td><div class="repo-name">' + esc(name) + '</div><div class="repo-path">' + esc(repo.path || "") + "</div></td>"
+        + "<td>" + esc(deliversAs(repo)) + "</td>"
+        + test
+        + '<td class="repo-actions">' + action + "</td></tr>";
     }
-    if (!html && !editing) html = '<p class="empty">No repos yet.</p>';
+    if (!html) html = '<tr><td colspan="4" class="empty">No repos yet.</td></tr>';
     host.innerHTML = html;
   }
 
@@ -1036,9 +1065,59 @@
     if (branchInput) branchInput.value = repo.branch || "";
     if (attemptsInput) attemptsInput.value = repo.maxAttempts != null && repo.maxAttempts !== "" ? String(repo.maxAttempts) : "";
     if (roundsInput) roundsInput.value = repo.maxFixRounds != null && repo.maxFixRounds !== "" ? String(repo.maxFixRounds) : "";
-    setPressed("#repo-deliver [data-deliver]", "data-deliver", repo.deliver === "pr" ? "pr" : "local");
+    var deliver = repo.deliver === "pr" ? "pr" : "local";
+    var radios = document.querySelectorAll('#repo-deliver input[name="repo-deliver"]');
+    for (var i = 0; i < radios.length; i++) radios[i].checked = radios[i].getAttribute("value") === deliver;
+    syncDeliver();
     var browser = document.getElementById("repo-browser");
     if (browser) { browser.hidden = true; browser.innerHTML = ""; }
+    var title = document.getElementById("repo-editor-title");
+    var path = document.getElementById("repo-editor-path");
+    var head = document.getElementById("repo-editor-head");
+    if (title) title.textContent = name || "";
+    if (path) path.textContent = repo.path || "";
+    if (head) head.hidden = !name;
+    // Name and path show first on Add. On Edit they stay hidden unless the server rejects one.
+    showIdent("name", !name);
+    showIdent("path", !name);
+    var remove = document.getElementById("repo-remove");
+    if (remove) remove.hidden = !name;
+    hideRemoveConfirm();
+  }
+
+  function editorDeliver() {
+    var checked = document.querySelector("#repo-deliver input:checked");
+    return checked && checked.getAttribute("value") === "pr" ? "pr" : "local";
+  }
+
+  // Base branch only matters for a pull request.
+  function syncDeliver() {
+    var base = document.getElementById("repo-base-field");
+    if (base) base.hidden = editorDeliver() !== "pr";
+  }
+
+  function showIdent(field, on) {
+    var box = document.querySelector('#repo-editor [data-repo-ident="' + field + '"]');
+    if (box) box.hidden = !on;
+  }
+
+  function hideRemoveConfirm() {
+    var confirmBox = document.getElementById("repo-remove-confirm");
+    if (confirmBox) confirmBox.hidden = true;
+    var remove = document.getElementById("repo-remove");
+    if (remove && editing && editing.original) remove.hidden = false;
+  }
+
+  function askRemove() {
+    if (!editing || !editing.original) return;
+    var confirmBox = document.getElementById("repo-remove-confirm");
+    var text = document.getElementById("repo-remove-text");
+    var remove = document.getElementById("repo-remove");
+    if (text) text.textContent = "Remove " + editing.original + "? The checkout on disk is left as it is.";
+    if (confirmBox) confirmBox.hidden = false;
+    if (remove) remove.hidden = true;
+    var keep = document.getElementById("repo-remove-keep");
+    if (keep && keep.focus) keep.focus();
   }
 
   function readEditor() {
@@ -1050,7 +1129,7 @@
       name: value("repo-name"),
       path: value("repo-path"),
       test: value("repo-test"),
-      deliver: selectedAttr("#repo-deliver [data-deliver]", "data-deliver", "local"),
+      deliver: editorDeliver(),
       base: value("repo-base"),
       prTitle: value("repo-pr-title"),
       branch: value("repo-branch"),
@@ -1083,8 +1162,8 @@
     var editor = document.getElementById("repo-editor");
     if (editor) editor.hidden = false;
     renderRepoList();
-    var nameInput = document.getElementById("repo-name");
-    if (nameInput && nameInput.focus) nameInput.focus();
+    var first = document.getElementById(name ? "repo-test" : "repo-name");
+    if (first && first.focus) first.focus();
   }
 
   function closeEditor() {
@@ -1106,19 +1185,18 @@
     openEditor(null, { path: "", test: "", deliver: "local", base: "", prTitle: "", branch: "" });
   }
 
-  function removeRepo(name) {
-    var ok = window.confirm("Remove " + name + " from the kiln config? This only edits the config. The checkout on disk is left as it is.");
-    if (!ok) return;
-    if (editing && editing.original === name) {
-      editing = null;
-      var editor = document.getElementById("repo-editor");
-      if (editor) editor.hidden = true;
-    } else if (editing && !flushEditor()) {
-      return;
-    }
+  // The in-page confirm's Remove. Nothing reaches the file until Save changes.
+  function removeRepo() {
+    if (!editing || !editing.original) return;
+    var name = editing.original;
+    editing = null;
+    var editor = document.getElementById("repo-editor");
+    if (editor) editor.hidden = true;
     delete repoDraft[name];
     markSettingsDirty();
     renderRepoList();
+    var add = document.getElementById("repo-add");
+    if (add && add.focus) add.focus();
   }
 
   function optionalNumber(raw) {
@@ -1490,6 +1568,41 @@
     if (prompts) prompts.value = overlay.prompts || "";
     if (skills) skills.value = overlay.skills || "";
     if (paths) paths.value = overlay.skillPaths ? overlay.skillPaths.join("\n") : "";
+    fillSkillCheck(data.skillCheck, Boolean(overlay.skills));
+  }
+
+  // Warnings name each problem folder as typed. They reflect the saved values and never block a save.
+  function skillFolderWarning(folder) {
+    if (!folder.exists) return "Folder not found: " + folder.typed;
+    if (!folder.skills || folder.skills.length === 0) return "No skills in " + folder.typed + " (expected <name>/SKILL.md)";
+    return "";
+  }
+
+  function fillSkillWarnings(id, folders) {
+    var slot = document.getElementById(id);
+    if (!slot) return;
+    var lines = [];
+    for (var i = 0; i < folders.length; i++) {
+      var line = skillFolderWarning(folders[i]);
+      if (line) lines.push('<p class="setting-warn-line">' + esc(line) + "</p>");
+    }
+    slot.innerHTML = lines.join("");
+    slot.hidden = lines.length === 0;
+  }
+
+  // A blank skills folder is the optional Kiln home default, which may be missing or empty.
+  function fillSkillCheck(check, skillsTyped) {
+    var folders = (check && check.folders) || [];
+    fillSkillWarnings("overlay-skills-warn", skillsTyped ? folders.slice(0, 1) : []);
+    fillSkillWarnings("overlay-skill-paths-warn", folders.slice(1));
+    var list = document.getElementById("overlay-skill-names");
+    if (!list) return;
+    var names = (check && check.skills) || [];
+    list.innerHTML = names.length === 0
+      ? '<p class="empty">No skills found.</p>'
+      : '<ul class="setting-skills" aria-labelledby="overlay-skill-names-label">' +
+        names.map(function (name) { return "<li>" + esc(name) + "</li>"; }).join("") +
+        "</ul>";
   }
 
   function fillAdvanced(file) {
@@ -1648,10 +1761,10 @@
     ["jira", "jira.baseUrl", "Base URL"],
     ["jira", "jira.email", "Email"],
     ["jira", "jira.acceptanceField", "Acceptance field"],
-    ["workflows", "overlay.workflows", "Workflows"],
-    ["workflows", "overlay.prompts", "Prompts"],
-    ["workflows", "overlay.skills", "Skills"],
-    ["workflows", "overlay.skillPaths", "Skill paths"],
+    ["workflows", "overlay.workflows", "Local workflows"],
+    ["workflows", "overlay.prompts", "Prompt overrides"],
+    ["workflows", "overlay.skills", "Skills folder"],
+    ["workflows", "overlay.skillPaths", "More skill folders"],
   ];
 
   function same(a, b) {
@@ -1880,9 +1993,7 @@
       var repoField = /^repos\.([^.]+)\.([^.]+)$/.exec(key);
       if (repoField) {
         setSettingsTab("repos");
-        if (Object.prototype.hasOwnProperty.call(repoDraft, repoField[1])) startEdit(repoField[1]);
-        var slotName = repoField[2] === "maxAttempts" ? "repoAttempts" : repoField[2] === "maxFixRounds" ? "repoRounds" : repoField[2];
-        showSlot(slotName, message);
+        showRepoError(repoField[1], repoField[2], message);
         continue;
       }
       if (key.indexOf("sandbox.allowDomains") === 0) {
@@ -1914,10 +2025,37 @@
       if (routed) continue;
       if (key === "name" || key.indexOf("repos.") === 0) {
         setSettingsTab("repos");
-        showSlot("name", message);
+        var repoName = /^repos\.([^.]+)$/.exec(key);
+        showRepoError(repoName ? repoName[1] : "", "name", message);
       }
     }
     if (lines.length) showSettingsError(lines.join("\n"));
+  }
+
+  // Opens the rejected repo's form (a just-added repo's form is already open)
+  // and shows the message on that field, revealing name or path on Edit.
+  var REPO_ERROR_SLOTS = {
+    name: "name", path: "path", test: "test", base: "base", deliver: "deliver",
+    prTitle: "prTitle", branch: "branch", maxAttempts: "repoAttempts", maxFixRounds: "repoRounds",
+  };
+
+  function showRepoError(name, field, message) {
+    if (name && Object.prototype.hasOwnProperty.call(repoDraft, name) && !(editing && editing.original === name)) {
+      // Show the rejected repo even when the open form will not flush; its
+      // invalid edit was never in the refused payload.
+      if (!flushEditor()) editing = null;
+      openEditor(name, repoDraft[name]);
+    }
+    var editor = document.getElementById("repo-editor");
+    if (!editing || !editor || editor.hidden) return;
+    if (field === "name" || field === "path") showIdent(field, true);
+    if (field === "prTitle" || field === "branch" || field === "maxAttempts" || field === "maxFixRounds") {
+      var more = document.getElementById("repo-more");
+      if (more) more.open = true;
+    }
+    // Only known fields map to a slot; the general error banner shows the rest.
+    var slotName = REPO_ERROR_SLOTS[field];
+    if (slotName) showSlot(slotName, message);
   }
 
   function applySettingsDocument(data) {
@@ -2241,9 +2379,8 @@
       markSettingsDirty();
       return;
     }
-    var deliverBtn = target.closest("#repo-deliver [data-deliver]");
-    if (deliverBtn) {
-      setPressed("#repo-deliver [data-deliver]", "data-deliver", deliverBtn.getAttribute("data-deliver") || "local");
+    if (target.closest("#repo-deliver input")) {
+      syncDeliver();
       markSettingsDirty();
       return;
     }
@@ -2271,9 +2408,18 @@
       startEdit(editBtn.getAttribute("data-repo-edit") || "");
       return;
     }
-    var removeBtn = target.closest("[data-repo-remove]");
-    if (removeBtn) {
-      removeRepo(removeBtn.getAttribute("data-repo-remove") || "");
+    if (target.closest("#repo-remove")) {
+      askRemove();
+      return;
+    }
+    if (target.closest("#repo-remove-yes")) {
+      removeRepo();
+      return;
+    }
+    if (target.closest("#repo-remove-keep")) {
+      hideRemoveConfirm();
+      var removeAgain = document.getElementById("repo-remove");
+      if (removeAgain && removeAgain.focus) removeAgain.focus();
       return;
     }
     var rowAdd = target.closest("[data-row-add]");
@@ -2675,6 +2821,10 @@
   document.addEventListener("change", function (event) {
     var field = event.target;
     if (field && field.id === "workflow") syncValidity();
+    if (field && field.closest && field.closest("#repo-deliver")) {
+      syncDeliver();
+      markSettingsDirty();
+    }
   });
   var addForm = document.getElementById("add-form");
   if (addForm) addForm.addEventListener("submit", function (event) {

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.0](https://github.com/lchase/kiln/compare/kiln-v0.21.1...kiln-v0.22.0) (2026-11-27)
+
+
+### Features
+
+* settings sections down the side, and a bar for unsaved changes ([#101](https://github.com/lchase/kiln/issues/101)) ([b25f5ac](https://github.com/lchase/kiln/commit/b25f5accb668e448d64d32972a306875b3076556))
+
 ## [0.21.1](https://github.com/lchase/kiln/compare/kiln-v0.21.0...kiln-v0.21.1) (2026-11-27)
 
 

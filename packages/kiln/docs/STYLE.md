@@ -338,6 +338,24 @@ Kiln notifies only when the needs-you count grows, and only while sending is on.
   A refused save keeps the edits and the bar and shows the error. Discard puts back what was loaded. Leaving the page
   with changes asks first.
 - Appearance is not in the bar: a theme applies and saves when it is clicked.
+- Repos is a table in a bordered box that scrolls sideways on its own (`.repo-table-wrap`, `overflow-x: auto`, table
+  `min-width: var(--repo-table-min)`), so the page itself never does. Cells pad `--space-2` by `--space-3`, since the
+  box needs a side inset. A missing test command is the words "Not set. Jobs cannot start." in `--state-needs-hand`.
+  Edit opens one form under the table (`.repo-editor`, `--panel`). Its fields sit in an auto-fit grid
+  (`--col-min`) that stacks at phone width. Rarely used fields go in a closed `<details>`.
+- A choice that needs a sentence of explanation is a `<fieldset>` of described radios (`.repo-choice`): a bold line and
+  one `--muted` line each. The checked one has a `--primary` border. That border is the one use of `--primary` outside
+  the action button and the current step.
+- Remove asks on the page (an inline group with Remove and Keep, focus on Keep), never `window.confirm`. Remove text
+  is `--state-failed`. Nothing leaves the file until Save changes.
+- A section of single settings uses setting rows (`settingRow` in `serve-page.ts`, `.setting-rows` and `.setting-row`
+  in `serve.css`): one `--card` surface with a `--hairline` border, rows split by a top hairline. Each row is a text
+  block (a `<label>` in weight 500, then one `--text-xs` `--muted` line saying what the setting does and what blank
+  means) with the control beside it. The control wraps under the text at narrow width. The control's
+  `aria-describedby` names the explanation, any warning, and the error slot. A label is plain words, never a config
+  key.
+- A warning about a saved value (`.setting-warn-line`, `--state-needs-hand`) sits under the explanation and says what
+  is wrong in words, naming the value as typed (`Folder not found: ~/skills`). A warning never blocks Save.
 - At narrow width (the `960px` media rule) the section list stacks above the section at full width. No fixed widths, no
   sideways scrolling.
 
