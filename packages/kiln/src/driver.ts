@@ -212,7 +212,7 @@ export interface TickOptions {
 }
 
 export function runStatus(config: LoadedKilnConfig, jobId?: string, host: KilnHost = defaultHost()): string {
-  return renderStatus(readStatus(config, jobId, host));
+  return renderStatus(readStatus(config, jobId, host), { steps: jobId !== undefined });
 }
 
 export function runTick(
@@ -2046,7 +2046,7 @@ function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun[]> {
   const byTag = new Map<string, ObservedRun[]>();
   for (const repo of Object.values(config.repos)) {
     for (const runDir of listRunDirs(repo.path)) {
-      const events = readJournal(runDir);
+      const { events, status } = readRunJournal(runDir);
       const started = events.find((event) => event.t === "run.started");
       if (!started?.tag || !parseJobTag(started.tag)) continue;
       const runId = basename(runDir);
@@ -2065,7 +2065,6 @@ function scanRuns(config: LoadedKilnConfig): Map<string, ObservedRun[]> {
           events,
         });
       }
-      const status = classify(events);
       const gateDecision = readApproveDecision(runDir);
       const title = readRunTitle(runDir);
       const finished = [...events].reverse().find((event) => event.t === "run.finished");
@@ -2323,6 +2322,18 @@ function livePid(events: JournalEvent[]): number | undefined {
   }
   const started = events.find((event) => event.t === "run.started");
   return typeof started?.pid === "number" ? started.pid : undefined;
+}
+
+/**
+ * Reads a run's journal and classifies it. A run that writes `run.finished` and exits between the read and the pid
+ * check would look dead, so a dead run is read once more: its pid is gone, so any final line is already on disk.
+ */
+function readRunJournal(runDir: string): { events: JournalEvent[]; status: RunStatus } {
+  const events = readJournal(runDir);
+  const status = classify(events);
+  if (status !== "dead") return { events, status };
+  const again = readJournal(runDir);
+  return { events: again, status: classify(again) };
 }
 
 function classify(events: JournalEvent[]): RunStatus {

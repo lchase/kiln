@@ -6,6 +6,7 @@ import { feedbackRoundLabel } from "./feedback.js";
 import type { StatusJobView } from "./report.js";
 import { isStalled } from "./reliability.js";
 import { parseReviewDraft, type ReviewFinding, type ReviewSeverity } from "./review-post.js";
+import type { StepUsage, UsageRound } from "./step-usage.js";
 import { parseReviewSource } from "./triggers.js";
 
 /**
@@ -101,6 +102,14 @@ export interface PhaseView {
   failureClass?: FailureClass;
   fingerprint?: string;
   note?: string;
+  /** Exact model id from the step's session, else the workflow family (`modelSource: "workflow"`). */
+  model?: string;
+  modelSource?: "session" | "workflow";
+  /** The step's cost over all its rounds. Absent when any round did not report one. */
+  costUsd?: number;
+  tokens?: number;
+  /** Set only when the step ran more than once. */
+  rounds?: UsageRound[];
 }
 
 export interface FindingView {
@@ -156,6 +165,10 @@ export interface JobView {
   ask?: string;
   since?: string;
   costUsd: number | null;
+  /** Sum of the step costs that are known. Absent when no step has one. */
+  stepCostUsd?: number;
+  /** The step costs do not account for `costUsd`: an agent step has none, or they differ by half a cent or more. */
+  costPartial: boolean;
   currentPhase?: string;
   /** Workflow leaf steps, in order. The board stepper renders this list. */
   steps: StepMark[];
@@ -199,6 +212,8 @@ export interface JobView {
   eventCount: number;
   prUrl?: string;
   prNumber?: number;
+  /** Repo delivery mode, when the job's repo is known. */
+  deliver?: "local" | "pr";
   dependsOn: { jobId: string; state: string; detail?: string }[];
   evidence: string[];
   feedback: FeedbackLine[];
@@ -281,6 +296,50 @@ export function isFinished(job: StatusJobView): boolean {
   return job.state === "done" || job.state === "rejected" || job.state === "cancelled";
 }
 
+/** What the stepper names: the step that runs or failed, or the job's outcome. */
+export type StepFocus = { kind: "step"; step: StepMark } | { kind: "outcome"; label: string; short: string };
+
+function outcome(label: string, short = label): StepFocus {
+  return { kind: "outcome", label, short };
+}
+
+function finishedOutcome(
+  job: Pick<JobView, "state" | "workflow" | "deliver" | "prNumber" | "prUrl" | "reviewUrl">,
+): StepFocus | undefined {
+  if (job.state === "cancelled") return outcome("Cancelled");
+  if (job.state === "rejected") return outcome("Rejected");
+  if (job.state !== "done") return undefined;
+  // An investigation never opens a pull request, even in a deliver=pr repo.
+  if (job.workflow === "investigation") return outcome("Findings approved");
+  // A review job's pull request is the one it reviewed, not one it merged.
+  if (job.workflow === "review") return outcome(job.reviewUrl ? "Comment posted" : "Approved");
+  if (job.prNumber) return outcome(`Merged #${job.prNumber}`, "Merged");
+  if (job.prUrl || job.deliver === "pr") return outcome("Merged");
+  return outcome("Landed locally");
+}
+
+/**
+ * The one rule for a stepper's label. A finished job (done, rejected,
+ * cancelled) names its outcome, so a merged job never reads "Land". Otherwise
+ * a running or failed step is named, then an in-review or gated job names its
+ * outcome. Any other job keeps the last done step. `short`
+ * drops the pull request number.
+ */
+export function stepFocus(
+  job: Pick<JobView, "state" | "workflow" | "deliver" | "prNumber" | "prUrl" | "reviewUrl" | "steps" | "inbox">,
+): StepFocus | undefined {
+  // A finished job names its outcome even if a step was left running or failed when it stopped.
+  const finished = finishedOutcome(job);
+  if (finished) return finished;
+  const live = job.steps.find((step) => step.status === "running") ?? job.steps.find((step) => step.status === "failed");
+  if (live) return { kind: "step", step: live };
+  if (job.state === "in-review") return outcome(job.prNumber ? `Pull request #${job.prNumber} open` : "Pull request open", "Pull request open");
+  const gate = job.steps.find((step) => step.id === "approve");
+  if (job.inbox || (job.state === "needs-human" && gate?.status === "pending")) return outcome("Your decision");
+  const last = [...job.steps].reverse().find((step) => step.status === "done");
+  return last ? { kind: "step", step: last } : undefined;
+}
+
 export function columnOf(job: StatusJobView): PipelineColumn {
   if (isFinished(job)) return "done";
   if (conflictFixing(job)) return "running";
@@ -300,6 +359,8 @@ export function projectJob(job: StatusJobView, events: readonly KilnEvent[]): Jo
   const waiting = scheduledRetry(job);
   const reason = hand ? handLine(job, failure) : attentionReason(job);
   const phases = phasesOf(job, own);
+  const costUsd = jobCost(own);
+  const stepCost = stepCostOf(job.stepUsage ?? [], costUsd);
   const target = reviewTarget(job, own);
   const deliverable = deliverableOf(job, target);
   const ask = askOf(job);
@@ -323,7 +384,9 @@ export function projectJob(job: StatusJobView, events: readonly KilnEvent[]): Jo
     reason,
     ...(ask ? { ask } : {}),
     ...(since ? { since } : {}),
-    costUsd: jobCost(own),
+    costUsd,
+    ...(stepCost.stepCostUsd !== undefined ? { stepCostUsd: stepCost.stepCostUsd } : {}),
+    costPartial: stepCost.costPartial,
     ...(current ? { currentPhase: current } : {}),
     steps: job.steps.map((step) => ({ id: step.id, label: labelOf(step.id), status: stepStatus(step.phase) })),
     phases,
@@ -363,6 +426,7 @@ export function projectJob(job: StatusJobView, events: readonly KilnEvent[]): Jo
     eventCount: activity.count,
     ...(target.prUrl || job.prUrl ? { prUrl: target.prUrl ?? job.prUrl } : {}),
     ...(target.prNumber || job.prNumber ? { prNumber: target.prNumber ?? job.prNumber } : {}),
+    ...(job.deliver ? { deliver: job.deliver } : {}),
     ...(job.launchBlock ? { launchBlock: job.launchBlock } : {}),
     dependsOn: job.dependsOn.map((dep) => ({
       jobId: dep.jobId,
@@ -454,6 +518,24 @@ export function formatDuration(ms: number): string {
 export function formatCost(usd: number | null | undefined): string | undefined {
   if (usd === null || usd === undefined || !Number.isFinite(usd)) return undefined;
   return `$${usd.toFixed(2)}`;
+}
+
+/**
+ * `claude-opus-5-5, $0.40, 1200 tokens`, or `opus (configured), cost unknown`. More than one round:
+ * `round 1 $0.40, round 2 $0.25, total $0.65`. A missing cost is `cost unknown`, never `$0.00`.
+ */
+export function formatStepUsage(step: Pick<PhaseView, "model" | "modelSource" | "costUsd" | "tokens" | "rounds">): string {
+  const model = step.model ? `${step.model}${step.modelSource === "workflow" ? " (configured)" : ""}` : "model unknown";
+  const total = formatCost(step.costUsd);
+  const parts = [model];
+  if (step.rounds && step.rounds.length > 1) {
+    step.rounds.forEach((round, index) => parts.push(`round ${index + 1} ${formatCost(round.usd) ?? "cost unknown"}`));
+    parts.push(`total ${total ?? "cost unknown"}`);
+  } else {
+    parts.push(total ?? "cost unknown");
+  }
+  if (step.tokens !== undefined) parts.push(`${step.tokens} tokens`);
+  return parts.join(", ");
 }
 
 /** Relative label from `now`. The page script replaces it with the viewer's clock. */
@@ -621,6 +703,15 @@ function phasesOf(job: StatusJobView, events: readonly KilnEvent[]): PhaseView[]
         if (event.properties.detail) failed.detail = event.properties.detail;
       }
     }
+  }
+  for (const usage of job.stepUsage ?? []) {
+    const phase = byStep.get(usage.stepId);
+    if (!phase) continue;
+    if (usage.model) phase.model = usage.model;
+    if (usage.modelSource) phase.modelSource = usage.modelSource;
+    if (usage.usd !== undefined) phase.costUsd = usage.usd;
+    if (usage.tokens !== undefined) phase.tokens = usage.tokens;
+    if (usage.rounds.length > 1) phase.rounds = usage.rounds.map((round) => ({ ...round }));
   }
   for (const phase of byStep.values()) {
     if (!phase.startedAt || !phase.finishedAt) continue;
@@ -957,6 +1048,22 @@ function latestFailure(events: readonly KilnEvent[]): { class?: FailureClass; fi
     };
   }
   return found;
+}
+
+/** Half a cent: below this the step costs and the job total agree. */
+const COST_SLACK = 0.005;
+
+/**
+ * Only agent steps have usage entries, so a command, gate, or transform step never makes the total partial.
+ * Nothing is partial while the job has no total.
+ */
+function stepCostOf(usage: readonly StepUsage[], costUsd: number | null): { stepCostUsd?: number; costPartial: boolean } {
+  const known = usage.filter((step) => step.usd !== undefined);
+  const stepCostUsd = known.length > 0 ? known.reduce((sum, step) => sum + (step.usd ?? 0), 0) : undefined;
+  const missing = known.length < usage.length;
+  // The epsilon keeps float sums like 0.65 + 0.005 from landing a hair under the slack.
+  const costPartial = costUsd !== null && (missing || Math.abs((stepCostUsd ?? 0) - costUsd) >= COST_SLACK - 1e-9);
+  return { ...(stepCostUsd !== undefined ? { stepCostUsd } : {}), costPartial };
 }
 
 function jobCost(events: readonly KilnEvent[]): number | null {

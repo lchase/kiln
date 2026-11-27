@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","cwd":"/work/tree","session_id":"s-approver"}
+{"type":"assistant","message":{"model":"ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE0000","content":[{"type":"text","text":"Deciding."}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0.05,"usage":{"input_tokens":300,"output_tokens":20}}

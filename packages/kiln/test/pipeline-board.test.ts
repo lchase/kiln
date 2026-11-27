@@ -224,7 +224,7 @@ describe("pipeline board", () => {
     const stopped = card(html, "stopped");
     assert.match(stopped, /<span>Cancelled<\/span>/);
     assert.doesNotMatch(stopped, /class="metrics"/);
-    assert.match(card(render([job("local", "done")]), "local"), /<span>Landed<\/span>/);
+    assert.match(card(render([job("local", "done")]), "local"), /<span>Landed locally<\/span>/);
     assert.match(card(render([job("no", "rejected")]), "no"), /<span>Rejected<\/span>/);
   });
 
@@ -259,12 +259,90 @@ describe("pipeline board", () => {
   });
 
   it("projects the track, the tone, and the workflow label", () => {
-    assert.equal(stepTrackHtml({ steps: [] }, "running"), "");
-    const done = stepTrackHtml({ steps: [{ id: "a", label: "A", status: "done" }, { id: "b", label: "B", status: "done" }] }, "needs-you");
+    const base = { state: "running", workflow: "feature", inbox: false };
+    assert.equal(stepTrackHtml({ ...base, steps: [] }, "running"), "");
+    const two = [{ id: "a", label: "A", status: "done" as const }, { id: "b", label: "B", status: "done" as const }];
+    const done = stepTrackHtml({ ...base, state: "approved", steps: two }, "needs-you");
     assert.match(done, /aria-label="All 2 steps done"/);
+    const review = stepTrackHtml({ ...base, state: "in-review", prNumber: 91, steps: two }, "needs-you");
+    assert.match(review, /aria-label="Pull request #91 open"/);
     assert.equal(workflowLabel("investigation"), "Investigation");
     assert.equal(repoTone("kiln"), repoTone("kiln"));
     for (const name of ["a", "kiln", "ai-core-backend", "web", "api"]) assert.ok(repoTone(name) >= 1 && repoTone(name) <= 6);
+  });
+});
+
+describe("stepper outcome", () => {
+  const finished = (): StatusJobView["steps"] => NINE.map((id) => ({ id, phase: "done" as const }));
+  const progress = (html: string, id: string): string => {
+    const row = card(html, id);
+    return row.slice(row.indexOf('<div class="progress">'), row.indexOf("</div></div>", row.indexOf('<div class="progress">')) + 12);
+  };
+  const history = (jobs: StatusJobView[]): string =>
+    renderApp({
+      css: "",
+      section: "history",
+      board: buildBoard(jobs, []),
+      attention: buildAttention(jobs),
+      page: { csrf: "tok", repos: [], workflows: ["feature"], stallTimeoutMs: stall, now },
+    });
+
+  it("names the outcome of a finished history row, with no current step", () => {
+    const html = history([
+      job("merged", "done", { prNumber: 88, deliver: "pr", steps: finished() }),
+      job("no", "rejected", { steps: steps(8) }),
+      job("stop", "cancelled", { steps: steps(1) }),
+      job("local", "done", { deliver: "local", steps: finished() }),
+    ]);
+    for (const [id, word] of [["merged", "Merged #88"], ["no", "Rejected"], ["stop", "Cancelled"], ["local", "Landed locally"]] as const) {
+      const row = progress(html, id);
+      assert.match(row, new RegExp(`<span class="step-now outcome">${word}</span>`), id);
+      assert.doesNotMatch(row, /aria-current/, id);
+      assert.doesNotMatch(row, /class="step-now[^"]*"[^>]*>Land</, id);
+      assert.doesNotMatch(row, /step-now outcome" aria-hidden/, id);
+    }
+  });
+
+  it("keeps a running and a failed row's step label and current mark", () => {
+    const html = renderApp({
+      css: "",
+      section: "repos",
+      board: buildBoard([job("run", "running", { steps: steps(1) }), job("dead", "dead", { steps: steps(2, "failed") })], []),
+      attention: buildAttention([]),
+      page: { csrf: "tok", repos: [], workflows: ["feature"], stallTimeoutMs: stall, now },
+    });
+    const run = progress(html, "run");
+    assert.match(run, /<li class="step current" aria-current="step"><span class="name">Build<\/span>/);
+    assert.match(run, /<span class="step-now current" aria-hidden="true">Build<\/span>/);
+    const dead = progress(html, "dead");
+    assert.match(dead, /<li class="step failed" aria-current="step"><span class="name">Verify<\/span>/);
+    assert.match(dead, /<span class="step-now failed" aria-hidden="true">Verify<\/span>/);
+  });
+
+  it("keeps the track label of a running and a failed card", () => {
+    const html = render([job("run", "running", { steps: steps(1) }), job("dead", "dead", { steps: steps(2, "failed") })]);
+    assert.match(card(html, "run"), /aria-label="Step 2 of 9: Build"/);
+    assert.match(card(html, "dead"), /aria-label="Failed at Verify"/);
+  });
+
+  it("gives an in-review card its pull request in the track label", () => {
+    const html = render([job("pr", "in-review", { prNumber: 92, deliver: "pr", steps: finished() })]);
+    assert.match(card(html, "pr"), /role="img" aria-label="Pull request #92 open"/);
+    assert.doesNotMatch(card(html, "pr"), /All 9 steps done/);
+  });
+
+  it("words the done card from the same rule", () => {
+    const html = render([
+      job("merged", "done", { prNumber: 88, deliver: "pr", steps: finished() }),
+      job("no", "rejected", { steps: steps(8) }),
+      job("stop", "cancelled", { steps: steps(1) }),
+      job("find", "done", { workflow: "investigation", deliver: "pr", steps: [] }),
+    ]);
+    assert.match(card(html, "merged"), /<span>Merged #88<\/span>/);
+    assert.match(card(html, "no"), /<span>Rejected<\/span>/);
+    assert.match(card(html, "stop"), /<span>Cancelled<\/span>/);
+    assert.match(card(html, "find"), /<span>Findings approved<\/span>/);
+    for (const id of ["merged", "no", "stop"]) assert.doesNotMatch(card(html, id), /aria-current|<span>Land<\/span>/, id);
   });
 });
 
