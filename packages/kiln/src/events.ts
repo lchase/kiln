@@ -6,7 +6,9 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   rmSync,
+  statSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
@@ -363,6 +365,7 @@ export function appendEvent(kilnDir: string, draft: EventDraft): void {
     report(error);
     return;
   }
+  if (knownRecorded(kilnDir, event)) return;
   try {
     withEventsLock(kilnDir, () => {
       if (alreadyRecorded(kilnDir, event)) return;
@@ -470,6 +473,68 @@ function parseLine(line: string): KilnEvent | undefined {
     return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
+  }
+}
+
+const onceSeen = new Map<string, { size: number; keys: Set<string> }>();
+
+function onceKey(event: {
+  job_id?: unknown;
+  run_id?: unknown;
+  event?: unknown;
+  step?: unknown;
+  properties?: { once?: unknown };
+}): string | undefined {
+  const once = event.properties?.once;
+  if (typeof once !== "string" || !once) return undefined;
+  return JSON.stringify([event.job_id ?? null, event.run_id ?? null, event.event, event.step ?? null, once]);
+}
+
+/**
+ * Lock-free answer to "is this `once` event already in the log", from an
+ * in-process index of the file. Observing a run re-offers every journal
+ * line on every status read, and nearly all are already recorded: without
+ * this each one took the lock and parsed the whole log. The index follows
+ * the file by size: it reads only the appended bytes, and starts over when
+ * the file shrank. It can only miss an event, never invent one, and a miss
+ * falls through to the locked check in `alreadyRecorded`.
+ */
+function knownRecorded(kilnDir: string, event: KilnEvent): boolean {
+  const key = onceKey(event);
+  if (!key) return false;
+  const path = eventsPath(kilnDir);
+  try {
+    const size = statSync(path).size;
+    let seen = onceSeen.get(path);
+    if (!seen || size < seen.size) {
+      seen = { size: 0, keys: new Set() };
+      onceSeen.set(path, seen);
+    }
+    if (size > seen.size) {
+      const buf = Buffer.alloc(size - seen.size);
+      const fd = openSync(path, "r");
+      let got = 0;
+      try {
+        got = readSync(fd, buf, 0, buf.length, seen.size);
+      } finally {
+        closeSync(fd);
+      }
+      // Only whole lines are indexed. A half-written last line is read next time.
+      const end = buf.lastIndexOf(0x0a, got - 1) + 1;
+      for (const line of buf.toString("utf8", 0, end).split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const recorded = onceKey(JSON.parse(line) as Parameters<typeof onceKey>[0]);
+          if (recorded) seen.keys.add(recorded);
+        } catch {
+          // A corrupt line does not count as a recorded event.
+        }
+      }
+      seen.size += end;
+    }
+    return seen.keys.has(key);
+  } catch {
+    return false;
   }
 }
 
