@@ -122,6 +122,28 @@ describe("readStepResult", () => {
     assert.equal(read.model, "opus");
     assert.deepEqual(readStepResult(dir, "../secret").result, { kind: "none" });
   });
+
+  it("picks the kind by step id when produces names a different artifact", () => {
+    const dir = runDir();
+    writeFileSync(
+      join(dir, "workflow.json"),
+      JSON.stringify({
+        steps: [
+          { id: "build", kind: "agent", model: "opus", produces: "patch" },
+          { id: "code", kind: "agent", model: "sonnet", produces: "code-review" },
+        ],
+      }),
+    );
+    artifact(dir, "patch.1.json", { status: "READY", summary: "from patch" });
+    artifact(dir, "build.json", { status: "BLOCKED", summary: "wrong file" });
+    artifact(dir, "code-review.json", { verdict: "PASS", findings: "none" });
+    assert.deepEqual(readStepResult(dir, "build"), {
+      result: { kind: "build", status: "READY", summary: "from patch" },
+      model: "opus",
+      stepKind: "agent",
+    });
+    assert.deepEqual(readStepResult(dir, "code").result, { kind: "review", verdict: "PASS", findings: "none" });
+  });
 });
 
 function job(overrides: Partial<StatusJobView> & Pick<StatusJobView, "jobId" | "state">): StatusJobView {
