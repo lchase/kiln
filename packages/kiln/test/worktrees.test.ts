@@ -154,6 +154,7 @@ function host(views: Record<number, PullRequestState> = {}): KilnHost {
       remoteBranchSha: () => null,
       pushBranch: offline,
       publishBranch: offline,
+      mergeBaseIntoBranch: offline,
       isAncestor: (checkout, ancestor, descendant) =>
         gitStatus(checkout, ["merge-base", "--is-ancestor", ancestor, descendant]) === 0,
       defaultBranch: () => "main",
