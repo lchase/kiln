@@ -531,7 +531,7 @@ export function readDiffStat(repoPath: string, base: string, branch: string): st
 /** `git diff --numstat base...branch`. Failure is omitted, not invented. */
 export function readDiffFiles(repoPath: string, base: string, branch: string): DiffFile[] | undefined {
   if (!safeRef(base) || !safeRef(branch)) return undefined;
-  const result = spawnSync("git", ["diff", "--numstat", `${base}...${branch}`], {
+  const result = spawnSync("git", ["diff", "--numstat", `${base}...${branch}`, "--"], {
     cwd: repoPath,
     encoding: "utf8",
   });

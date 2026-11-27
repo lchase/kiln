@@ -819,6 +819,7 @@ function currentStepLabel(job: JobView): string | undefined {
   return job.steps.find((step) => step.status === "running")?.label ?? job.phases.find((phase) => phase.status === "running")?.label ?? job.currentPhase;
 }
 
+/** Same strip as showNow in assets/serve.js; change both together. */
 function commandText(event: ActivityEvent | undefined): string {
   if (!event) return "";
   return event.summary.replace(/^Ran\s+/, "");

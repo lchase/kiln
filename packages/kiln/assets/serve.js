@@ -2606,13 +2606,14 @@
         nowNote.hidden = false;
       }
       if (nowCommand && event.kind === "command") {
+        // Same strip as commandText in src/serve-page.ts; change both together.
         nowCommand.textContent = event.summary.replace(/^Ran\s+/, "");
         nowCommand.hidden = false;
       }
     }
 
     function place(event) {
-      if (phase && event.phase !== phase) {
+      if (phase && event.phase && event.phase !== phase) {
         // A new step started: reload so its section opens. The page scroll is kept by the browser.
         if (!reloading && !actionPending) {
           reloading = true;
