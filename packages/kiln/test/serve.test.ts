@@ -843,7 +843,8 @@ describe("kiln serve", () => {
       assert.match(stepPage.body, /<nav class="step-nav" aria-label="Steps">/);
       assert.match(stepPage.body, new RegExp(`<a class="title-link" href="/jobs/${upstream}">`));
       assert.match(stepPage.body, /data-pin="true"/);
-      assert.match(stepPage.body, /<span class="step-agent">builder, opus<\/span>/);
+      // The mock adapter writes no session: the workflow family, marked configured, and no invented cost.
+      assert.match(stepPage.body, /<span class="step-agent">builder, opus \(configured\), cost unknown<\/span>/);
       const results: [string, RegExp[]][] = [
         ["spec", [/Show the weekly summary\./, /Touch the named module\./]],
         ["build", [/<dd>READY<\/dd>/, /Mock build\./]],
@@ -991,6 +992,26 @@ describe("kiln serve", () => {
         assert.match(denied.body, /Cross-origin request rejected/);
         const still = JSON.parse((await text(`${server.url}/api/jobs/${id}`)).body) as { state: string };
         assert.equal(still.state, "failed");
+
+        // Per-step usage is added to the job JSON; no field present before is renamed or removed.
+        const before = JSON.parse((await text(`${server.url}/api/jobs/${id}`)).body) as Record<string, unknown>;
+        assert.equal(before.stepUsage, undefined);
+        const plainStatus = runCli(["status"], { cwd, home });
+        mkdirSync(join(runDir, "sessions"));
+        writeFileSync(join(runDir, "sessions", "spec.jsonl"), readFileSync(join(root, "test", "fixtures", "usage", "spec.jsonl")));
+        const withUsage = JSON.parse((await text(`${server.url}/api/jobs/${id}`)).body) as Record<string, unknown>;
+        for (const key of Object.keys(before)) assert.ok(key in withUsage, `${key} is still there`);
+        assert.deepEqual(withUsage.stepUsage, [
+          { stepId: "spec", model: "claude-opus-5-5", modelSource: "session", rounds: [{ usd: 0.42, tokens: 1500 }], usd: 0.42, tokens: 1500 },
+        ]);
+        const listedUsage = JSON.parse((await text(`${server.url}/api/jobs`)).body) as { jobs: Record<string, unknown>[] };
+        assert.deepEqual(listedUsage.jobs.find((job) => job.jobId === id)?.stepUsage, withUsage.stepUsage);
+        const oneStatus = runCli(["status", id], { cwd, home });
+        assert.equal(oneStatus.status, 0, oneStatus.stderr);
+        assert.match(oneStatus.stdout, /^ {2}step spec claude-opus-5-5, \$0\.42, 1500 tokens$/m);
+        const allStatus = runCli(["status"], { cwd, home });
+        assert.equal(allStatus.stdout, plainStatus.stdout, "kiln status with no id is unchanged");
+        assert.doesNotMatch(allStatus.stdout, /^ {2}step /m);
 
         const retried = await text(`${server.url}/api/jobs/${id}/retry`, {
           method: "POST",

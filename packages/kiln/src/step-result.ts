@@ -29,7 +29,7 @@ export const STEP_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 /** The same tail rule activity.ts uses for command output. */
 const TAIL_LINES = 40;
 
-interface PlanStep {
+export interface PlanStep {
   produces?: string;
   model?: string;
   kind?: string;
@@ -49,18 +49,22 @@ export function readStepResult(runDir: string | undefined, stepId: string): Step
 }
 
 function planStep(runDir: string, stepId: string): PlanStep | undefined {
+  return findStep(planOf(runDir), stepId);
+}
+
+/** The `steps` of `<runDir>/workflow.json`, unvalidated. `undefined` when it cannot be read. */
+export function planOf(runDir: string): unknown {
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(join(runDir, "workflow.json"), "utf8"));
   } catch {
     return undefined;
   }
-  const steps = parsed && typeof parsed === "object" && "steps" in parsed ? parsed.steps : undefined;
-  return findStep(steps, stepId);
+  return parsed && typeof parsed === "object" && "steps" in parsed ? parsed.steps : undefined;
 }
 
 /** Walks loop bodies and map steps the way `leafStepIds` in workflow.ts does. */
-function findStep(steps: unknown, stepId: string): PlanStep | undefined {
+export function findStep(steps: unknown, stepId: string): PlanStep | undefined {
   if (!Array.isArray(steps)) return undefined;
   for (const step of steps) {
     if (typeof step !== "object" || step === null) continue;

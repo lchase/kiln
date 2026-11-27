@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","cwd":"/work/tree","session_id":"s-build-1"}
+{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"Building round one."}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0.4,"usage":{"input_tokens":900,"output_tokens":100}}
+{"type":"system","subtype":"init","cwd":"/work/tree","session_id":"s-build-2"}
+{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"Building round two."}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0.25,"usage":{"input_tokens":500,"output_tokens":100}}

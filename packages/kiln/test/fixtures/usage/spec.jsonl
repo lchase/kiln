@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","cwd":"/work/tree","session_id":"s-spec"}
+{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"Reading the feature."}]}}
+{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/work/tree/README.md"}}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0.42,"usage":{"input_tokens":1200,"output_tokens":300}}
