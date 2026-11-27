@@ -331,6 +331,14 @@ Kiln notifies only when the needs-you count grows, and only while sending is on.
   the action button and the current step.
 - Remove asks on the page (an inline group with Remove and Keep, focus on Keep), never `window.confirm`. Remove text
   is `--state-failed`. Nothing leaves the file until Save changes.
+- A section of single settings uses setting rows (`settingRow` in `serve-page.ts`, `.setting-rows` and `.setting-row`
+  in `serve.css`): one `--card` surface with a `--hairline` border, rows split by a top hairline. Each row is a text
+  block (a `<label>` in weight 500, then one `--text-xs` `--muted` line saying what the setting does and what blank
+  means) with the control beside it. The control wraps under the text at narrow width. The control's
+  `aria-describedby` names the explanation, any warning, and the error slot. A label is plain words, never a config
+  key.
+- A warning about a saved value (`.setting-warn-line`, `--state-needs-hand`) sits under the explanation and says what
+  is wrong in words, naming the value as typed (`Folder not found: ~/skills`). A warning never blocks Save.
 - At narrow width (the `960px` media rule) the section list stacks above the section at full width. No fixed widths, no
   sideways scrolling.
 

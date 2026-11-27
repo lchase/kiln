@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { buildAttention } from "../src/attention.js";
-import { loadKilnConfig } from "../src/config.js";
+import { loadKilnConfig, resolveKilnConfig } from "../src/config.js";
 import { KilnConfigError } from "../src/errors.js";
 import { intakeJobs } from "../src/intake-http.js";
 import { writeJob } from "../src/jobs.js";
 import { renderConsole } from "../src/serve-page.js";
-import { saveSettings } from "../src/settings.js";
+import { readSettings, saveSettings } from "../src/settings.js";
 import {
   assertWorkflowName,
   installedYakLoadsSkillDirs,
@@ -322,5 +322,84 @@ describe("settings overlay", () => {
     assert.deepEqual(file.overlay.skillPaths, ["/home/operator/skills"]);
     assert.equal(file.workflows.feature.sandbox.mode, "off");
     assert.equal(file.maxAttempts, 4);
+  });
+});
+
+describe("settings skills report", () => {
+  it("lists the skills agents get and names each missing or empty folder as typed", () => {
+    const { dir, home, checkout, configPath } = kilnHome();
+    const configDir = join(home, ".kiln");
+    const missing = join(dir, "missing-skills");
+    const empty = join(dir, "empty-skills");
+    mkdirSync(empty, { recursive: true });
+    mkdirSync(join(empty, "not-a-skill"), { recursive: true });
+    mkdirSync(join(configDir, "my-skills", "smart-review"), { recursive: true });
+    writeFileSync(join(configDir, "my-skills", "smart-review", "SKILL.md"), "# smart-review\n");
+    mkdirSync(join(home, "plug", "skills", "foo"), { recursive: true });
+    writeFileSync(join(home, "plug", "skills", "foo", "SKILL.md"), "# foo\n");
+    writeFileSync(
+      configPath,
+      `${JSON.stringify({
+        repos: { web: { path: checkout } },
+        overlay: { skills: "my-skills", skillPaths: [missing, empty, "~/plug/skills"] },
+      })}\n`,
+    );
+
+    const read = readSettings(configPath, {}, home);
+    assert.equal(read.ok, true);
+    if (!read.ok) return;
+    const report = read.document.skillCheck;
+    assert.deepEqual(report.skills, ["foo", "smart-review"]);
+    assert.deepEqual(
+      report.folders.map(({ typed, exists, skills }) => ({ typed, exists, skills })),
+      [
+        { typed: "my-skills", exists: true, skills: ["smart-review"] },
+        { typed: missing, exists: false, skills: [] },
+        { typed: empty, exists: true, skills: [] },
+        { typed: "~/plug/skills", exists: true, skills: ["foo"] },
+      ],
+    );
+
+    const agents = resolveKilnConfig({ configPath, home }).overlay.skillDirs;
+    assert.deepEqual(report.skillDirs, agents);
+    const behindNames = report.folders.filter((folder) => folder.skills.length > 0).map((folder) => folder.resolved);
+    assert.deepEqual(behindNames, agents.filter((path) => path !== empty));
+    assert.deepEqual(agents, [join(configDir, "my-skills"), empty, join(home, "plug", "skills")]);
+  });
+
+  it("reports the default skills folder when the setting is blank, and a file as not found", () => {
+    const { home, checkout, configPath } = kilnHome();
+    const file = join(home, "a-file");
+    writeFileSync(file, "nope\n");
+    writeFileSync(configPath, `${JSON.stringify({ repos: { web: { path: checkout } }, overlay: { skillPaths: [file] } })}\n`);
+    const read = readSettings(configPath, {}, home);
+    assert.equal(read.ok, true);
+    if (!read.ok) return;
+    assert.deepEqual(
+      read.document.skillCheck.folders.map(({ typed, exists }) => ({ typed, exists })),
+      [
+        { typed: join(home, ".kiln", "skills"), exists: false },
+        { typed: file, exists: false },
+      ],
+    );
+    assert.deepEqual(read.document.skillCheck.skills, []);
+    assert.deepEqual(read.document.skillCheck.skillDirs, []);
+  });
+
+  it("writes nothing for an echoed skills report", () => {
+    const { home, checkout, configPath } = kilnHome();
+    const contents = `${JSON.stringify({ repos: { web: { path: checkout } }, overlay: { skills: "~/skills" } }, null, 2)}\n`;
+    writeFileSync(configPath, contents);
+    const read = readSettings(configPath, {}, home);
+    assert.equal(read.ok, true);
+    if (!read.ok) return;
+    const saved = saveSettings(
+      configPath,
+      { revision: read.document.revision, repos: read.document.repos, overlay: read.document.overlay, skillCheck: read.document.skillCheck },
+      home,
+      {},
+    );
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+    assert.equal(readFileSync(configPath, "utf8"), contents);
   });
 });
