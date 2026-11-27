@@ -1,4 +1,4 @@
-import { scheduledRetry, attentionReason } from "./attention.js";
+import { scheduledRetry, attentionReason, conflictFixing, conflictLine } from "./attention.js";
 import { launchBlockLabel, type KilnEvent, type LaunchBlock } from "./events.js";
 import type { FailureClass } from "./failure.js";
 import { feedbackRoundLabel } from "./feedback.js";
@@ -218,6 +218,7 @@ export function isFinished(job: StatusJobView): boolean {
 
 export function columnOf(job: StatusJobView): PipelineColumn {
   if (isFinished(job)) return "done";
+  if (conflictFixing(job)) return "running";
   if (isInbox(job) || job.state === "in-review") return "needs-you";
   if (isHand(job)) return "needs-hand";
   if (job.state === "queued" || job.state === "blocked") return "queued";
@@ -270,7 +271,11 @@ export function projectJob(job: StatusJobView, events: readonly KilnEvent[]): Jo
     inbox,
     hand,
     finished,
-    retry: (job.state === "failed" || job.state === "dead" || (job.state === "needs-human" && Boolean(job.stopReason))) && job.gates.length === 0,
+    retry:
+      (job.state === "failed" ||
+        job.state === "dead" ||
+        (job.state === "needs-human" && (Boolean(job.stopReason) || job.feedbackReason === "pr-conflict"))) &&
+      job.gates.length === 0,
     sandboxed: job.sandboxed === true,
     canApprove: job.canApprove,
     canReject: job.canReject,
@@ -548,6 +553,10 @@ function summarizeEvent(event: KilnEvent): string {
       return `Opened pull request #${event.properties.number}`;
     case "pr.feedback":
       return `Feedback round ${event.properties.round} · ${event.properties.trigger}`;
+    case "pr.conflicted":
+      return `Conflicts with ${event.properties.base}`;
+    case "pr.updated":
+      return event.properties.agent ? "Merged the base, with an agent" : "Merged the base";
     case "worktree.cleaned":
       return "Worktree cleaned";
     case "worktree.kept":
@@ -787,6 +796,7 @@ function handLine(job: StatusJobView, failure: { class?: FailureClass; fingerpri
   else if (job.stopReason === "fingerprint") label = "Same failure";
   else if (job.feedbackReason === "feedback-exhausted") label = "Fix round cap";
   else if (job.feedbackReason === "feedback-ambiguous") label = "Feedback unclear";
+  else if (job.feedbackReason === "pr-conflict" && job.prConflict) label = conflictLine(job.prConflict);
   else if (job.state === "failed" || job.state === "dead" || job.state === "invalid") label = attentionReason(job);
   const parts = [label];
   if (failure?.class) parts.push(failure.class);

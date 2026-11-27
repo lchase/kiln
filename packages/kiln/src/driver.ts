@@ -31,13 +31,18 @@ import {
   isMerged,
 } from "./delivery.js";
 import {
+  conflictSource,
+  conflictSummary,
   feedbackLedgerPath,
   feedbackSpec,
   openFeedbackRound,
   planFeedback,
   readFeedbackLedger,
+  roundsSinceRetry,
   writeFeedbackLedger,
+  type ExhaustReason,
   type FeedbackLedger,
+  type FixTrigger,
   type PullRequestFeedback,
 } from "./feedback.js";
 import {
@@ -230,6 +235,7 @@ export function runTick(
     });
     const world = observe(config, host, now);
     const feedbackNotes = watchPullRequests(config, world, host, now);
+    feedbackNotes.push(...updateConflictingBranches(config, world, host));
     const actions = decide(world.observation, now);
     if (world.observation.spendBlocked) {
       recordDailyCap(config.kilnDir, spendSnapshot(readEvents(config.kilnDir, { warn: () => {} }), config.dailyDollarCap, now), now);
@@ -634,6 +640,17 @@ export function retryJob(config: LoadedKilnConfig, jobId: string, host: KilnHost
       event: "job.retried",
       properties: { by: "human", repo: job.repo },
     });
+    if (isConflictStop(state, observed)) {
+      // The pull request is still there. Clear the stop and let the next tick read it again.
+      const ledger = readFeedbackLedger(config.kilnDir, jobId);
+      if (ledger && ledger !== "corrupt") {
+        ledger.retryFrom = ledger.rounds.length;
+        delete ledger.exhausted;
+        delete ledger.conflict;
+        writeFeedbackLedger(config.kilnDir, ledger);
+      }
+      return `retry ${jobId}  ${job.repo}\ncleared the conflict stop, the next tick reads the pull request again\n`;
+    }
     const cleared = observed.attemptCount ?? 0;
     resetAttemptLedger(config.kilnDir, jobId, observed.run?.runId);
     rmSync(breadcrumbPath(config.kilnDir, jobId), { force: true });
@@ -667,7 +684,13 @@ export function retryJob(config: LoadedKilnConfig, jobId: string, host: KilnHost
 
 function canManualRetry(state: string, job: ObservedJob): boolean {
   if (state === "failed" || state === "dead") return true;
+  if (isConflictStop(state, job)) return true;
   return state === "needs-human" && Boolean(job.stopReason) && (job.run?.gates.length ?? 0) === 0;
+}
+
+/** Needs-human because conflict rounds ran out while the pull request is open. */
+function isConflictStop(state: string, job: ObservedJob): boolean {
+  return state === "needs-human" && job.feedbackExhausted === true && job.prConflict !== undefined;
 }
 
 /**
@@ -854,6 +877,7 @@ function observe(config: LoadedKilnConfig, host: KilnHost, now = new Date()): Wo
       ...(entry.job ? { sandboxed: jobIsSandboxed(config, entry.job.id, entry.job.workflow) } : {}),
       ...(feedback?.rounds.length ? { feedbackRounds: feedback.rounds } : {}),
       ...(feedback?.exhausted ? { feedbackExhausted: true } : {}),
+      ...(feedback?.conflict ? { prConflict: { base: feedback.conflict.base, files: feedback.conflict.files } } : {}),
       ...(feedback?.ambiguous ? { feedbackAmbiguous: true } : {}),
       ...(feedbackResult === "corrupt" ? { feedbackLedgerError: "feedback ledger is unreadable" } : {}),
       ...(picked.fixInProgress ? { fixInProgress: true } : {}),
@@ -1221,8 +1245,10 @@ function publishReadyFixes(config: LoadedKilnConfig, host: KilnHost, world: Worl
       ...(record.prUrl ? { prUrl: record.prUrl } : {}),
     });
     open.outcome = "pushed";
+    if (open.trigger === "conflict") delete ledger.conflict;
     writeFeedbackLedger(config.kilnDir, ledger);
     recordFeedbackOutcome(config.kilnDir, job.jobId, job.run.runId, open, "pushed");
+    if (open.trigger === "conflict") recordUpdated(config.kilnDir, job.jobId, open.headSha, sha, true);
     notes.push(`pushed ${job.jobId}  ${record.branch}  ${sha}`);
   }
   return notes;
@@ -1245,7 +1271,7 @@ function recordFeedbackOutcome(
   kilnDir: string,
   jobId: string,
   runId: string,
-  round: { round: number; trigger: "ci" | "review"; items: readonly unknown[] },
+  round: { round: number; trigger: FixTrigger; items: readonly unknown[] },
   outcome: "fixed" | "pushed",
 ): void {
   appendEvent(kilnDir, {
@@ -1259,6 +1285,14 @@ function recordFeedbackOutcome(
       items: round.items.length,
       once: `pr.feedback:${round.round}:${outcome}`,
     },
+  });
+}
+
+function recordUpdated(kilnDir: string, jobId: string, from: string, sha: string, agent: boolean): void {
+  appendEvent(kilnDir, {
+    job_id: jobId,
+    event: "pr.updated",
+    properties: { from, sha, agent, once: `pr.updated:${sha}` },
   });
 }
 
@@ -1307,6 +1341,11 @@ function watchPullRequests(config: LoadedKilnConfig, world: World, host: KilnHos
       notes.push(`feedback ${job.jobId} failed: ${errorMessage(error)}`);
       continue;
     }
+    if (snapshot.mergeable === "MERGEABLE" && ledger?.conflict) {
+      delete ledger.conflict;
+      writeFeedbackLedger(config.kilnDir, ledger);
+      delete job.prConflict;
+    }
     job.feedbackPlan = planFeedback({
       maxFixRounds: fixRoundsFor(config, job.repo),
       ledger,
@@ -1337,6 +1376,75 @@ function watchPullRequests(config: LoadedKilnConfig, world: World, host: KilnHos
   return notes;
 }
 
+/**
+ * Bring each conflicting pull request up to date before decide runs.
+ * A clean merge whose tests pass is pushed with no agent and opens no round.
+ * Otherwise the plan becomes a conflict fix round, or `pr-conflict` when the
+ * rounds are used. A thrown error is a note and the next tick asks again.
+ */
+function updateConflictingBranches(config: LoadedKilnConfig, world: World, host: KilnHost): string[] {
+  const notes: string[] = [];
+  for (const job of world.observation.jobs) {
+    const plan = job.feedbackPlan;
+    if (plan?.action !== "conflict") continue;
+    job.feedbackPlan = { action: "none" };
+    const record = readDelivery(config.kilnDir, job.jobId);
+    const checkout = config.repos[job.repo]?.path;
+    const base = plan.base ?? record?.base;
+    if (!record?.branch || !checkout || !base) {
+      notes.push(`conflict ${job.jobId} failed: no pull request branch or base`);
+      continue;
+    }
+    appendEvent(config.kilnDir, {
+      job_id: job.jobId,
+      event: "pr.conflicted",
+      properties: { headSha: plan.headSha, base, once: `pr.conflicted:${plan.headSha}` },
+    });
+    let result: ReturnType<KilnHost["git"]["mergeBaseIntoBranch"]>;
+    try {
+      result = host.git.mergeBaseIntoBranch(checkout, {
+        branch: record.branch,
+        base,
+        headSha: plan.headSha,
+        ...(config.repos[job.repo]?.test ? { test: config.repos[job.repo]?.test } : {}),
+        timeoutMs: config.stallTimeoutMs,
+      });
+    } catch (error) {
+      notes.push(`conflict ${job.jobId} failed: ${errorMessage(error)}`);
+      continue;
+    }
+    const existing = readFeedbackLedger(config.kilnDir, job.jobId);
+    if (existing === "corrupt") continue;
+    const ledger: FeedbackLedger = existing ?? { jobId: job.jobId, rounds: [] };
+    if (result.status === "pushed") {
+      writeDelivery(config.kilnDir, { ...record, sha: result.sha, pushed: true });
+      recordUpdated(config.kilnDir, job.jobId, plan.headSha, result.sha, false);
+      if (ledger.conflict) {
+        delete ledger.conflict;
+        writeFeedbackLedger(config.kilnDir, ledger);
+      }
+      delete job.prConflict;
+      notes.push(`merged ${base} into ${job.jobId}  ${record.branch}  ${result.sha}`);
+      continue;
+    }
+    const files = result.status === "conflict" ? result.files : [];
+    ledger.conflict = { headSha: plan.headSha, base, files };
+    writeFeedbackLedger(config.kilnDir, ledger);
+    job.prConflict = { base, files };
+    if (roundsSinceRetry(ledger).length >= fixRoundsFor(config, job.repo)) {
+      job.feedbackPlan = { action: "exhaust", reason: "pr-conflict" };
+      continue;
+    }
+    job.feedbackPlan = {
+      action: "fix",
+      headSha: plan.headSha,
+      trigger: "conflict",
+      items: [{ kind: "conflict", source: conflictSource(plan.headSha), summary: conflictSummary(base, result) }],
+    };
+  }
+  return notes;
+}
+
 function shouldWatch(job: ObservedJob): boolean {
   if (job.cancelled) return false;
   if (job.deliver !== "pr" || job.workflow === INVESTIGATION_WORKFLOW || job.workflow === REVIEW_WORKFLOW) return false;
@@ -1350,12 +1458,14 @@ function shouldWatch(job: ObservedJob): boolean {
 function markFeedback(
   kilnDir: string,
   jobId: string,
-  reason: "feedback-exhausted" | "feedback-ambiguous",
+  reason: ExhaustReason | "feedback-ambiguous",
 ): void {
   const existing = readFeedbackLedger(kilnDir, jobId);
   const ledger: FeedbackLedger = existing && existing !== "corrupt" ? existing : { jobId, rounds: [] };
-  if (reason === "feedback-exhausted") ledger.exhausted = true;
-  else ledger.ambiguous = true;
+  if (reason === "feedback-ambiguous") ledger.ambiguous = true;
+  else ledger.exhausted = true;
+  // The board names a conflict stop from `conflict`. Another cap stop is not about the base.
+  if (reason === "feedback-exhausted") delete ledger.conflict;
   writeFeedbackLedger(kilnDir, ledger);
   appendEvent(kilnDir, {
     job_id: jobId,
@@ -1417,7 +1527,7 @@ function startFix(
   });
   let specText: string;
   try {
-    specText = feedbackSpec(specHandedToYak(config, world, job), plan.items);
+    specText = feedbackSpec(specHandedToYak(config, world, job), plan.items, ledger.conflict?.base);
   } catch (error) {
     const message = errorMessage(error);
     writeLaunchError(config.kilnDir, job.id, message);
@@ -1445,7 +1555,7 @@ function launchOpenFix(
   let headSha: string;
   try {
     clearLaunchError(config.kilnDir, job.id);
-    specText = feedbackSpec(specHandedToYak(config, world, job), open.items);
+    specText = feedbackSpec(specHandedToYak(config, world, job), open.items, conflictBase(config.kilnDir, job.id));
     headSha = resolveCommit(host, checkout, open.headSha);
   } catch (error) {
     const message = errorMessage(error);
@@ -1457,6 +1567,12 @@ function launchOpenFix(
     return { jobId: job.id, repo: job.repo, kind: "fix", output: message };
   }
   return launchFixRun(config, job, host, checkout, headSha, specText, open.round, sandboxFacts);
+}
+
+function conflictBase(kilnDir: string, jobId: string): string | undefined {
+  const ledger = readFeedbackLedger(kilnDir, jobId);
+  if (ledger && ledger !== "corrupt" && ledger.conflict) return ledger.conflict.base;
+  return readDelivery(kilnDir, jobId)?.base;
 }
 
 function resolveCommit(host: KilnHost, checkout: string, sha: string): string {

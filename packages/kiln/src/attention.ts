@@ -21,6 +21,20 @@ const NEEDS_YOU: readonly StatusState[] = ["needs-human", "dead", "failed", "in-
 const IN_FLIGHT: readonly StatusState[] = ["running", "approved", "queued", "blocked"];
 const SETTLED: readonly StatusState[] = ["done", "rejected", "cancelled"];
 
+/**
+ * Kiln is bringing the pull request up to date with its base. It is not
+ * ready to merge, so it is in flight and not waiting on the operator.
+ */
+export function conflictFixing(job: { state: string; prConflict?: unknown }): boolean {
+  return job.prConflict !== undefined && (job.state === "in-review" || job.state === "running");
+}
+
+/** `Conflicts with main: a.ts, b.ts`. */
+export function conflictLine(conflict: { base: string; files: readonly string[] }): string {
+  const files = conflict.files.length > 0 ? `: ${conflict.files.join(", ")}` : "";
+  return `Conflicts with ${conflict.base}${files}`;
+}
+
 /** Reasons an automatic retry is allowed to schedule. A rejected gate is not one of these. */
 const RETRYABLE_REASONS = new Set(["stalled", "crashed", "orphaned", "failed"]);
 
@@ -97,11 +111,11 @@ export interface KilnStatus extends StatusView {
 export function buildAttention(jobs: StatusJobView[]): AttentionView {
   const indexed = jobs.map((job, index) => ({ job, index }));
   const needsYou = indexed
-    .filter((entry) => !scheduledRetry(entry.job) && NEEDS_YOU.includes(entry.job.state))
+    .filter((entry) => !scheduledRetry(entry.job) && !conflictFixing(entry.job) && NEEDS_YOU.includes(entry.job.state))
     .sort((left, right) => byRank(NEEDS_YOU, left, right))
     .map((entry) => toItem(entry.job));
   const inFlight = indexed
-    .filter((entry) => scheduledRetry(entry.job) || IN_FLIGHT.includes(entry.job.state))
+    .filter((entry) => scheduledRetry(entry.job) || conflictFixing(entry.job) || IN_FLIGHT.includes(entry.job.state))
     .sort((left, right) => byFlight(left, right))
     .map((entry) => toItem(entry.job));
   const doneRecently = indexed
@@ -156,13 +170,17 @@ function toItem(job: StatusJobView): AttentionItem {
     ...(tail ? { errorTail: tail } : {}),
     ...(findings ? { findings } : {}),
     retry:
-      (job.state === "failed" || job.state === "dead" || (job.state === "needs-human" && Boolean(job.stopReason))) &&
+      (job.state === "failed" ||
+        job.state === "dead" ||
+        (job.state === "needs-human" && (Boolean(job.stopReason) || job.feedbackReason === "pr-conflict"))) &&
       job.gates.length === 0,
     ...(since ? { since } : {}),
   };
 }
 
 export function attentionReason(job: StatusJobView, tail = errorTail(job)): string {
+  if (job.prConflict && conflictFixing(job)) return `Conflicts with ${job.prConflict.base}, fixing`;
+  if (job.prConflict && job.feedbackReason === "pr-conflict") return conflictLine(job.prConflict);
   switch (job.state) {
     case "needs-human": {
       if (job.reviewPostError) return job.reviewPostError;

@@ -258,7 +258,8 @@ export function phaseFeed(events: readonly KilnEvent[], jobId: string): PhaseCar
       continue;
     }
     if (event.event === "pr.feedback") {
-      const trigger = event.properties.trigger === "ci" ? "CI" : "review";
+      const trigger =
+        event.properties.trigger === "ci" ? "CI" : event.properties.trigger === "conflict" ? "conflict" : "review";
       cards.push({
         step: "fix",
         label: `Fix round ${event.properties.round} · ${trigger}`,
