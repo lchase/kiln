@@ -295,9 +295,34 @@ Kiln notifies only when the needs-you count grows, and only while sending is on.
 - Control width is 100% of its field. The field is 100% of the form.
 - Stack fields with `--space-4`. Stack label, control, hint, and error with `--space-2`.
 - Hint is `.hint` (how to fill it). Error is `.field-error` (what is wrong), tied to the control with `aria-describedby` and `aria-invalid`.
-- One footer (`.form-footer`): primary action on the right, Cancel or other secondary actions to its left.
+- One footer (`.form-footer`): primary action on the right, Cancel or other secondary actions to its left. Settings
+  uses the unsaved-changes bar instead (see Settings).
 - In a drawer the body scrolls and the footer stays pinned to the bottom (`position: sticky`).
 - Disable the primary action until required fields are valid. Show the inline error for the missing field.
+
+## Settings
+
+- The page header is the title and the config file path (mono, `--faint`).
+- A section list (`<nav aria-label="Settings sections">`) sits beside the open section, in this order: Repos, Limits
+  and retries, Sandbox, Triggers, Jira, Local workflows and skills, Appearance, Edit the file. It is a list of links,
+  not a chip row or tabs.
+- Each section has its own address, `/settings/<id>` (`repos`, `limits`, `sandbox`, `triggers`, `jira`, `workflows`,
+  `appearance`, `file`). `/settings` opens Repos. Any other `/settings/...` is a 404. The open link has
+  `aria-current="page"`. With the script, a click switches the section in place and pushes the address, so edits in
+  other sections stay in the form. Without it, the link loads the page.
+- A link may show one short fact on its right (`.settings-fact`, mono, `--text-xs`): the repo count, the trigger count,
+  and for Jira `connected` (base URL, email, and a token all present) or `not set up`. A fact is a word or a number,
+  never a secret. `connected` is also `--pass`, but the word carries the meaning.
+- Each section starts with an `<h2>` and one line saying what it holds. Triggers holds the trigger list, then a Routes
+  `<h3>` and the route list.
+- One unsaved-changes bar replaces the form footer. It is hidden until the form differs from what was loaded. It says
+  how many changes there are and names each by section and field (`1 unsaved change, in Repos: kiln test command`),
+  then Discard and Save changes (primary). It sticks to the bottom of the page. Save is one PUT of the whole document.
+  A refused save keeps the edits and the bar and shows the error. Discard puts back what was loaded. Leaving the page
+  with changes asks first.
+- Appearance is not in the bar: a theme applies and saves when it is clicked.
+- At narrow width (the `960px` media rule) the section list stacks above the section at full width. No fixed widths, no
+  sideways scrolling.
 
 ## Pickers
 

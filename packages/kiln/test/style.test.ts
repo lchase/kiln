@@ -143,7 +143,7 @@ describe("board style", () => {
       theme: "nord",
     });
     assert.match(html, /<html lang="en" data-theme="nord">/);
-    assert.match(html, /data-settings-tab="appearance"/);
+    assert.match(html, /<a href="\/settings\/appearance"><span>Appearance<\/span><\/a>/);
     assert.match(html, /id="theme-pick"/);
     const picker = html.slice(html.indexOf('id="theme-pick"'), html.indexOf('data-error="board.theme"'));
     assert.doesNotMatch(picker, /role="combobox"/);
@@ -453,6 +453,30 @@ describe("job page style", () => {
     assert.match(rules(".job-main, .job-side"), /min-width:\s*0/);
     assert.match(rules(".now-command, .file-path"), /overflow-wrap:\s*anywhere/);
     assert.doesNotMatch(css, /\.tabs\b/);
+  });
+
+  it("stacks the settings sections above the open section at narrow width", () => {
+    const layout = rules(".settings-layout");
+    assert.match(layout, /display:\s*flex/);
+    assert.match(layout, /flex-wrap:\s*wrap/);
+    const nav = rules(".settings-nav");
+    assert.match(nav, /flex:\s*1 1 var\(--settings-nav-min\)/);
+    assert.match(nav, /max-width:\s*var\(--settings-nav-max\)/);
+    const pane = rules(".settings-pane");
+    assert.match(pane, /flex:\s*999 1/);
+    assert.match(pane, /min-width:\s*0/);
+    assert.match(rules(".settings-foot"), /position:\s*sticky/);
+    assert.match(rules('.settings-nav a[aria-current="page"]'), /background:\s*var\(--card-hover\)/);
+    const narrow = css.slice(css.indexOf("@media (max-width: 960px)"));
+    const block = narrow.slice(0, narrow.indexOf("\n}\n"));
+    assert.match(block, /\.settings-layout \{ flex-direction: column;[^}]*\}/);
+    assert.match(block, /\.settings-nav \{ flex: none; max-width: none; width: auto; \}/);
+    // The nav comes before the panes in the markup, so a column puts it on top. Nothing reorders it or fixes a width.
+    assert.doesNotMatch(css, /\.settings-[a-z-]+[^{]*\{[^}]*(?:^|[\s;])order\s*:/m);
+    const settingsRules = [...css.matchAll(/\.settings-[^{]*\{([^}]*)\}/g)].map((match) => match[1] ?? "").join("\n");
+    assert.doesNotMatch(settingsRules, /overflow-x/);
+    assert.doesNotMatch(settingsRules, /(?:^|[\s;])(?:min-|max-)?width:\s*[1-9]/m);
+    assert.doesNotMatch(settingsRules, /\d+px/);
   });
 
   it("puts the step list above the step at narrow width and scrolls the step's log in its own box", () => {

@@ -573,11 +573,6 @@
     closeCombo(box);
     var input = box.querySelector("[role='combobox']");
     if (input && option.hasAttribute("data-label")) input.value = option.getAttribute("data-label") || "";
-    var tab = option.getAttribute("data-settings-tab");
-    if (tab) {
-      setSettingsTab(tab);
-      return;
-    }
     if (box.closest && box.closest("#settings-form")) markSettingsDirty();
     syncValidity();
   }
@@ -837,6 +832,7 @@
   function markSettingsDirty() {
     var saved = document.getElementById("settings-saved");
     if (saved) saved.hidden = true;
+    renderUnsaved();
   }
 
   function clearSettingsErrors() {
@@ -862,18 +858,50 @@
   var themeSaving = false;
   var triggerRows;
   var routeRows;
-  var SETTINGS_TABS = ["repos", "global", "triggers", "routes", "jira", "overlay", "appearance", "advanced"];
+  // Same ids and titles as SETTINGS_SECTIONS in serve-page.ts.
+  var SETTINGS_TABS = ["repos", "limits", "sandbox", "triggers", "jira", "workflows", "appearance", "file"];
+  var SETTINGS_TITLES = {
+    repos: "Repos",
+    limits: "Limits and retries",
+    sandbox: "Sandbox",
+    triggers: "Triggers",
+    jira: "Jira",
+    workflows: "Local workflows and skills",
+    appearance: "Appearance",
+    file: "Edit the file",
+  };
+  var settingsTab = "repos";
+  var settingsBaseline = null;
 
-  function setSettingsTab(tab) {
+  function settingsSectionFromPath(path) {
+    var match = /^\/settings\/([^/]+)$/.exec(String(path || ""));
+    return match && SETTINGS_TABS.indexOf(match[1]) !== -1 ? match[1] : "repos";
+  }
+
+  function onSettingsPage() {
+    return body.getAttribute("data-section") === "settings";
+  }
+
+  // push adds a history entry (a nav click). Otherwise the address is
+  // replaced only when it names a different section (an error opened one).
+  function setSettingsTab(tab, push) {
     if (SETTINGS_TABS.indexOf(tab) === -1) tab = "repos";
+    settingsTab = tab;
     for (var i = 0; i < SETTINGS_TABS.length; i++) {
       var pane = document.getElementById("settings-" + SETTINGS_TABS[i]);
       if (pane) pane.hidden = SETTINGS_TABS[i] !== tab;
     }
-    var buttons = document.querySelectorAll("#settings-form [data-settings-tab]");
-    for (var j = 0; j < buttons.length; j++) {
-      buttons[j].setAttribute("aria-pressed", buttons[j].getAttribute("data-settings-tab") === tab ? "true" : "false");
+    var links = document.querySelectorAll("#settings-nav a");
+    for (var j = 0; j < links.length; j++) {
+      if (settingsSectionFromPath(links[j].getAttribute("href")) === tab) links[j].setAttribute("aria-current", "page");
+      else links[j].removeAttribute("aria-current");
     }
+    if (!onSettingsPage() || typeof history === "undefined" || !history.replaceState) return;
+    if (settingsSectionFromPath(location.pathname) === tab) return;
+    try {
+      if (push) history.pushState({ settings: tab }, "", "/settings/" + tab);
+      else history.replaceState({ settings: tab }, "", "/settings/" + tab);
+    } catch (err) { /* the address stays as it was */ }
   }
 
   function markTheme(id) {
@@ -1191,7 +1219,7 @@
 
   function triggerIdOptions() {
     var options = [];
-    var names = triggerRows ? triggerRows.rows : [];
+    var names = triggerRows ? triggerRows.rows() : [];
     for (var i = 0; i < names.length; i++) {
       if (names[i] && names[i].id) options.push({ value: names[i].id, label: names[i].id });
     }
@@ -1285,6 +1313,15 @@
     }
     return {
       rows: function () { return rows; },
+      // The rows with an open editor's values in place, without checking them.
+      draft: function () {
+        var out = rows.slice();
+        if (!editing) return out;
+        var row = spec.read(editing);
+        if (editing.index != null) out[editing.index] = row;
+        else if (row.id) out.push(row);
+        return out;
+      },
       set: function (value) { rows = value; },
       flush: flush,
       close: close,
@@ -1461,19 +1498,19 @@
   }
 
   function currentSettingsTab() {
-    var pressed = document.querySelector('#settings-form [data-settings-tab][aria-pressed="true"]');
-    return pressed ? pressed.getAttribute("data-settings-tab") || "repos" : "repos";
+    return settingsTab;
   }
 
   function routeSettingsError(key, message) {
     var rules = [
-      ["maxConcurrent", "global", "maxConcurrent"],
-      ["adapter", "global", "adapter"],
+      ["maxConcurrent", "limits", "maxConcurrent"],
+      ["adapter", "limits", "adapter"],
+      ["sandbox.", "sandbox", ""],
       ["triggers.", "triggers", "trigger.form"],
-      ["routes.", "routes", "route.form"],
+      ["routes.", "triggers", "route.form"],
       ["jira.", "jira", ""],
-      ["overlay.", "overlay", ""],
-      ["file", "advanced", "file"],
+      ["overlay.", "workflows", ""],
+      ["file", "file", "file"],
     ];
     for (var i = 0; i < rules.length; i++) {
       var rule = rules[i];
@@ -1481,9 +1518,9 @@
       var match = prefix ? key.indexOf(rule[0]) === 0 : key === rule[0] || (rule[0] === "file" && key.indexOf("file.") === 0);
       if (!match) continue;
       setSettingsTab(rule[1]);
-      var index = new RegExp("^" + rule[1] + "\\.(\\d+)\\.").exec(key);
-      if (index && rule[1] === "triggers") triggerRows.edit(Number(index[1]));
-      if (index && rule[1] === "routes") routeRows.edit(Number(index[1]));
+      var index = /^(triggers|routes)\.(\d+)\./.exec(key);
+      if (index && index[1] === "triggers") triggerRows.edit(Number(index[2]));
+      if (index && index[1] === "routes") routeRows.edit(Number(index[2]));
       showSlot(rule[2] || key, message);
       return true;
     }
@@ -1491,11 +1528,15 @@
   }
 
   function settingsPayload() {
+    return buildSettingsPayload(repoDraft, triggerRows.rows(), routeRows.rows());
+  }
+
+  function buildSettingsPayload(draft, triggers, routes) {
     var repos = {};
-    var names = Object.keys(repoDraft);
+    var names = Object.keys(draft);
     for (var i = 0; i < names.length; i++) {
       var name = names[i];
-      var repo = repoDraft[name];
+      var repo = draft[name];
       var entry = { path: repo.path || "" };
       if (repo.test) entry.test = repo.test;
       if (repo.deliver === "pr" || repo.deliver === "local") entry.deliver = repo.deliver;
@@ -1534,8 +1575,8 @@
     body.maxConcurrent = concurrent === undefined ? null : concurrent;
     var adapter = selectedAttr("#adapter-mode [data-adapter]", "data-adapter", "claude-code");
     if (adapter === "mock" || (settingsDoc && settingsDoc.adapter)) body.adapter = adapter;
-    body.triggers = triggerRows.rows().map(writableTrigger);
-    body.routes = routeRows.rows().map(writableRoute);
+    body.triggers = triggers.map(writableTrigger);
+    body.routes = routes.map(writableRoute);
     body.jira = {
       baseUrl: inputValue("jira-base").trim(),
       email: inputValue("jira-email").trim(),
@@ -1559,6 +1600,181 @@
     if (data.sandbox) body.sandbox = data.sandbox;
     if (data.keepWorktrees === true) body.keepWorktrees = true;
     return body;
+  }
+
+  // repoDraft with an open editor's values in place, without checking them.
+  function draftRepos() {
+    var out = {};
+    var names = Object.keys(repoDraft);
+    for (var i = 0; i < names.length; i++) out[names[i]] = repoDraft[names[i]];
+    if (!editing) return out;
+    var repo = readEditor();
+    var name = repo.name || editing.original;
+    if (!name) return out;
+    if (editing.original && editing.original !== name) delete out[editing.original];
+    out[name] = repo;
+    return out;
+  }
+
+  // What Discard and the bar compare against. The theme is left out: it saves on click.
+  function settingsSnapshot() {
+    var payload = buildSettingsPayload(draftRepos(), triggerRows.draft(), routeRows.draft());
+    delete payload.revision;
+    delete payload.board;
+    return { payload: payload, file: inputValue("settings-json") };
+  }
+
+  var REPO_FIELDS = [
+    ["path", "path"],
+    ["test", "test command"],
+    ["deliver", "deliver"],
+    ["base", "base branch"],
+    ["prTitle", "PR title template"],
+    ["branch", "branch template"],
+    ["maxAttempts", "max attempts"],
+    ["maxFixRounds", "max fix rounds"],
+  ];
+  var SETTINGS_FIELDS = [
+    ["limits", "maxAttempts", "Max attempts"],
+    ["limits", "stallTimeoutMs", "Stall timeout (ms)"],
+    ["limits", "keepWorktrees", "Keep worktrees"],
+    ["limits", "maxFixRounds", "Max fix rounds"],
+    ["limits", "maxSameFingerprint", "Same fingerprint limit"],
+    ["limits", "dailyDollarCap", "Daily dollar cap"],
+    ["limits", "maxConcurrent", "Max concurrent"],
+    ["limits", "adapter", "Adapter"],
+    ["sandbox", "sandbox.mode", "Sandbox mode"],
+    ["sandbox", "sandbox.allowDomains", "Allow domains"],
+    ["jira", "jira.baseUrl", "Base URL"],
+    ["jira", "jira.email", "Email"],
+    ["jira", "jira.acceptanceField", "Acceptance field"],
+    ["workflows", "overlay.workflows", "Workflows"],
+    ["workflows", "overlay.prompts", "Prompts"],
+    ["workflows", "overlay.skills", "Skills"],
+    ["workflows", "overlay.skillPaths", "Skill paths"],
+  ];
+
+  function same(a, b) {
+    return JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b);
+  }
+
+  function valueAt(object, path) {
+    var parts = path.split(".");
+    var value = object;
+    for (var i = 0; i < parts.length; i++) value = value == null ? undefined : value[parts[i]];
+    return value;
+  }
+
+  function rowChanges(section, noun, before, after, out) {
+    var was = {};
+    var now = {};
+    for (var i = 0; i < (before || []).length; i++) was[before[i].id] = before[i];
+    for (var j = 0; j < (after || []).length; j++) now[after[j].id] = after[j];
+    Object.keys(was).forEach(function (id) {
+      if (!Object.prototype.hasOwnProperty.call(now, id)) out.push({ section: section, field: noun + " " + id + " removed" });
+      else if (!same(was[id], now[id])) out.push({ section: section, field: noun + " " + id + " changed" });
+    });
+    Object.keys(now).forEach(function (id) {
+      if (!Object.prototype.hasOwnProperty.call(was, id)) out.push({ section: section, field: noun + " " + id + " added" });
+    });
+  }
+
+  // Pure: two settingsSnapshot() results in, [{ section, field }] out, in nav order, with the labels the page shows.
+  function settingsChanges(baseline, current) {
+    var out = [];
+    if (!baseline || !current) return out;
+    var before = baseline.payload || {};
+    var after = current.payload || {};
+    var was = before.repos || {};
+    var now = after.repos || {};
+    Object.keys(was).sort().forEach(function (name) {
+      if (!Object.prototype.hasOwnProperty.call(now, name)) {
+        out.push({ section: SETTINGS_TITLES.repos, field: name + " removed" });
+        return;
+      }
+      for (var i = 0; i < REPO_FIELDS.length; i++) {
+        var key = REPO_FIELDS[i][0];
+        if (!same(was[name][key], now[name][key])) out.push({ section: SETTINGS_TITLES.repos, field: name + " " + REPO_FIELDS[i][1] });
+      }
+    });
+    Object.keys(now).sort().forEach(function (name) {
+      if (!Object.prototype.hasOwnProperty.call(was, name)) out.push({ section: SETTINGS_TITLES.repos, field: name + " added" });
+    });
+    for (var f = 0; f < SETTINGS_FIELDS.length; f++) {
+      var field = SETTINGS_FIELDS[f];
+      if (field[0] !== "limits") continue;
+      if (!same(valueAt(before, field[1]), valueAt(after, field[1]))) out.push({ section: SETTINGS_TITLES.limits, field: field[2] });
+    }
+    for (var g = 0; g < SETTINGS_FIELDS.length; g++) {
+      if (SETTINGS_FIELDS[g][0] !== "sandbox") continue;
+      if (!same(valueAt(before, SETTINGS_FIELDS[g][1]), valueAt(after, SETTINGS_FIELDS[g][1]))) out.push({ section: SETTINGS_TITLES.sandbox, field: SETTINGS_FIELDS[g][2] });
+    }
+    rowChanges(SETTINGS_TITLES.triggers, "trigger", before.triggers, after.triggers, out);
+    rowChanges(SETTINGS_TITLES.triggers, "route", before.routes, after.routes, out);
+    for (var h = 0; h < SETTINGS_FIELDS.length; h++) {
+      var later = SETTINGS_FIELDS[h];
+      if (later[0] !== "jira" && later[0] !== "workflows") continue;
+      if (!same(valueAt(before, later[1]), valueAt(after, later[1]))) out.push({ section: SETTINGS_TITLES[later[0]], field: later[2] });
+    }
+    if (baseline.file !== current.file) out.push({ section: SETTINGS_TITLES.file, field: "kiln.config.json" });
+    return out;
+  }
+
+  function currentSettingsChanges() {
+    if (!settingsBaseline) return [];
+    return settingsChanges(settingsBaseline, settingsSnapshot());
+  }
+
+  function unsavedSummary(changes) {
+    var groups = [];
+    var bySection = {};
+    for (var i = 0; i < changes.length; i++) {
+      var change = changes[i];
+      if (!bySection[change.section]) {
+        bySection[change.section] = [];
+        groups.push(change.section);
+      }
+      bySection[change.section].push(change.field);
+    }
+    return groups.map(function (section) { return "in " + section + ": " + bySection[section].join(", "); }).join("; ");
+  }
+
+  function renderUnsaved() {
+    var bar = document.getElementById("settings-unsaved");
+    if (!bar) return;
+    var changes = currentSettingsChanges();
+    bar.hidden = changes.length === 0;
+    var countEl = document.getElementById("settings-unsaved-count");
+    var listEl = document.getElementById("settings-unsaved-list");
+    if (countEl) countEl.textContent = changes.length === 1 ? "1 unsaved change" : changes.length + " unsaved changes";
+    if (listEl) listEl.textContent = changes.length ? ", " + unsavedSummary(changes) : "";
+  }
+
+  function setSettingsFact(id, text, state) {
+    var fact = document.querySelector('#settings-nav [data-settings-fact="' + id + '"]');
+    if (!fact) return;
+    fact.textContent = text;
+    if (state) fact.setAttribute("data-state", state);
+    else fact.removeAttribute("data-state");
+  }
+
+  function fillFacts(data) {
+    setSettingsFact("repos", String(Object.keys(data.repos || {}).length));
+    setSettingsFact("triggers", String((data.triggers || []).length));
+    var jira = data.jira || {};
+    var connected = Boolean(jira.baseUrl && jira.email && jira.token && jira.token !== "not set");
+    setSettingsFact("jira", connected ? "connected" : "not set up", connected ? "connected" : "");
+  }
+
+  function discardSettings() {
+    if (!settingsDoc) return;
+    clearSettingsErrors();
+    editing = null;
+    var editor = document.getElementById("repo-editor");
+    if (editor) editor.hidden = true;
+    applySettingsDocument(settingsDoc);
+    var saved = document.getElementById("settings-saved");
+    if (saved) saved.hidden = true;
   }
 
   function safePaint(value) {
@@ -1670,12 +1886,17 @@
         continue;
       }
       if (key.indexOf("sandbox.allowDomains") === 0) {
-        setSettingsTab("global");
+        setSettingsTab("sandbox");
         showSlot("sandbox.allowDomains", message);
         continue;
       }
-      if (key === "sandbox.mode" || key === "maxAttempts" || key === "stallTimeoutMs" || key === "maxFixRounds" || key === "maxSameFingerprint" || key === "dailyDollarCap") {
-        setSettingsTab("global");
+      if (key === "sandbox.mode") {
+        setSettingsTab("sandbox");
+        showSlot(key, message);
+        continue;
+      }
+      if (key === "maxAttempts" || key === "stallTimeoutMs" || key === "maxFixRounds" || key === "maxSameFingerprint" || key === "dailyDollarCap") {
+        setSettingsTab("limits");
         showSlot(key, message);
         continue;
       }
@@ -1685,7 +1906,7 @@
         continue;
       }
       if (key === "maxConcurrent" || key === "adapter") {
-        setSettingsTab("global");
+        setSettingsTab("limits");
         showSlot(key, message);
         continue;
       }
@@ -1749,10 +1970,13 @@
     fillJira(data);
     fillOverlay(data);
     fillAdvanced(data.file);
+    fillFacts(data);
+    settingsBaseline = settingsSnapshot();
+    renderUnsaved();
   }
 
   function openQueriedRepo() {
-    if (body.getAttribute("data-section") !== "settings") return;
+    if (!onSettingsPage() || settingsTab !== "repos") return;
     var params;
     try { params = new URLSearchParams(window.location.search); } catch (err) { return; }
     var repo = params.get("repo") || "";
@@ -1782,7 +2006,7 @@
         var editor = document.getElementById("repo-editor");
         if (editor) editor.hidden = true;
         applySettingsDocument(result.data);
-        setSettingsTab("repos");
+        setSettingsTab(onSettingsPage() ? settingsSectionFromPath(location.pathname) : "repos");
         openQueriedRepo();
       })
       .catch(function () { showSettingsError("Could not load settings."); });
@@ -1852,7 +2076,19 @@
   function saveSettings() {
     if (settingsSaving) return;
     clearSettingsErrors();
-    if (currentSettingsTab() === "advanced") {
+    var changes = currentSettingsChanges();
+    if (!changes.length) return;
+    var fileChanged = false;
+    var formChanged = false;
+    for (var i = 0; i < changes.length; i++) {
+      if (changes[i].section === SETTINGS_TITLES.file) fileChanged = true;
+      else formChanged = true;
+    }
+    if (fileChanged && formChanged) {
+      showSettingsError("Edit the file and other sections both have changes. Undo one of them, or Discard, then save.");
+      return;
+    }
+    if (fileChanged) {
       saveAdvanced();
       return;
     }
@@ -2066,9 +2302,16 @@
       (removeParts[0] === "routes" ? routeRows : triggerRows).remove(Number(removeParts[1]));
       return;
     }
-    var settingsTab = target.closest("#settings-form [data-settings-tab]");
-    if (settingsTab) {
-      setSettingsTab(settingsTab.getAttribute("data-settings-tab") || "repos");
+    var sectionLink = target.closest("#settings-nav a");
+    if (sectionLink) {
+      if (event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      // Switch in place so edits in other sections stay in the form.
+      event.preventDefault();
+      setSettingsTab(settingsSectionFromPath(sectionLink.getAttribute("href")), true);
+      return;
+    }
+    if (target.closest("#settings-discard")) {
+      discardSettings();
       return;
     }
     var repoFs = target.closest("#repo-browser .fs-item, #repo-browser .fs-up, #repo-browser .fs-use");
@@ -2448,6 +2691,16 @@
       markSettingsDirty();
       clearSettingsErrors();
     });
+    if (typeof window !== "undefined" && window.addEventListener) {
+      window.addEventListener("popstate", function () {
+        if (onSettingsPage()) setSettingsTab(settingsSectionFromPath(location.pathname));
+      });
+      window.addEventListener("beforeunload", function (event) {
+        if (!currentSettingsChanges().length) return;
+        event.preventDefault();
+        event.returnValue = "";
+      });
+    }
   }
   var previewBtn = document.getElementById("preview-job");
   if (previewBtn) previewBtn.addEventListener("click", function () { submitIntake(true); });

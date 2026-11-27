@@ -5,7 +5,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
+import { buildAttention } from "../src/attention.js";
+import { buildBoard } from "../src/board-view.js";
 import { packageRoot } from "../src/paths.js";
+import { jiraFact, renderApp } from "../src/serve-page.js";
 
 const root = packageRoot();
 const keep: string[] = [];
@@ -216,15 +219,10 @@ describe("serve settings", () => {
       assert.equal(page.status, 200);
       assert.match(page.body, /id="settings"/);
       assert.match(page.body, /id="repo-add"/);
-      assert.match(page.body, /data-settings-tab="triggers"/);
-      assert.match(page.body, /data-settings-tab="routes"/);
-      assert.match(page.body, /data-settings-tab="jira"/);
-      assert.match(page.body, /data-settings-tab="overlay"/);
-      assert.match(page.body, /data-settings-tab="advanced"/);
+      assert.match(page.body, /<a href="\/settings\/file"><span>Edit the file<\/span><\/a>/);
       assert.match(page.body, /id="settings-json"/);
       assert.match(page.body, /JIRA_API_TOKEN/);
       assert.match(page.body, /aria-label="Settings sections"/);
-      assert.match(page.body, /data-settings-tab="advanced" aria-pressed="false"/);
       assert.match(page.body, /<input id="keep-worktrees" type="checkbox">/);
       assert.match(page.body, /renders as \[ABC-123\] Title/);
       assert.match(page.body, /renders as ABC-123-slug/);
@@ -487,7 +485,7 @@ describe("serve settings", () => {
       const csrf = csrfFrom(page.body);
       const triggersPage = await text(`${server.url}/triggers`);
       assert.equal(triggersPage.body.includes("data-trigger-toggle"), false);
-      assert.match(triggersPage.body, /Edit triggers in Settings/);
+      assert.match(triggersPage.body, /<a href="\/settings\/triggers">Edit triggers in Settings/);
       const before = JSON.parse((await text(`${server.url}/api/settings`)).body) as SettingsDoc & {
         file: Record<string, unknown>;
       };
@@ -601,5 +599,147 @@ describe("serve settings", () => {
     } finally {
       await stop(server.child);
     }
+  });
+});
+
+const SECTIONS = [
+  ["repos", "Repos"],
+  ["limits", "Limits and retries"],
+  ["sandbox", "Sandbox"],
+  ["triggers", "Triggers"],
+  ["jira", "Jira"],
+  ["workflows", "Local workflows and skills"],
+  ["appearance", "Appearance"],
+  ["file", "Edit the file"],
+] as const;
+
+/** Every control id the form had before the sections were split (repo editor, Global, Triggers, Routes, Jira, Overlay, Appearance, Advanced). */
+const OLD_CONTROL_IDS = [
+  "repo-editor", "repo-name", "repo-path", "repo-browse", "repo-browser", "repo-test", "repo-deliver", "repo-base",
+  "repo-pr-title", "hint-pr-title", "repo-branch", "hint-branch", "repo-max-attempts", "repo-max-fix-rounds", "repo-done",
+  "repo-list", "repo-add", "sandbox-mode", "sandbox-domains", "max-attempts", "hint-attempts", "stall-timeout", "hint-stall",
+  "keep-worktrees", "max-fix-rounds", "hint-fix", "max-same-fingerprint", "hint-fingerprint", "daily-dollar-cap", "hint-cap",
+  "max-concurrent", "hint-concurrent", "adapter-mode", "hint-adapter", "trigger-editor", "trigger-id", "trigger-enabled",
+  "trigger-kind", "trigger-cron", "trigger-label", "trigger-max-new", "trigger-max-queued", "trigger-every", "trigger-jql",
+  "trigger-jira-label", "trigger-status", "trigger-repo", "trigger-list", "route-editor", "route-id", "route-trigger",
+  "route-action", "route-workflow", "route-repo", "route-list", "jira-base", "jira-email", "jira-acceptance", "jira-token",
+  "overlay-workflows", "overlay-prompts", "overlay-skills", "overlay-skill-paths", "theme-pick", "settings-json",
+  "advanced-hint", "advanced-errors",
+];
+
+function panes(html: string): Map<string, { hidden: boolean; body: string }> {
+  const out = new Map<string, { hidden: boolean; body: string }>();
+  for (const match of html.matchAll(/<section class="settings-pane[^"]*" id="settings-([a-z]+)"([^>]*)>([\s\S]*?)<\/section>/g)) {
+    out.set(match[1] ?? "", { hidden: /\shidden/.test(match[2] ?? ""), body: match[3] ?? "" });
+  }
+  return out;
+}
+
+describe("settings sections", () => {
+  it("serves each section at its own address and 404s anything else", async () => {
+    const { cwd, home } = workDir("kiln-settings-sections-");
+    const server = await startServe({ cwd, home });
+    try {
+      const cases: [string, string][] = [["/settings", "repos"], ...SECTIONS.map(([id]) => [`/settings/${id}`, id] as [string, string])];
+      for (const [path, open] of cases) {
+        const page = await text(`${server.url}${path}`);
+        assert.equal(page.status, 200, path);
+        assert.equal(page.body.includes("data-settings-tab"), false, path);
+        assert.equal(page.body.includes('role="tablist"'), false, path);
+        assert.equal(page.body.includes("form-footer\"><button type=\"submit\" class=\"btn primary\">Save<"), false, path);
+        const nav = page.body.slice(page.body.indexOf('<nav class="settings-nav"'), page.body.indexOf("</nav>", page.body.indexOf('<nav class="settings-nav"')));
+        assert.match(nav, /aria-label="Settings sections"/);
+        const links = [...nav.matchAll(/<a href="\/settings\/([a-z]+)"( aria-current="page")?><span>([^<]+)<\/span>/g)];
+        assert.deepEqual(
+          links.map((link) => [link[1], link[3]]),
+          SECTIONS.map(([id, title]) => [id, title]),
+          path,
+        );
+        assert.deepEqual(
+          links.filter((link) => link[2]).map((link) => link[1]),
+          [open],
+          path,
+        );
+        const found = panes(page.body);
+        assert.deepEqual([...found.keys()], SECTIONS.map(([id]) => id), path);
+        assert.deepEqual(
+          [...found].filter(([, pane]) => !pane.hidden).map(([id]) => id),
+          [open],
+          path,
+        );
+        assert.match(found.get(open)?.body ?? "", new RegExp(`<h2 id="settings-${open}-title">`));
+        assert.match(page.body, /id="settings-unsaved" role="status" hidden/);
+        assert.match(page.body, /<button type="button" class="btn" id="settings-discard">Discard<\/button>/);
+        assert.match(page.body, /<button type="submit" class="btn primary" id="settings-save">Save changes<\/button>/);
+        assert.equal(page.body.includes(TOKEN), false, path);
+      }
+      for (const path of ["/settings/global", "/settings/routes", "/settings/overlay", "/settings/advanced", "/settings/nope", "/settings/repos/x"]) {
+        const page = await text(`${server.url}${path}`);
+        assert.equal(page.status, 404, path);
+      }
+
+      const page = await text(`${server.url}/settings/limits`);
+      const found = panes(page.body);
+      for (const id of OLD_CONTROL_IDS) {
+        const owners = [...found].filter(([, pane]) => pane.body.includes(`id="${id}"`)).map(([section]) => section);
+        assert.equal(owners.length, 1, `${id} is in ${owners.join(", ") || "no pane"}`);
+        assert.equal(page.body.split(`id="${id}"`).length - 1, 1, id);
+      }
+      assert.match(found.get("limits")?.body ?? "", /id="stall-timeout"/);
+      assert.match(found.get("limits")?.body ?? "", /Stall timeout \(ms\)/);
+      assert.match(found.get("sandbox")?.body ?? "", /id="sandbox-domains"/);
+      const triggers = found.get("triggers")?.body ?? "";
+      assert.ok(triggers.indexOf('id="trigger-list"') < triggers.indexOf("<h3>Routes</h3>"));
+      assert.ok(triggers.indexOf("<h3>Routes</h3>") < triggers.indexOf('id="route-list"'));
+    } finally {
+      await stop(server.child);
+    }
+  });
+
+  it("shows repo and trigger counts and the Jira state, never the token", async () => {
+    const { cwd, home, configPath } = workDir("kiln-settings-facts-");
+    const server = await startServe({ cwd, home });
+    try {
+      const page = await text(`${server.url}/settings/jira`);
+      assert.equal(page.body.includes(TOKEN), false);
+      assert.match(page.body, /<span class="settings-fact" data-settings-fact="repos">1<\/span>/);
+      // No file triggers: the two built-ins.
+      assert.match(page.body, /<span class="settings-fact" data-settings-fact="triggers">2<\/span>/);
+      assert.match(page.body, /<span class="settings-fact" data-settings-fact="jira" data-state="connected">connected<\/span>/);
+
+      const config = JSON.parse(readFileSync(configPath, "utf8")) as { jira: Record<string, string> };
+      delete config.jira.email;
+      writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+      const after = await text(`${server.url}/settings/jira`);
+      assert.match(after.body, /<span class="settings-fact" data-settings-fact="jira">not set up<\/span>/);
+      assert.equal(after.body.includes(TOKEN), false);
+    } finally {
+      await stop(server.child);
+    }
+  });
+
+  it("calls Jira connected only with a base URL, an email, and a token", () => {
+    const all = { baseUrl: "https://example.atlassian.net", email: "dev@example.com", apiToken: "SAMPLE-TOKEN-PLACEHOLDER" };
+    assert.equal(jiraFact(all), "connected");
+    assert.equal(jiraFact({ ...all, apiToken: undefined }, "SAMPLE-ENV-TOKEN"), "connected");
+    assert.equal(jiraFact({ ...all, baseUrl: undefined }), "not set up");
+    assert.equal(jiraFact({ ...all, email: "  " }), "not set up");
+    assert.equal(jiraFact({ ...all, apiToken: undefined }), "not set up");
+    assert.equal(jiraFact({ ...all, apiToken: undefined }, ""), "not set up");
+    assert.equal(jiraFact(undefined), "not set up");
+  });
+
+  it("renders the open section and the facts it is given", () => {
+    const html = renderApp({
+      css: "",
+      section: "settings",
+      board: buildBoard([], []),
+      attention: buildAttention([]),
+      page: { csrf: "abc", repos: [], workflows: [] },
+      settingsSection: "sandbox",
+      settingsFacts: { repos: 0, triggers: 2, jira: "not set up" },
+    });
+    assert.match(html, /<a href="\/settings\/sandbox" aria-current="page">/);
+    assert.match(html, /data-settings-fact="jira">not set up</);
   });
 });
