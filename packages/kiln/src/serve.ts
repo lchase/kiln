@@ -865,8 +865,11 @@ function readInside(kilnDir: string, target: string): string | undefined {
   } catch {
     return undefined;
   }
+  // Compare the lexical path with the lexical kiln dir: realpath can add a prefix
+  // (macOS tmp dirs live under /private/var), so checking it against `root` would reject every file.
+  const lexicalRoot = resolve(kilnDir);
   const resolved = resolve(target);
-  if (resolved !== root && !resolved.startsWith(root + sep)) return undefined;
+  if (resolved !== lexicalRoot && !resolved.startsWith(lexicalRoot + sep)) return undefined;
   let real: string;
   try {
     real = realpathSync(resolved);
