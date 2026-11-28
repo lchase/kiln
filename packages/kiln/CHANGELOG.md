@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.25.0](https://github.com/lchase/kiln/compare/kiln-v0.24.0...kiln-v0.25.0) (2026-11-28)
+
+
+### Features
+
+* Artifacts column on the job page, grouped by round ([#118](https://github.com/lchase/kiln/issues/118)) ([b1cf49c](https://github.com/lchase/kiln/commit/b1cf49c4a2f8b733366e95a36e1eb7a259cb3689))
+* clearer decision and failure pages ([#115](https://github.com/lchase/kiln/issues/115)) ([bb96ba5](https://github.com/lchase/kiln/commit/bb96ba59123ff9d67309e5cfd02a8687a110d355))
+* keyboard navigation for the job lists and board ([#116](https://github.com/lchase/kiln/issues/116)) ([d0bc379](https://github.com/lchase/kiln/commit/d0bc379de1a64833d468aeaa326ce8d149bab6f1))
+* Retry all and Remove finished cleanup buttons ([#117](https://github.com/lchase/kiln/issues/117)) ([ff28baa](https://github.com/lchase/kiln/commit/ff28baa290ea6355be7bc3df7d7bf86ab1435c6d))
+
+
+### Bug Fixes
+
+* stats cost by workflow, quieter finished rows, bundled fonts, accent contrast ([#113](https://github.com/lchase/kiln/issues/113)) ([ebc2096](https://github.com/lchase/kiln/commit/ebc2096f243403dd935425fda70e52721207c257))
+
 ## [0.24.0](https://github.com/lchase/kiln/compare/kiln-v0.23.0...kiln-v0.24.0) (2026-11-28)
 
 
