@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/lchase/kiln/compare/kiln-v0.23.0...kiln-v0.24.0) (2026-11-28)
+
+
+### Features
+
+* clearer board, job page, and text contrast from a UI review ([#111](https://github.com/lchase/kiln/issues/111)) ([5cc374c](https://github.com/lchase/kiln/commit/5cc374c7f3d888c5cf943c437128e980b97fca8b))
+
 ## [0.23.0](https://github.com/lchase/kiln/compare/kiln-v0.22.0...kiln-v0.23.0) (2026-11-27)
 
 
