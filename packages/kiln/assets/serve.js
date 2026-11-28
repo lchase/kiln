@@ -2586,6 +2586,14 @@
       loadFs(next, false);
       return;
     }
+    if (target.closest("#show-shortcuts")) {
+      showShortcuts(true);
+      return;
+    }
+    if (target.closest("#close-shortcuts")) {
+      showShortcuts(false);
+      return;
+    }
     if (target.closest("#done-more")) {
       doneAll = !doneAll;
       try { localStorage.setItem("kiln-done-all", doneAll ? "on" : "off"); } catch (err) { /* private mode */ }
@@ -2669,7 +2677,58 @@
     if (card) openJob(card.getAttribute("data-job") || "");
   });
 
+  // Keyboard shortcuts. The list in the Shortcuts panel (SHORTCUTS_PANEL in serve-page.ts) must match.
+  var chordUntil = 0;
+  function typingTarget(el) {
+    if (!el || !el.tagName) return false;
+    var tag = el.tagName.toLowerCase();
+    return tag === "input" || tag === "textarea" || tag === "select" || Boolean(el.isContentEditable);
+  }
+  function jobLinks() {
+    return Array.prototype.slice.call(document.querySelectorAll(".board .card:not([hidden]):not(.beyond) .job-title, .job:not([hidden]) .job-title"));
+  }
+  function showShortcuts(open) {
+    var panel = document.getElementById("shortcuts");
+    if (!panel) return;
+    panel.hidden = !open;
+    if (open) {
+      var close = document.getElementById("close-shortcuts");
+      if (close) close.focus();
+    } else {
+      var opener = document.getElementById("show-shortcuts");
+      if (opener) opener.focus();
+    }
+  }
+  function handleShortcut(event) {
+    if (event.metaKey || event.ctrlKey || event.altKey) return false;
+    var panel = document.getElementById("shortcuts");
+    var panelOpen = Boolean(panel) && !panel.hidden;
+    if (event.key === "Escape" && panelOpen) { showShortcuts(false); return true; }
+    if (typingTarget(event.target) || body.classList.contains("open")) return false;
+    if (event.key === "?") { event.preventDefault(); showShortcuts(!panelOpen); return true; }
+    if (panelOpen) return false;
+    var now = Date.now();
+    if (chordUntil > now) {
+      chordUntil = 0;
+      var go = { p: "/", r: "/repos", h: "/history", t: "/triggers", s: "/settings" }[event.key];
+      if (go) { event.preventDefault(); location.href = go; return true; }
+      return false;
+    }
+    if (event.key === "g") { chordUntil = now + 1200; return true; }
+    if (event.key === "j" || event.key === "k") {
+      var links = jobLinks();
+      if (links.length === 0) return false;
+      var at = links.indexOf(document.activeElement);
+      var next = event.key === "j" ? (at < 0 ? 0 : Math.min(at + 1, links.length - 1)) : (at < 0 ? links.length - 1 : Math.max(at - 1, 0));
+      event.preventDefault();
+      links[next].focus();
+      return true;
+    }
+    return false;
+  }
+
   document.addEventListener("keydown", function (event) {
+    if (handleShortcut(event)) return;
     var keyTarget = event.target;
     if (keyTarget && keyTarget.getAttribute && keyTarget.getAttribute("role") === "combobox") {
       var combo = keyTarget.closest(".combo");
