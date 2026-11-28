@@ -84,6 +84,93 @@
     for (var g = 0; g < groups.length; g++) {
       groups[g].hidden = Boolean(query) && groups[g].querySelectorAll(".job:not([hidden])").length === 0;
     }
+    refreshBulk();
+  }
+
+  // Cleanup buttons: "Retry all" on the Needs a hand column and "Remove finished" on the job lists. The first click
+  // arms a button and a second click within a few seconds acts. Jobs go one at a time through the same routes the
+  // per-job buttons use, then the page reloads and shows what happened.
+  function retryIds() {
+    var cards = document.querySelectorAll('.board .col[data-column="needs-hand"] .card:not([hidden])');
+    var ids = [];
+    for (var i = 0; i < cards.length; i++) {
+      if (cards[i].querySelector("form.retry") && cards[i].getAttribute("data-job")) ids.push(cards[i].getAttribute("data-job"));
+    }
+    return ids;
+  }
+  function removeIds() {
+    var rows = document.querySelectorAll('.job[data-column="done"][data-removable="true"]:not([hidden])');
+    var ids = [];
+    for (var i = 0; i < rows.length; i++) if (rows[i].getAttribute("data-job")) ids.push(rows[i].getAttribute("data-job"));
+    return ids;
+  }
+  function jobCount(n) { return n + (n === 1 ? " job" : " jobs"); }
+  var BULK = [
+    {
+      id: "retry-all", route: "retry", ids: retryIds, doing: "Retrying", done: "Retried",
+      label: function (n) { return "Retry all (" + n + ")"; },
+      confirm: function (n) { return "Retry " + jobCount(n) + "? Click again"; },
+    },
+    {
+      id: "remove-finished", route: "remove", ids: removeIds, doing: "Removing", done: "Removed",
+      label: function (n) { return "Remove finished (" + n + ")"; },
+      confirm: function (n) { return "Remove " + jobCount(n) + "? This cannot be undone. Click again"; },
+    },
+  ];
+  var bulkArmed = "";
+  var bulkTimer = 0;
+  function bulkNote(text) {
+    var el = document.getElementById("bulk-status");
+    if (el) el.textContent = text;
+  }
+  function refreshBulk() {
+    for (var i = 0; i < BULK.length; i++) {
+      var button = document.getElementById(BULK[i].id);
+      if (!button) continue;
+      var n = BULK[i].ids().length;
+      var armed = bulkArmed === BULK[i].id && n > 0;
+      button.hidden = n === 0;
+      button.setAttribute("aria-pressed", armed ? "true" : "false");
+      button.textContent = armed ? BULK[i].confirm(n) : BULK[i].label(n);
+    }
+  }
+  function runBulk(def) {
+    var ids = def.ids();
+    if (ids.length === 0) return;
+    actionPending = true;
+    var ok = 0;
+    var failed = [];
+    var at = 0;
+    function finish() {
+      var note = def.done + " " + jobCount(ok) + ".";
+      if (failed.length > 0) {
+        var seen = [];
+        for (var i = 0; i < failed.length; i++) if (seen.indexOf(failed[i]) === -1) seen.push(failed[i]);
+        note += " Skipped " + failed.length + ": " + seen.slice(0, 2).join("; ") + (seen.length > 2 ? "; and more" : "");
+      }
+      try { sessionStorage.setItem("kiln-bulk-note", note); } catch (err) { /* private mode */ }
+      location.reload();
+    }
+    function next() {
+      if (at >= ids.length) { finish(); return; }
+      var id = ids[at];
+      at += 1;
+      bulkNote(def.doing + " " + at + " of " + ids.length + "\u2026");
+      fetch("/api/jobs/" + encodeURIComponent(id) + "/" + def.route, {
+        method: "POST",
+        headers: { Accept: "application/json", "X-Kiln-CSRF": bodyCsrf() },
+      })
+        .then(function (response) {
+          return response.json().catch(function () { return {}; }).then(function (data) { return { ok: response.ok, data: data }; });
+        })
+        .then(function (result) {
+          if (result.ok) ok += 1;
+          else failed.push(result.data && result.data.error ? String(result.data.error) : "request failed");
+          next();
+        })
+        .catch(function () { failed.push("request failed"); next(); });
+    }
+    next();
   }
 
   function applyRepo() {
@@ -116,6 +203,7 @@
     for (var k = 0; k < flows.length; k++) {
       flows[k].setAttribute("aria-pressed", (flows[k].getAttribute("data-workflow") || "") === workflow ? "true" : "false");
     }
+    refreshBulk();
     layout();
   }
 
@@ -2594,6 +2682,20 @@
       showShortcuts(false);
       return;
     }
+    for (var b = 0; b < BULK.length; b++) {
+      if (!target.closest("#" + BULK[b].id)) continue;
+      if (bulkArmed === BULK[b].id) {
+        bulkArmed = "";
+        clearTimeout(bulkTimer);
+        runBulk(BULK[b]);
+      } else {
+        bulkArmed = BULK[b].id;
+        clearTimeout(bulkTimer);
+        bulkTimer = setTimeout(function () { bulkArmed = ""; refreshBulk(); }, 6000);
+        refreshBulk();
+      }
+      return;
+    }
     if (target.closest("#done-more")) {
       doneAll = !doneAll;
       try { localStorage.setItem("kiln-done-all", doneAll ? "on" : "off"); } catch (err) { /* private mode */ }
@@ -3098,6 +3200,10 @@
   syncValidity();
   renderCompact();
   renderNotify();
+  try {
+    var bulkDone = sessionStorage.getItem("kiln-bulk-note");
+    if (bulkDone) { sessionStorage.removeItem("kiln-bulk-note"); bulkNote(bulkDone); }
+  } catch (err) { /* private mode */ }
   var filterStart = document.getElementById("job-filter");
   if (filterStart) {
     try { filterStart.value = sessionStorage.getItem("kiln-job-filter") || ""; } catch (err) { filterStart.value = ""; }

@@ -435,15 +435,21 @@ function allJobs(board: BoardDocument): JobView[] {
 /** The filter box on the job lists. `serve.js` hides rows whose text does not match, and `/` focuses it. */
 const JOB_FILTER = `<input type="search" id="job-filter" class="job-filter" placeholder="Filter jobs (press /)" aria-label="Filter jobs" autocomplete="off" spellcheck="false">`;
 
+/** Where the cleanup buttons report. `serve.js` fills it, and fills it again after the page reloads. */
+const BULK_STATUS = `<p class="meta bulk-status" id="bulk-status" role="status"></p>`;
+
+/** The filter box and the Remove finished button for the job lists. `serve.js` shows the button when it applies. */
+const LIST_TOOLS = `${JOB_FILTER}<div class="bulk"><button type="button" class="btn" id="remove-finished" hidden></button>${BULK_STATUS}</div>`;
+
 function listHtml(model: AppModel, csrf: string, clock: BoardClock): string {
   const board = model.board;
   if (model.section === "history") {
-    return `<header class="list-head"><h2>History</h2>${JOB_FILTER}</header>${jobList(board.history, "history", "No finished jobs.", csrf, clock)}`;
+    return `<header class="list-head"><h2>History</h2>${LIST_TOOLS}</header>${jobList(board.history, "history", "No finished jobs.", csrf, clock)}`;
   }
   const groups = model.repo ? board.repos.filter((group) => group.repo === model.repo) : board.repos;
   if (groups.length === 0) return `<header class="list-head"><h2>Jobs by repo</h2></header><p class="empty">No jobs.</p>`;
   const heading = model.repo ? escapeHtml(model.repo) : "Jobs by repo";
-  return `<header class="list-head"><h2>${heading}</h2>${JOB_FILTER}</header>${groups
+  return `<header class="list-head"><h2>${heading}</h2>${LIST_TOOLS}</header>${groups
     .map((group) => {
       const label = model.repo ? "" : `<h3>${escapeHtml(group.repo)}</h3>`;
       return `<section class="repo-block">${label}${groupedJobs(group.jobs, "repos", csrf, clock)}</section>`;
@@ -497,11 +503,11 @@ function pipelineHtml(jobs: readonly JobView[], clock: BoardClock, csrf: string)
     return `<section class="col" data-column="${column}" aria-label="${escapeHtml(COLUMN_LABEL[column])}" title="${escapeHtml(COLUMN_HINT[column])}">
 <header class="full"><h2>${icon(COLUMN_ICON[column], `icon col-icon ${column}`)}${escapeHtml(COLUMN_LABEL[column])}</h2><span class="count">${rows.length || ""}</span>${sub}</header>
 <div class="slim-face"><span>${escapeHtml(COLUMN_LABEL[column])}</span><span class="count">${rows.length}</span></div>
-${cards}<p class="empty">${escapeHtml(emptyColumn(column))}</p>${column === "done" ? `<button type="button" class="btn done-more" id="done-more" hidden></button>` : ""}
+${column === "needs-hand" ? `<button type="button" class="btn col-bulk" id="retry-all" hidden></button>` : ""}${cards}<p class="empty">${escapeHtml(emptyColumn(column))}</p>${column === "done" ? `<button type="button" class="btn done-more" id="done-more" hidden></button>` : ""}
 </section>`;
   }).join("");
   const status = boardStatusHtml(counts.get("running") ?? 0, counts.get("needs-you") ?? 0, counts.get("needs-hand") ?? 0);
-  return `<header class="list-head"><div class="head-row"><h2>Pipeline</h2>${status}<button type="button" id="compact" aria-pressed="true" aria-label="collapse empty columns"></button></div></header>${filtersHtml(jobs)}<div class="board-scroll"><div class="board" id="board">${columns}</div></div>`;
+  return `<header class="list-head"><div class="head-row"><h2>Pipeline</h2>${status}<button type="button" id="compact" aria-pressed="true" aria-label="collapse empty columns"></button></div></header>${filtersHtml(jobs)}${BULK_STATUS}<div class="board-scroll"><div class="board" id="board">${columns}</div></div>`;
 }
 
 /** `2 running, 2 need you, 1 needs a hand`. The dot pulses only while something runs. */
@@ -798,7 +804,7 @@ function jobRow(job: BoardJob, section: "repos" | "history", csrf: string, clock
   const links = fileLinks(job);
   const age = job.since ? timeHtml(job.since, "rel") : "";
   const cost = formatCost(job.costUsd);
-  return `<article class="${classes.join(" ")}" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}" data-deps="${escapeHtml(job.dependsOn.map((dep) => dep.jobId).join(" "))}"${activityAttrs(job)}${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
+  return `<article class="${classes.join(" ")}" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}" data-deps="${escapeHtml(job.dependsOn.map((dep) => dep.jobId).join(" "))}"${job.canRemove ? ` data-removable="true"` : ""}${activityAttrs(job)}${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
 <div class="job-main">
 <div class="job-top"><a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a></div>
 <div class="job-meta"><span class="num">${escapeHtml(job.jobId)}</span>${repo}<span class="chip ${stateTone(job.state)}">${escapeHtml(stateWord(job.state))}</span>${heldChip(job)}<span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}${sandbox}${pr}</div>
