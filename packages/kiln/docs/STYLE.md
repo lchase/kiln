@@ -141,6 +141,25 @@ the icon: the color only helps the eye group cards.
   hidden name: cost `coins`, run time `clock`, lines `file-diff` (`+412 -38`), files `files`, fix rounds `wrench`.
   A metric Kiln cannot derive is left out, not shown as zero. No metric, no line.
 
+### List view
+
+The Pipeline is columns or a list. A `.seg` switch (List, Columns; `aria-pressed` on the current one) sits at the top
+right. The choice is the `kiln-board` cookie, which the server reads, so the page loads in the view you chose with no
+flash. Columns are the default. `?view=list` or `?view=columns` asks for one view and wins over the cookie: the live
+refresh uses it to ask for its own view.
+
+- A job that needs you is a band, not a row: a `--radius-lg` box with a hairline `--state-needs-you` border and a 9%
+  wash of that color over `--panel`, the one tinted surface in the app. It holds the kind line (`eye` icon,
+  `Needs you`), the title in `--text-lg`, one sentence and the cost so far, the phase chain, and a Review button at
+  `--hit` height. With no such job, one calm line says so (`circle-check`, `--muted`).
+- Lanes follow, each with its icon, a title and a count: Needs a hand (with Retry all), Running, Queued, Finished.
+  A lane with no rows is not drawn.
+- A row is a status icon, the title (a link), a state line, the cost, and the action, on hairline separators with no
+  box. A row for a job in flight, running or stuck, carries the phase chain (see Job page). Board pills do not link:
+  the title does.
+- Finished shows the newest three, with `Show N more`. The filters and Retry all work on rows as on cards.
+- There is no Compact toggle. The keyboard keys (`j`, `k`) move through the rows.
+
 ### Step track
 
 - One segment per `job.steps` entry, `--space-1` tall, `--radius-sm`, gap `--space-2xs`.
@@ -296,7 +315,7 @@ Kiln notifies only when the needs-you count grows, and only while sending is on.
 ## Don't
 
 - No left or top accent bar on a card, no one-sided border of any color, and no thicker colored border in its place.
-- No glow, and no gradient or tinted wash on a card.
+- No glow, and no gradient or tinted wash on a card. The list view's Needs you band is the one exception (see List view).
 - No pill shapes on tags, status, filter chips, or count badges.
 - No all-caps marketing eyebrows.
 - Do not paint chrome, nav icons, or the sidebar footer with `--primary`. It is for the action button (Approve, Add job) and the current step.

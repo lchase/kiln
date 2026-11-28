@@ -143,6 +143,10 @@ export interface AppModel {
   artifacts?: ArtifactSet;
   /** The run's step ids grouped by what runs at the same time, for the phase chain. Missing means the old grouping. */
   phasePlan?: string[][];
+  /** The Pipeline page's view: columns (the default) or the attention-first list. */
+  boardView?: BoardView;
+  /** For the list view: each active job's grouped step ids, by job id. A job with none uses the old grouping. */
+  phasePlans?: Record<string, string[][]>;
   /** Set on the step page. `section` is still "job". */
   step?: StepPage;
   triggers?: TriggerRow[];
@@ -150,6 +154,8 @@ export interface AppModel {
   settingsSection?: SettingsSectionId;
   settingsFacts?: SettingsFacts;
 }
+
+export type BoardView = "list" | "columns";
 
 const LIVE_SCRIPT = readFileSync(join(packageRoot(), "assets", "serve.js"), "utf8");
 
@@ -364,7 +370,7 @@ function mainHtml(model: AppModel, page: ServePageOptions): string {
     return `${error}<main class="main">${triggersHtml(model.triggers ?? [])}</main>`;
   }
   if (model.section === "pipeline") {
-    return `${error}<main class="main">${pipelineHtml(allJobs(model.board), clockOf(page), page.csrf)}</main>`;
+    return `${error}<main class="main">${pipelineHtml(allJobs(model.board), clockOf(page), page.csrf, model.boardView ?? "columns", model.phasePlans ?? {})}</main>`;
   }
   return `${error}<main class="main">${listHtml(model, page.csrf, clockOf(page))}</main>`;
 }
@@ -500,7 +506,14 @@ const COLUMN_ICON: Record<PipelineColumn, IconName> = {
   done: "circle-check",
 };
 
-function pipelineHtml(jobs: readonly JobView[], clock: BoardClock, csrf: string): string {
+/** The List and Columns switch. The choice is a cookie the server reads, so it is saved and shown with no flash. */
+function boardViewSwitch(view: BoardView): string {
+  const button = (value: BoardView, label: string) => `<button type="button" data-view="${value}" aria-pressed="${view === value ? "true" : "false"}">${label}</button>`;
+  return `<div class="seg board-view" id="board-view" role="group" aria-label="Board view">${button("list", "List")}${button("columns", "Columns")}</div>`;
+}
+
+function pipelineHtml(jobs: readonly JobView[], clock: BoardClock, csrf: string, view: BoardView = "columns", plans: Record<string, string[][]> = {}): string {
+  if (view === "list") return pipelineListHtml(jobs, clock, csrf, plans);
   const titles = new Map(jobs.map((job) => [job.jobId, job.title]));
   const counts = new Map<PipelineColumn, number>();
   const columns = PIPELINE_COLUMNS.map((column) => {
@@ -515,7 +528,7 @@ ${column === "needs-hand" ? `<button type="button" class="btn col-bulk" id="retr
 </section>`;
   }).join("");
   const status = boardStatusHtml(counts.get("running") ?? 0, counts.get("needs-you") ?? 0, counts.get("needs-hand") ?? 0);
-  return `<header class="list-head"><div class="head-row"><h2>Pipeline</h2>${status}<button type="button" id="compact" aria-pressed="true" aria-label="collapse empty columns"></button></div></header>${filtersHtml(jobs)}${BULK_STATUS}<div class="board-scroll"><div class="board" id="board">${columns}</div></div>`;
+  return `<header class="list-head"><div class="head-row"><h2>Pipeline</h2>${status}<span class="head-tools">${boardViewSwitch("columns")}<button type="button" id="compact" aria-pressed="true" aria-label="collapse empty columns"></button></span></div></header>${filtersHtml(jobs)}${BULK_STATUS}<div class="board-scroll"><div class="board" id="board">${columns}</div></div>`;
 }
 
 /** `2 running, 2 need you, 1 needs a hand`. The dot pulses only while something runs. */
@@ -523,6 +536,91 @@ export function boardStatusHtml(running: number, needsYou: number, hand: number)
   const dot = running > 0 ? `<span class="board-pulse" aria-hidden="true"></span>` : "";
   const text = `${running} running, ${needsYou} ${needsYou === 1 ? "needs" : "need"} you, ${hand} ${hand === 1 ? "needs" : "need"} a hand`;
   return `<p class="board-status" id="board-status" role="status">${dot}<span>${text}</span></p>`;
+}
+
+/** One list row: a status icon, the title and state line (with the phase chain for a job in flight), the cost, and the action. */
+function plRowHtml(job: JobView, parts: { cls: string; glyph: IconName; state: string; chain?: string; cost?: string; action?: string }): string {
+  const cost = parts.cost ? `<span class="pl-cost"><span class="sr-only">Cost </span>${escapeHtml(parts.cost)}</span>` : `<span class="pl-cost"></span>`;
+  return `<article class="pl-row ${parts.cls}" ${jobAttrs(job)}>${icon(parts.glyph, `icon pl-icon ${parts.cls}`)}<div class="pl-main"><a class="pl-title" href="/jobs/${encodeURIComponent(job.jobId)}">${escapeHtml(job.title)}</a><span class="pl-state">${parts.state}</span>${parts.chain ?? ""}</div>${cost}<span class="pl-act">${parts.action ?? ""}</span></article>`;
+}
+
+/** A job waiting on you: a highlighted band with the reason, the phase chain, and a big Review button. */
+function askBandHtml(job: JobView, plan: readonly (readonly string[])[] | undefined): string {
+  const cost = formatCost(job.costUsd);
+  const line = `${escapeHtml(needsYouSentence(job))}${cost ? `. ${escapeHtml(cost)} so far` : ""}.`;
+  return `<section class="pl-row pl-ask needs-you" ${jobAttrs(job)} aria-label="Needs you: ${escapeHtml(job.title)}"><div class="pl-ask-body"><p class="pl-ask-kind">${icon("eye")}Needs you</p><h3><a class="pl-title" href="/jobs/${encodeURIComponent(job.jobId)}">${escapeHtml(job.title)}</a></h3><p class="pl-ask-line">${line}</p>${phaseChainHtml(job, new Set(), plan)}</div><a class="btn primary" href="/jobs/${encodeURIComponent(job.jobId)}">Review</a></section>`;
+}
+
+function runningRowHtml(job: JobView, clock: BoardClock, plan: readonly (readonly string[])[] | undefined): string {
+  const { step, liveness, fallback } = runningParts(job, clock);
+  const live = liveness ? ` ${liveness}` : "";
+  const state = step ? `<b>${escapeHtml(step.label)}</b> ${escapeHtml(step.meta)}${live}` : `${fallback}${live}`;
+  const note = job.latestNote ? `<span class="pl-note">${escapeHtml(job.latestNote)}</span>` : "";
+  const cost = formatCost(job.costUsd);
+  return plRowHtml(job, { cls: "running", glyph: "play", state: `${state}${note}`, chain: phaseChainHtml(job, new Set(), plan), ...(cost ? { cost } : {}) });
+}
+
+function handRowHtml(job: JobView, csrf: string, plan: readonly (readonly string[])[] | undefined): string {
+  const id = encodeURIComponent(job.jobId);
+  const forms: string[] = [];
+  if (job.retry) forms.push(postForm(`/api/jobs/${id}/retry`, "retry", "Retry", csrf));
+  if (job.reviewPostError) forms.push(`<a class="card-btn" href="/jobs/${id}">Review</a>`);
+  const cost = formatCost(job.costUsd);
+  return plRowHtml(job, {
+    cls: "needs-hand",
+    glyph: "triangle-alert",
+    state: `<span class="pl-bad">${escapeHtml(job.reason)}</span>${launchFixHtml(job)}`,
+    chain: phaseChainHtml(job, new Set(), plan),
+    ...(cost ? { cost } : {}),
+    ...(forms.length ? { action: `<div class="d-actions">${forms.join("")}</div>` } : {}),
+  });
+}
+
+function queuedRowHtml(job: JobView, titles: ReadonlyMap<string, string>): string {
+  const position = job.queuePosition !== undefined ? `<span class="queue-pos"><span class="sr-only">Position </span>${job.queuePosition}</span> ` : "";
+  const blocked = job.launchBlock ? `<span class="pl-bad">${escapeHtml(job.reason)}</span>${launchFixHtml(job)}` : "";
+  return plRowHtml(job, { cls: "queued", glyph: "hourglass", state: `${position}${queueWhyHtml(job, titles)}${heldChip(job)}${blocked}` });
+}
+
+function doneRowHtml(job: JobView): string {
+  const outcome = doneOutcome(job);
+  const run = job.doneMetrics?.runMs !== undefined ? `, ${escapeHtml(formatDuration(job.doneMetrics.runMs))}` : "";
+  const cost = formatCost(job.doneMetrics?.costUsd ?? job.costUsd);
+  return plRowHtml(job, { cls: "done", glyph: outcome.glyph, state: `<span class="outcome-word ${escapeHtml(job.state)}">${escapeHtml(outcome.label)}</span>${run}`, ...(cost ? { cost } : {}) });
+}
+
+const LANE_TITLE: Record<PipelineColumn, string> = { queued: "Queued", running: "Running", "needs-you": "Needs you", "needs-hand": "Needs a hand", done: "Finished" };
+
+function laneHtml(column: PipelineColumn, rows: string[], extra = ""): string {
+  if (rows.length === 0) return "";
+  return `<section class="pl-lane ${column}" data-lane="${column}" aria-label="${escapeHtml(LANE_TITLE[column])}"><h3>${icon(COLUMN_ICON[column])}<span>${escapeHtml(LANE_TITLE[column])}</span><span class="pl-count" data-pl-count>${rows.length}</span>${extra}</h3>${rows.join("")}</section>`;
+}
+
+/**
+ * The Pipeline as one list in order of what needs you: a band for each job waiting on a decision (or one calm line),
+ * then what is stuck, running, queued, and recently finished. Every job in flight carries its phase chain. A cap on
+ * Finished and the filters are applied by `serve.js`, the same as for the columns.
+ */
+function pipelineListHtml(jobs: readonly JobView[], clock: BoardClock, csrf: string, plans: Record<string, string[][]>): string {
+  const titles = new Map(jobs.map((job) => [job.jobId, job.title]));
+  const rows = (column: PipelineColumn) => inColumn(jobs, column);
+  const waiting = rows("needs-you");
+  const stuck = rows("needs-hand");
+  const running = rows("running");
+  const status = boardStatusHtml(running.length, waiting.length, stuck.length);
+  const band =
+    waiting.length > 0
+      ? waiting.map((job) => askBandHtml(job, plans[job.jobId])).join("")
+      : `<p class="pl-calm">${icon("circle-check")}<span>Nothing needs you right now.</span></p>`;
+  const lanes = [
+    laneHtml("needs-hand", stuck.map((job) => handRowHtml(job, csrf, plans[job.jobId])), `<span class="pl-lane-act"><button type="button" class="btn" id="retry-all" hidden></button></span>`),
+    laneHtml("running", running.map((job) => runningRowHtml(job, clock, plans[job.jobId]))),
+    laneHtml("queued", rows("queued").map((job) => queuedRowHtml(job, titles))),
+    laneHtml("done", rows("done").map((job) => doneRowHtml(job)), ""),
+  ].join("");
+  const doneMore = rows("done").length > 0 ? `<button type="button" class="btn done-more" id="done-more" hidden></button>` : "";
+  const body = jobs.length === 0 ? `<p class="empty">No jobs.</p>` : `${band}${lanes}${doneMore}`;
+  return `<header class="list-head"><div class="head-row"><h2>Pipeline</h2>${status}<span class="head-tools">${boardViewSwitch("list")}</span></div></header>${filtersHtml(jobs)}${BULK_STATUS}<div class="pipeline-list" id="board">${body}</div>`;
 }
 
 function emptyColumn(column: PipelineColumn): string {
@@ -569,8 +667,12 @@ function pipeCard(job: JobView, clock: BoardClock, csrf: string, titles: Readonl
 }
 
 /** The `article.card` wrapper. The filters and `paintLiveness` read its data attributes. */
+function jobAttrs(job: JobView): string {
+  return `id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}"${activityAttrs(job)}${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}`;
+}
+
 function cardShell(job: JobView, cls: string, inner: string): string {
-  return `<article class="card ${cls}" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}"${activityAttrs(job)}${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
+  return `<article class="card ${cls}" ${jobAttrs(job)}>
 <a class="job-title" href="/jobs/${encodeURIComponent(job.jobId)}">${escapeHtml(job.title)}</a>
 ${inner}
 </article>`;
@@ -656,8 +758,11 @@ function trackLabel(
   return step ? `Step ${index + 1} of ${total}: ${step.label}` : settled;
 }
 
-/** Running: the track, the live step with `step N of M` and how long it has run, and the newest note. */
-function runningCard(job: JobView, clock: BoardClock): string {
+/**
+ * What a running job is doing: the live step (name, `step N of M`, how long it has run) and the liveness words, or
+ * the retry or reason when no step is live. The card and the list row both read it.
+ */
+function runningParts(job: JobView, clock: BoardClock): { step?: { label: string; meta: string }; liveness: string; fallback: string } {
   const index = job.steps.findIndex((step) => step.status === "running");
   const step = job.steps[index];
   const live = activityLiveness({
@@ -666,18 +771,21 @@ function runningCard(job: JobView, clock: BoardClock): string {
     ...(clock.now !== undefined ? { now: clock.now } : {}),
     stallTimeoutMs: clock.stallTimeoutMs,
   });
-  // The step pulse is this card's dot, so the liveness reads as words only.
+  // The step pulse is the dot, so the liveness reads as words only.
   const liveness = live.liveness === "idle" ? "" : livenessHtml(live, false);
-  let line: string;
-  if (step) {
-    const phase = [...job.phases].reverse().find((item) => item.id === step.id && item.startedAt);
-    const ran = phase?.startedAt ? elapsed(phase.startedAt, clock) : "";
-    const meta = `step ${index + 1} of ${job.steps.length}${ran ? `, ${ran}` : ""}`;
-    line = `<p class="run-line"><span class="step-pulse" aria-hidden="true"></span><span class="run-step">${escapeHtml(step.label)}</span><span class="run-meta">${escapeHtml(meta)}</span>${liveness}</p>`;
-  } else {
-    const retry = job.scheduledRetry && job.nextRetryAt ? `Retrying ${timeHtml(job.nextRetryAt, "clock")}` : escapeHtml(job.reason);
-    line = `<p class="run-line"><span class="run-meta">${retry}</span>${liveness}</p>`;
-  }
+  const fallback = job.scheduledRetry && job.nextRetryAt ? `Retrying ${timeHtml(job.nextRetryAt, "clock")}` : escapeHtml(job.reason);
+  if (!step) return { liveness, fallback };
+  const phase = [...job.phases].reverse().find((item) => item.id === step.id && item.startedAt);
+  const ran = phase?.startedAt ? elapsed(phase.startedAt, clock) : "";
+  return { step: { label: step.label, meta: `step ${index + 1} of ${job.steps.length}${ran ? `, ${ran}` : ""}` }, liveness, fallback };
+}
+
+/** Running: the track, the live step with `step N of M` and how long it has run, and the newest note. */
+function runningCard(job: JobView, clock: BoardClock): string {
+  const { step, liveness, fallback } = runningParts(job, clock);
+  const line = step
+    ? `<p class="run-line"><span class="step-pulse" aria-hidden="true"></span><span class="run-step">${escapeHtml(step.label)}</span><span class="run-meta">${escapeHtml(step.meta)}</span>${liveness}</p>`
+    : `<p class="run-line"><span class="run-meta">${fallback}</span>${liveness}</p>`;
   const note = job.latestNote ? `<p class="run-note">${escapeHtml(job.latestNote)}</p>` : "";
   return cardShell(job, "running", `${stepTrackHtml(job, "running")}${line}${note}${cardFoot(job)}`);
 }
@@ -1290,7 +1398,7 @@ function phasePillHtml(job: JobView, node: PhaseNode, started: ReadonlySet<strin
  * The job page's progress row: a named pill for each step, in run order. Steps that run at the same time sit together
  * in one dashed group. A group that has not started is one quiet pill, so the row stays one line until it runs.
  */
-function progressRowHtml(job: JobView, started: ReadonlySet<string>, plan?: readonly (readonly string[])[]): string {
+function phaseChainHtml(job: JobView, started: ReadonlySet<string>, plan?: readonly (readonly string[])[]): string {
   const groups = phaseGroups(job, plan);
   if (groups.length === 0) return "";
   const items = groups.map((group) => {
@@ -1301,9 +1409,15 @@ function progressRowHtml(job: JobView, started: ReadonlySet<string>, plan?: read
     }
     return `<li class="ph-par" role="group" aria-label="Run at the same time" title="These run at the same time"><ol class="ph-parlist">${group.map((node) => phasePillHtml(job, node, started)).join("")}</ol></li>`;
   });
+  return `<ol class="ph-chain">${items.join(`<li class="ph-sep" aria-hidden="true"></li>`)}</ol>`;
+}
+
+function progressRowHtml(job: JobView, started: ReadonlySet<string>, plan?: readonly (readonly string[])[]): string {
+  const chain = phaseChainHtml(job, started, plan);
+  if (!chain) return "";
   const focus = stepFocus(job);
   const outcome = focus?.kind === "outcome" ? `<p class="prog-outcome">${escapeHtml(focus.label)}</p>` : "";
-  return `<section class="job-progress" aria-label="Progress"><ol class="ph-chain">${items.join(`<li class="ph-sep" aria-hidden="true"></li>`)}</ol>${outcome}</section>`;
+  return `<section class="job-progress" aria-label="Progress">${chain}${outcome}</section>`;
 }
 
 function currentStepLabel(job: JobView): string | undefined {

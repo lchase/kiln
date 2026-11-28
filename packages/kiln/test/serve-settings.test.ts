@@ -533,6 +533,29 @@ describe("serve settings", () => {
     }
   });
 
+  it("chooses the Pipeline view from the cookie or ?view, defaults to columns, and leaves other pages alone", async () => {
+    const { cwd, home } = workDir("kiln-view-");
+    const server = await startServe({ cwd, home });
+    try {
+      const view = async (path: string, cookie?: string) => {
+        const html = await (await fetch(`${server.url}${path}`, cookie ? { headers: { Cookie: cookie } } : {})).text();
+        return html.includes('class="pipeline-list" id="board"') ? "list" : html.includes('class="board" id="board"') ? "columns" : "none";
+      };
+      assert.equal(await view("/"), "columns");
+      assert.equal(await view("/", "kiln-board=list"), "list");
+      assert.equal(await view("/", "other=1; kiln-board=list; more=2"), "list");
+      assert.equal(await view("/", "kiln-board=columns"), "columns");
+      assert.equal(await view("/", "kiln-board=bogus"), "columns");
+      assert.equal(await view("/?view=list"), "list");
+      assert.equal(await view("/?view=columns", "kiln-board=list"), "columns");
+      assert.equal(await view("/?view=%3Cb%3E"), "columns");
+      assert.equal(await view("/pipeline", "kiln-board=list"), "list");
+      assert.equal(await view("/history", "kiln-board=list"), "none");
+    } finally {
+      await stop(server.child);
+    }
+  });
+
   it("serves the bundled fonts from its own origin and does not call a font host", async () => {
     const { cwd, home } = workDir("kiln-fonts-");
     const server = await startServe({ cwd, home });

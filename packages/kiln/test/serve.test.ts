@@ -701,6 +701,14 @@ describe("kiln serve", () => {
         ["queued", "running", "needs-you", "needs-hand", "done"],
       );
       assert.match(landing.body, /<title>\(1\) Kiln<\/title>/);
+      // The same jobs as a list: a band for the one waiting on a decision, with the chain read from its own run folder.
+      const asList = await text(`${server.url}/?view=list`);
+      assert.equal(asList.status, 200);
+      const band = asList.body.slice(asList.body.indexOf('class="pl-row pl-ask needs-you"'), asList.body.indexOf("</section>", asList.body.indexOf('class="pl-row pl-ask needs-you"')));
+      assert.match(band, /Show the weekly summary/);
+      assert.match(band, /<li class="ph-par" role="group"/);
+      assert.match(band, /class="ph-pill human" aria-current="step"/);
+      assert.match(asList.body, /data-lane="queued"/);
       const nav = landing.body.slice(landing.body.indexOf('<nav class="side"'), landing.body.indexOf("</nav>"));
       assert.match(nav, /<a class="nav-link" href="\/" title="Pipeline" aria-current="page"><span class="nav-label">[^]*?<span class="nav-text">Pipeline<\/span><\/span><span class="badge">1<\/span><\/a>/);
       assert.match(nav, /href="\/report"/);

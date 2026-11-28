@@ -37,6 +37,7 @@ import {
   readDiffStat,
   statsFor,
   unseenChanges,
+  type BoardDocument,
   type DiffFile,
   type StatWindow,
 } from "./board-view.js";
@@ -52,6 +53,7 @@ import {
   jiraFact,
   renderApp,
   type AppSection,
+  type BoardView,
   type ServePageOptions,
   type SettingsFacts,
   type SettingsSectionId,
@@ -480,7 +482,7 @@ async function handle(
       sendHtml(res, 200, renderShell(state, css, csrf, "stats", { window }), secrets);
       return;
     }
-    sendHtml(res, 200, renderShell(state, css, csrf, listed), secrets);
+    sendHtml(res, 200, renderShell(state, css, csrf, listed, listed === "pipeline" ? { boardView: boardViewOf(req, url) } : {}), secrets);
     return;
   }
 
@@ -1124,6 +1126,28 @@ function listSection(path: string): AppSection | undefined {
   return undefined;
 }
 
+/**
+ * The Pipeline page's view: `?view=` when it is list or columns (the live refresh asks for its own view), else the
+ * `kiln-board` cookie the page's switch sets. Columns are the default.
+ */
+function boardViewOf(req: IncomingMessage, url: URL): BoardView {
+  const asked = url.searchParams.get("view");
+  if (asked === "list" || asked === "columns") return asked;
+  return /(?:^|;\s*)kiln-board=list(?:;|$)/.test(req.headers.cookie ?? "") ? "list" : "columns";
+}
+
+/** Grouped step ids for each job in flight, from its run folder, for the list view's phase chains. */
+function activePhasePlans(config: LoadedKilnConfig, jobs: readonly StatusJobView[], board: BoardDocument): Record<string, string[][]> {
+  const active = new Set(board.repos.flatMap((group) => group.jobs).filter((job) => job.column === "running" || job.column === "needs-you" || job.column === "needs-hand").map((job) => job.jobId));
+  const plans: Record<string, string[][]> = {};
+  for (const job of jobs) {
+    if (!active.has(job.jobId)) continue;
+    const runDir = runDirOf(config, job);
+    if (runDir) plans[job.jobId] = groupsFromPlan(planOf(runDir));
+  }
+  return plans;
+}
+
 function runDirOf(config: LoadedKilnConfig, job: StatusJobView): string | undefined {
   const runId = job.runId;
   const checkout = config.repos[job.repo]?.path;
@@ -1144,6 +1168,7 @@ function renderShell(
     activity?: ActivityFeed;
     artifacts?: ArtifactSet;
     phasePlan?: string[][];
+    boardView?: BoardView;
     step?: StepPage;
     settingsSection?: SettingsSectionId;
   } = {},
@@ -1152,10 +1177,13 @@ function renderShell(
   const events = readEvents(state.config.kilnDir, { warn: () => {} });
   const board = buildBoard(status.jobs, events, section === "pipeline" ? (job) => doneDiffFiles(state, job, events) : undefined);
   const page = pageOptions(state, csrf);
+  const boardView = section === "pipeline" ? (extra.boardView ?? "columns") : undefined;
   return renderApp({
     css,
     section,
     board,
+    ...(boardView ? { boardView } : {}),
+    ...(boardView === "list" ? { phasePlans: activePhasePlans(state.config, status.jobs, board) } : {}),
     attention: status.attention,
     page: extra.repo ? { ...page, repo: extra.repo } : page,
     ...(extra.repo ? { repo: extra.repo } : {}),
