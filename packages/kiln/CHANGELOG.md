@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.26.0](https://github.com/lchase/kiln/compare/kiln-v0.25.1...kiln-v0.26.0) (2026-11-28)
+
+
+### Features
+
+* collapsible sidebar that shrinks to an icon rail ([#121](https://github.com/lchase/kiln/issues/121)) ([d4aa920](https://github.com/lchase/kiln/commit/d4aa920d1efeabf1ae7ea8e56da2941b8f8f5491))
+* phase chain on the job page, with parallel steps grouped ([#122](https://github.com/lchase/kiln/issues/122)) ([4f92e0c](https://github.com/lchase/kiln/commit/4f92e0c96d81f88300071574fb30b9a146d15e14))
+
 ## [0.25.1](https://github.com/lchase/kiln/compare/kiln-v0.25.0...kiln-v0.25.1) (2026-11-28)
 
 
