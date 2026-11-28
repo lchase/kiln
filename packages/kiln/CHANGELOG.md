@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.1](https://github.com/lchase/kiln/compare/kiln-v0.25.0...kiln-v0.25.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* do not block on a FIFO in the artifacts folder, and bound the read ([#119](https://github.com/lchase/kiln/issues/119)) ([ea12e1c](https://github.com/lchase/kiln/commit/ea12e1cf3880d35f12a84bf4a133914897a4a036))
+
 ## [0.25.0](https://github.com/lchase/kiln/compare/kiln-v0.24.0...kiln-v0.25.0) (2026-11-28)
 
 
