@@ -450,6 +450,15 @@ function heldChip(job: JobView): string {
   return job.held ? `<span class="chip">Held</span>` : "";
 }
 
+/** One plain sentence per column, shown on hover, so "Needs you" and "Needs a hand" are not left to guesswork. */
+const COLUMN_HINT: Record<PipelineColumn, string> = {
+  queued: "Waiting for its turn to start.",
+  running: "An agent is working on it now.",
+  "needs-you": "A decision is waiting for you: approve, reject, or revise.",
+  "needs-hand": "It stopped and needs a person to look at it, then retry.",
+  done: "Finished: merged, landed, rejected, or cancelled.",
+};
+
 const COLUMN_ICON: Record<PipelineColumn, IconName> = {
   queued: "hourglass",
   running: "play",
@@ -466,7 +475,7 @@ function pipelineHtml(jobs: readonly JobView[], clock: BoardClock, csrf: string)
     counts.set(column, rows.length);
     const cards = rows.map((job) => pipeCard(job, clock, csrf, titles)).join("");
     const sub = column === "queued" ? `<span class="col-sub">in launch order</span>` : "";
-    return `<section class="col" data-column="${column}" aria-label="${escapeHtml(COLUMN_LABEL[column])}">
+    return `<section class="col" data-column="${column}" aria-label="${escapeHtml(COLUMN_LABEL[column])}" title="${escapeHtml(COLUMN_HINT[column])}">
 <header class="full"><h2>${icon(COLUMN_ICON[column], `icon col-icon ${column}`)}${escapeHtml(COLUMN_LABEL[column])}</h2><span class="count">${rows.length || ""}</span>${sub}</header>
 <div class="slim-face"><span>${escapeHtml(COLUMN_LABEL[column])}</span><span class="count">${rows.length}</span></div>
 ${cards}<p class="empty">${escapeHtml(emptyColumn(column))}</p>${column === "done" ? `<button type="button" class="btn done-more" id="done-more" hidden></button>` : ""}
@@ -1512,8 +1521,8 @@ function statsHtml(stats: StatsDocument): string {
     stats.costByRepo.map((row) => [row.repo, formatDollars(row.usd)]),
     "No recorded cost in this window.",
   );
-  const phaseRows = tableRows(
-    stats.costByPhase.map((row) => [row.phase, formatDollars(row.usd)]),
+  const workflowRows = tableRows(
+    stats.costByWorkflow.map((row) => [row.workflow, formatDollars(row.usd)]),
     "No recorded cost in this window.",
   );
   const classRows = tableRows(
@@ -1536,7 +1545,7 @@ function statsHtml(stats: StatsDocument): string {
 <section class="stat"><h3>Interventions</h3>${interventions}</section>
 </div>
 <section class="stat"><h3>Cost by repo</h3>${repoRows}</section>
-<section class="stat"><h3>Cost by phase</h3>${phaseRows}</section>`;
+<section class="stat"><h3>Cost by workflow</h3>${workflowRows}</section>`;
 }
 
 function reportHtml(report: DayReport): string {

@@ -333,7 +333,7 @@ describe("phases, stats, and the day report", () => {
     assert.equal(today.spend.blocked, false);
     assert.equal(today.windowUsd, 1.5);
     assert.deepEqual(today.costByRepo, [{ repo: "widget", usd: 1.5 }]);
-    assert.deepEqual(today.costByPhase, [{ phase: "build", usd: 1.5 }]);
+    assert.deepEqual(today.costByWorkflow, [{ workflow: "feature", usd: 1.5 }]);
     assert.equal(today.runs.finished, 1);
     assert.equal(today.interventions.total, 1);
     const week = statsFor(events, { window: "7d", cap: 1 });
@@ -344,9 +344,9 @@ describe("phases, stats, and the day report", () => {
       { repo: "docs", usd: 0.5 },
       { repo: "widget", usd: 1.5 },
     ]);
-    assert.deepEqual(week.costByPhase, [
-      { phase: "build", usd: 1.5 },
-      { phase: "fix", usd: 0.5 },
+    assert.deepEqual(week.costByWorkflow, [
+      { workflow: "feature", usd: 1.5 },
+      { workflow: "fix", usd: 0.5 },
     ]);
     assert.deepEqual(week.failuresByClass, [{ class: "transient", count: 1 }]);
     assert.equal(parseStatsWindow("nope"), undefined);

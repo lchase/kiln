@@ -678,6 +678,8 @@ h3 {
   color: var(--ink);
   cursor: pointer;
 }
+.d-actions .confirm.remove summary { background: transparent; border-color: transparent; color: var(--muted); }
+.d-actions .confirm.remove summary:hover { background: transparent; color: var(--ink); text-decoration: underline; }
 .d-actions button:disabled { opacity: var(--disabled); cursor: not-allowed; }
 .d-actions button[aria-busy="true"] { opacity: 1; cursor: progress; }
 .d-actions button[aria-busy="true"]::before {
