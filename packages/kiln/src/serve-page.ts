@@ -782,11 +782,16 @@ function jobRow(job: BoardJob, section: "repos" | "history", csrf: string, clock
   return `<article class="${classes.join(" ")}" id="job-${escapeHtml(job.jobId)}" data-job="${escapeHtml(job.jobId)}" data-state="${escapeHtml(job.state)}" data-repo="${escapeHtml(job.repo)}" data-workflow="${escapeHtml(job.workflow)}" data-deps="${escapeHtml(job.dependsOn.map((dep) => dep.jobId).join(" "))}"${activityAttrs(job)}${job.latestEventAt ? ` data-latest="${escapeHtml(job.latestEventAt)}"` : ""}>
 <div class="job-main">
 <div class="job-top"><a class="job-title" href="/jobs/${id}">${escapeHtml(job.title)}</a></div>
-<div class="job-meta"><span class="num">${escapeHtml(job.jobId)}</span>${repo}<span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span>${heldChip(job)}<span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}${sandbox}${pr}</div>
+<div class="job-meta"><span class="num">${escapeHtml(job.jobId)}</span>${repo}<span class="chip ${stateTone(job.state)}">${escapeHtml(stateWord(job.state))}</span>${heldChip(job)}<span class="chip">${escapeHtml(job.workflow)}</span>${age}${cost ? `<span class="meta">${escapeHtml(cost)}</span>` : ""}${sandbox}${pr}</div>
 ${progressHtml(job, clock)}${reason}${fix}${history}${unsafe}${retrying}${deps}${feedback}${notes}${tail}${unseen}${links}
 </div>
 ${actionsHtml(job, section, csrf)}
 </article>`;
+}
+
+/** The state as a person reads it. Only the one that is jargon changes: the rest already read plainly. */
+function stateWord(state: string): string {
+  return state === "needs-human" ? "needs you" : state;
 }
 
 function showReason(job: JobView): boolean {
@@ -1049,7 +1054,7 @@ function detailHtml(
   return `<div class="job-page"${activityAttrs(job)}${targetAttr}>
 <header class="job-head">
 <a class="back" href="/">Pipeline</a>
-<div class="job-top"><h1>${escapeHtml(job.title)}</h1><span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span>${heldChip(job)}</div>
+<div class="job-top"><h1>${escapeHtml(job.title)}</h1><span class="chip ${stateTone(job.state)}">${escapeHtml(stateWord(job.state))}</span>${heldChip(job)}</div>
 ${jobMetaHtml(job)}
 ${ask}${reason}${launchFixHtml(job)}
 <p class="unseen" data-unseen-for="${escapeHtml(job.jobId)}" hidden></p>
@@ -1100,7 +1105,7 @@ function stepPageHtml(detail: JobDetail, step: StepPage, clock: BoardClock, acti
   return `<div class="job-page"${activityAttrs(job)}>
 <header class="job-head">
 <a class="back" href="/">Pipeline</a>
-<div class="job-top"><h1><a class="title-link" href="/jobs/${id}">${escapeHtml(job.title)}</a></h1><span class="chip ${stateTone(job.state)}">${escapeHtml(job.state)}</span>${heldChip(job)}</div>
+<div class="job-top"><h1><a class="title-link" href="/jobs/${id}">${escapeHtml(job.title)}</a></h1><span class="chip ${stateTone(job.state)}">${escapeHtml(stateWord(job.state))}</span>${heldChip(job)}</div>
 ${jobMetaHtml(job)}
 </header>
 <div class="step-page">

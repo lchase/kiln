@@ -178,6 +178,9 @@ describe("pipeline board", () => {
     for (const action of ["approve", "reject", "revise"]) {
       assert.match(page, new RegExp(`<form method="post" action="/api/jobs/gate-1/${action}" class="act ${action}"><input type="hidden" name="csrf" value="tok">`));
     }
+    // The state chip reads "needs you", not the internal state name.
+    assert.match(page, /<span class="chip [^"]*">needs you<\/span>/);
+    assert.doesNotMatch(page, /<span class="chip [^"]*">needs-human<\/span>/);
   });
 
   it("words the needs-you reason for a pull request", () => {
