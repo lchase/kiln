@@ -203,6 +203,23 @@ export function renderConsole(css: string, attention: AttentionView, page?: Serv
   return renderApp({ css, section, board, attention, ...(page ? { page, ...(page.repo ? { repo: page.repo } : {}) } : {}) });
 }
 
+/** The keyboard shortcuts `serve.js` handles. Keep the two lists in step. */
+const SHORTCUTS_PANEL = `<aside class="shortcuts" id="shortcuts" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" hidden>
+<header><h2>Keyboard shortcuts</h2><button type="button" class="btn" id="close-shortcuts">Close</button></header>
+<dl>
+<div><dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Next or previous job</dd></div>
+<div><dt><kbd>Enter</kbd></dt><dd>Open the focused job</dd></div>
+<div><dt><kbd>/</kbd></dt><dd>Filter jobs on History and By repo</dd></div>
+<div><dt><kbd>g</kbd> <kbd>p</kbd></dt><dd>Go to Pipeline</dd></div>
+<div><dt><kbd>g</kbd> <kbd>r</kbd></dt><dd>Go to By repo</dd></div>
+<div><dt><kbd>g</kbd> <kbd>h</kbd></dt><dd>Go to History</dd></div>
+<div><dt><kbd>g</kbd> <kbd>t</kbd></dt><dd>Go to Triggers</dd></div>
+<div><dt><kbd>g</kbd> <kbd>s</kbd></dt><dd>Go to Settings</dd></div>
+<div><dt><kbd>?</kbd></dt><dd>Show or hide this list</dd></div>
+<div><dt><kbd>Esc</kbd></dt><dd>Close this list or clear the filter</dd></div>
+</dl>
+</aside>`;
+
 export function renderApp(model: AppModel): string {
   const page = model.page ?? { csrf: "", repos: [], workflows: listWorkflowNames() };
   const paused = page.paused === true;
@@ -228,6 +245,7 @@ ${navHtml(model)}
 <button class="tool-link" type="button" id="notify" data-state="ask" aria-pressed="false">${icon("bell", "icon icon-bell")}${icon("bell-off", "icon icon-bell-off")}<span id="notify-label">Notify me</span></button>
 <p class="notify-note" id="notify-note" hidden></p>
 </div>
+<button class="tool-link" type="button" id="show-shortcuts"><span class="kbd" aria-hidden="true">?</span><span>Shortcuts</span></button>
 </footer>
 </aside>
 <div class="workspace">
@@ -237,7 +255,8 @@ ${mainHtml(model, page)}
 <div class="scrim" data-close></div>
 <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Add job">
 ${intakeSheet(page, model.attention)}
-</aside>`;
+</aside>
+${SHORTCUTS_PANEL}`;
   const job = model.detail?.job;
   return document({
     css: model.css,

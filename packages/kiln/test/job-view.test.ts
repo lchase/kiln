@@ -746,6 +746,19 @@ describe("finished rows on the job lists", () => {
   });
 });
 
+describe("keyboard shortcuts panel", () => {
+  it("is on every page, hidden, listing the keys serve.js handles, with a sidebar button to open it", () => {
+    const jobs = [job({ jobId: "WEB-1", state: "done", steps: workflowStepPlan("feature").map((id) => ({ id, phase: "done" as const })) })];
+    const page = { csrf: "token", repos: [{ name: "web", path: "/repos/web" }], workflows: ["feature"] };
+    for (const section of ["pipeline", "history", "repos"] as const) {
+      const html = renderApp({ css: "", section, board: buildBoard(jobs, []), attention: buildAttention(jobs), page });
+      assert.match(html, /<aside class="shortcuts" id="shortcuts" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" hidden>/, section);
+      assert.match(html, /<button class="tool-link" type="button" id="show-shortcuts">/, section);
+      for (const key of ["j", "k", "Enter", "/", "g", "p", "r", "h", "t", "s", "?", "Esc"]) assert.ok(html.includes(`<kbd>${key}</kbd>`), `${section} ${key}`);
+    }
+  });
+});
+
 describe("job list filter box", () => {
   it("is on History and the per-repo lists, not on the board", () => {
     const plan = workflowStepPlan("feature");
