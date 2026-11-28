@@ -4,7 +4,8 @@
   var body = document.body;
   var board = document.getElementById("board");
   var count = Number(body.getAttribute("data-needs-you") || "0");
-  document.title = "(" + count + ") Kiln";
+  function titleFor(n) { return n > 0 ? "(" + n + ") Kiln" : "Kiln"; }
+  document.title = titleFor(count);
 
   function note(n) {
     var raw = null;
@@ -27,6 +28,10 @@
   try { repo = localStorage.getItem("kiln-repo") || ""; } catch (err) { repo = ""; }
   var workflow = "";
   try { workflow = localStorage.getItem("kiln-workflow") || ""; } catch (err) { workflow = ""; }
+  // The Done column shows the newest few; the rest sit behind "Show N more".
+  var DONE_LIMIT = 6;
+  var doneAll = false;
+  try { doneAll = localStorage.getItem("kiln-done-all") === "on"; } catch (err) { doneAll = false; }
 
   var COMPACT = {
     on: ["expand empty columns", '<path d="M3 12h7m0 0-3-3m3 3-3 3M21 12h-7m0 0 3-3m-3 3 3 3M12 4v16"/>'],
@@ -65,6 +70,22 @@
     board.style.setProperty("--cols", tracks.join(" "));
   }
 
+  // The filter box on History and the per-repo lists: hide the rows whose text lacks the query.
+  function applyJobFilter() {
+    var box = document.getElementById("job-filter");
+    if (!box) return;
+    var query = box.value.toLowerCase().trim();
+    try { sessionStorage.setItem("kiln-job-filter", box.value); } catch (err) { /* private mode */ }
+    var rows = document.querySelectorAll(".job");
+    for (var i = 0; i < rows.length; i++) {
+      rows[i].hidden = Boolean(query) && rows[i].textContent.toLowerCase().indexOf(query) === -1;
+    }
+    var groups = document.querySelectorAll(".state-group");
+    for (var g = 0; g < groups.length; g++) {
+      groups[g].hidden = Boolean(query) && groups[g].querySelectorAll(".job:not([hidden])").length === 0;
+    }
+  }
+
   function applyRepo() {
     var cards = document.querySelectorAll(".board .card");
     for (var i = 0; i < cards.length; i++) {
@@ -73,6 +94,19 @@
       var hideRepo = Boolean(repo) && cardRepo !== repo;
       var hideWorkflow = Boolean(workflow) && cardWorkflow !== workflow;
       cards[i].hidden = hideRepo || hideWorkflow;
+    }
+    var doneCards = document.querySelectorAll('.board .col[data-column="done"] .card');
+    var shown = 0;
+    for (var d = 0; d < doneCards.length; d++) {
+      if (doneCards[d].hidden) { doneCards[d].classList.remove("beyond"); continue; }
+      shown += 1;
+      doneCards[d].classList.toggle("beyond", !doneAll && shown > DONE_LIMIT);
+    }
+    var more = document.getElementById("done-more");
+    if (more) {
+      more.hidden = shown <= DONE_LIMIT;
+      more.textContent = doneAll ? "Show fewer" : "Show " + (shown - DONE_LIMIT) + " more";
+      more.setAttribute("aria-pressed", doneAll ? "true" : "false");
     }
     var chips = document.querySelectorAll(".repo-f");
     for (var j = 0; j < chips.length; j++) {
@@ -2552,6 +2586,12 @@
       loadFs(next, false);
       return;
     }
+    if (target.closest("#done-more")) {
+      doneAll = !doneAll;
+      try { localStorage.setItem("kiln-done-all", doneAll ? "on" : "off"); } catch (err) { /* private mode */ }
+      applyRepo();
+      return;
+    }
     if (target.closest("#compact")) {
       compact = !compact;
       try { localStorage.setItem("kiln-compact", compact ? "on" : "off"); } catch (err) { /* private mode */ }
@@ -2656,6 +2696,21 @@
         closeCombo(combo);
         return;
       }
+    }
+    var filterBox = document.getElementById("job-filter");
+    if (filterBox && event.key === "/" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      var tag = keyTarget && keyTarget.tagName ? keyTarget.tagName.toLowerCase() : "";
+      if (tag !== "input" && tag !== "textarea" && tag !== "select" && !(keyTarget && keyTarget.isContentEditable)) {
+        event.preventDefault();
+        filterBox.focus();
+        return;
+      }
+    }
+    if (event.key === "Escape" && keyTarget === filterBox && filterBox) {
+      filterBox.value = "";
+      applyJobFilter();
+      filterBox.blur();
+      return;
     }
     if (event.key === "Escape") closeDrawer();
     var el = event.target;
@@ -2778,7 +2833,7 @@
         var nextRev = next.body.getAttribute("data-revision") || rev;
         if (nextRev) body.setAttribute("data-revision", nextRev);
         count = n;
-        document.title = "(" + n + ") Kiln";
+        document.title = titleFor(n);
         note(n);
         applyRepo();
         paintLiveness();
@@ -2855,6 +2910,10 @@
     if (!field || !field.getAttribute) return;
     if (field.getAttribute("role") === "combobox") {
       openCombo(field.closest(".combo"), true);
+      return;
+    }
+    if (field.id === "job-filter") {
+      applyJobFilter();
       return;
     }
     if (field.id === "prompt-text" || field.id === "workflow") syncValidity();
@@ -2980,6 +3039,11 @@
   syncValidity();
   renderCompact();
   renderNotify();
+  var filterStart = document.getElementById("job-filter");
+  if (filterStart) {
+    try { filterStart.value = sessionStorage.getItem("kiln-job-filter") || ""; } catch (err) { filterStart.value = ""; }
+    applyJobFilter();
+  }
   applyRepo();
   stamp(true);
   paintUnseen();

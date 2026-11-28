@@ -241,7 +241,7 @@ ${intakeSheet(page, model.attention)}
   const job = model.detail?.job;
   return document({
     css: model.css,
-    title: `(${model.board.inboxCount}) Kiln`,
+    title: tabTitle(model.board.inboxCount),
     needsYou: model.attention.needsYouCount,
     revision: model.attention.revision,
     csrf: page.csrf,
@@ -305,7 +305,7 @@ function navHtml(model: AppModel): string {
     .join("");
   return `<nav class="side" aria-label="Sections">
 ${item("/", "pipeline", "Pipeline", "pipeline", "pipeline", board.inboxCount)}
-${item("/repos", "repos", "Repos", "repos", "repos")}
+${item("/repos", "repos", "By repo", "repos", "repos")}
 ${repos}
 ${item("/history", "history", "History", "history", "history", board.history.length)}
 ${item("/stats", "stats", "Stats", "stats", "stats")}
@@ -357,9 +357,30 @@ function triggersHtml(rows: readonly TriggerRow[]): string {
   return `<header class="list-head"><h2>Triggers</h2><p class="meta">The clock, Jira, and pull request activity can start work. A review is posted only after you approve it. Kiln does not approve or merge. <a href="/settings/triggers">Edit triggers in Settings.</a></p></header>${body}`;
 }
 
+/** Plain words for the trigger events on the Triggers page. The raw event name and dedupe key stay in the row's tooltip. */
+const TRIGGER_EVENT_LABEL: Record<string, string> = {
+  "trigger.fired": "Fired",
+  "trigger.routed": "Routed",
+  "trigger.failed": "Failed",
+  "trigger.skipped": "Skipped",
+};
+
+/** "0 * * * *" reads as "every hour"; any cron this does not recognise is shown as written. */
+export function cronPhrase(cron: string): string {
+  if (/^0 \* \* \* \*$/.test(cron)) return "every hour";
+  const minutes = /^\*\/(\d+) \* \* \* \*$/.exec(cron);
+  if (minutes) return `every ${minutes[1]} minutes`;
+  return cron;
+}
+
+/** Browser tab title: the count only shows when something needs the user. */
+export function tabTitle(count: number): string {
+  return count > 0 ? `(${count}) Kiln` : "Kiln";
+}
+
 function triggerCard(row: TriggerRow): string {
   const on = row.enabled;
-  const bits = [row.kind, row.schedule, on ? "enabled" : "disabled"];
+  const bits = [row.kind, row.kind === "schedule" ? cronPhrase(row.schedule) : row.schedule, on ? "enabled" : "disabled"];
   if (row.label) bits.push(`label ${row.label}`);
   if (row.maxNew !== undefined) bits.push(`${row.maxNew} new/fire`);
   if (row.maxQueued !== undefined) bits.push(`${row.maxQueued} queued or running`);
@@ -377,7 +398,7 @@ function triggerCard(row: TriggerRow): string {
       : `<ul class="recent">${row.recent
           .map(
             (item) =>
-              `<li><time datetime="${escapeHtml(item.ts)}" data-time>${escapeHtml(item.ts)}</time> <span class="ev">${escapeHtml(item.event)}</span> ${escapeHtml(item.summary)}</li>`,
+              `<li title="${escapeHtml(item.summary)}"><time datetime="${escapeHtml(item.ts)}" data-time>${escapeHtml(item.ts)}</time> <span class="ev">${escapeHtml(TRIGGER_EVENT_LABEL[item.event] ?? item.event)}</span>${item.event === "trigger.fired" ? "" : ` ${escapeHtml(item.summary)}`}</li>`,
           )
           .join("")}</ul>`;
   return `<article class="trigger" id="trigger-${escapeHtml(row.id)}">
@@ -392,15 +413,18 @@ function allJobs(board: BoardDocument): JobView[] {
   return board.repos.flatMap((group) => group.jobs);
 }
 
+/** The filter box on the job lists. `serve.js` hides rows whose text does not match, and `/` focuses it. */
+const JOB_FILTER = `<input type="search" id="job-filter" class="job-filter" placeholder="Filter jobs (press /)" aria-label="Filter jobs" autocomplete="off" spellcheck="false">`;
+
 function listHtml(model: AppModel, csrf: string, clock: BoardClock): string {
   const board = model.board;
   if (model.section === "history") {
-    return `<header class="list-head"><h2>History</h2></header>${jobList(board.history, "history", "No finished jobs.", csrf, clock)}`;
+    return `<header class="list-head"><h2>History</h2>${JOB_FILTER}</header>${jobList(board.history, "history", "No finished jobs.", csrf, clock)}`;
   }
   const groups = model.repo ? board.repos.filter((group) => group.repo === model.repo) : board.repos;
-  if (groups.length === 0) return `<header class="list-head"><h2>Repos</h2></header><p class="empty">No jobs.</p>`;
-  const heading = model.repo ? escapeHtml(model.repo) : "Repos";
-  return `<header class="list-head"><h2>${heading}</h2></header>${groups
+  if (groups.length === 0) return `<header class="list-head"><h2>Jobs by repo</h2></header><p class="empty">No jobs.</p>`;
+  const heading = model.repo ? escapeHtml(model.repo) : "Jobs by repo";
+  return `<header class="list-head"><h2>${heading}</h2>${JOB_FILTER}</header>${groups
     .map((group) => {
       const label = model.repo ? "" : `<h3>${escapeHtml(group.repo)}</h3>`;
       return `<section class="repo-block">${label}${groupedJobs(group.jobs, "repos", csrf, clock)}</section>`;
@@ -408,9 +432,16 @@ function listHtml(model: AppModel, csrf: string, clock: BoardClock): string {
     .join("")}`;
 }
 
+function finishedAt(job: JobView): number {
+  const at = Date.parse(job.latestEventAt ?? job.since ?? "");
+  return Number.isFinite(at) ? at : 0;
+}
+
 /** Jobs in one column. Queued cards follow launch order, the same order `kiln queue` prints. */
 function inColumn<T extends JobView>(jobs: readonly T[], column: PipelineColumn): T[] {
   const rows = jobs.filter((job) => job.column === column);
+  // Finished work reads newest first, so the latest outcome is the top card.
+  if (column === "done") return rows.sort((left, right) => finishedAt(right) - finishedAt(left));
   if (column !== "queued") return rows;
   return rows.sort((left, right) => (left.queuePosition ?? Infinity) - (right.queuePosition ?? Infinity));
 }
@@ -438,7 +469,7 @@ function pipelineHtml(jobs: readonly JobView[], clock: BoardClock, csrf: string)
     return `<section class="col" data-column="${column}" aria-label="${escapeHtml(COLUMN_LABEL[column])}">
 <header class="full"><h2>${icon(COLUMN_ICON[column], `icon col-icon ${column}`)}${escapeHtml(COLUMN_LABEL[column])}</h2><span class="count">${rows.length || ""}</span>${sub}</header>
 <div class="slim-face"><span>${escapeHtml(COLUMN_LABEL[column])}</span><span class="count">${rows.length}</span></div>
-${cards}<p class="empty">${escapeHtml(emptyColumn(column))}</p>
+${cards}<p class="empty">${escapeHtml(emptyColumn(column))}</p>${column === "done" ? `<button type="button" class="btn done-more" id="done-more" hidden></button>` : ""}
 </section>`;
   }).join("");
   const status = boardStatusHtml(counts.get("running") ?? 0, counts.get("needs-you") ?? 0, counts.get("needs-hand") ?? 0);
@@ -449,7 +480,7 @@ ${cards}<p class="empty">${escapeHtml(emptyColumn(column))}</p>
 export function boardStatusHtml(running: number, needsYou: number, hand: number): string {
   const dot = running > 0 ? `<span class="board-pulse" aria-hidden="true"></span>` : "";
   const text = `${running} running, ${needsYou} ${needsYou === 1 ? "needs" : "need"} you, ${hand} ${hand === 1 ? "needs" : "need"} a hand`;
-  return `<p class="board-status" id="board-status">${dot}<span>${text}</span></p>`;
+  return `<p class="board-status" id="board-status" role="status">${dot}<span>${text}</span></p>`;
 }
 
 function emptyColumn(column: PipelineColumn): string {
@@ -679,7 +710,7 @@ function metricsHtml(metrics: JobView["doneMetrics"]): string {
     items.push(metricHtml("Lines added and removed", "file-diff", `<span class="added">+${metrics.added}</span> <span class="removed">-${metrics.removed}</span>`));
   }
   if (metrics.files !== undefined) items.push(metricHtml("Files changed", "files", String(metrics.files)));
-  if (metrics.fixRounds !== undefined) items.push(metricHtml("Fix rounds", "wrench", String(metrics.fixRounds)));
+  if (metrics.fixRounds !== undefined && metrics.fixRounds > 0) items.push(metricHtml("Fix rounds", "wrench", String(metrics.fixRounds)));
   return items.length ? `<p class="metrics">${items.join("")}</p>` : "";
 }
 
@@ -1001,7 +1032,7 @@ function detailHtml(
   const result = !deciding && job.deliverable ? `<details class="job-more" id="result"><summary>Result</summary>${deliverableHtml(job)}</details>` : "";
   const ask = !deciding && job.ask ? `<p class="ask">${escapeHtml(job.ask)}</p>` : "";
   // The Now card names the running step, and the failure card carries the reason.
-  const reason = !failing && !nowing && showReason(job) ? `<p class="reason">${escapeHtml(job.reason)}</p>` : "";
+  const reason = !failing && !nowing && showReason(job) && stepFocus(job)?.kind !== "outcome" ? `<p class="reason">${escapeHtml(job.reason)}</p>` : "";
   const targetAttr = target ? ` data-target="${target}"` : "";
   return `<div class="job-page"${activityAttrs(job)}${targetAttr}>
 <header class="job-head">
@@ -1271,7 +1302,10 @@ function stepSectionsHtml(job: JobView, feed: ActivityFeed, clock: BoardClock): 
     const at = Date.parse(phase.startedAt ?? firstOutput(phase.id) ?? "");
     return Number.isFinite(at) ? at : phase.id === openId ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
   };
-  const started = job.phases.filter((phase) => startedIds.has(phase.id)).sort((left, right) => startOf(right) - startOf(left));
+  const ran = job.phases.filter((phase) => startedIds.has(phase.id));
+  // A finished job's cards are for steps that did agent work. The rest (Land, Your decision) stay in the step track.
+  const worked = job.finished ? ran.filter((phase) => hasUsage(phase) || phase.verdict) : ran;
+  const started = (worked.length > 0 ? worked : ran).sort((left, right) => startOf(right) - startOf(left));
   const sections = started.map((phase) => stepSectionHtml(job, phase, feed, clock, phase.id === openId)).join("");
   const body = sections || `<p class="empty">No step has started yet.</p>`;
   const phase = openId ?? feed.phase;
@@ -1394,10 +1428,10 @@ function sideHtml(detail: JobDetail): string {
   if (rail.ci) row("CI", escapeHtml(rail.ci));
   if (rail.risk) row("Risk", escapeHtml(rail.risk));
   if (rail.fixRounds.used > 0) row("Fix rounds", escapeHtml(`${rail.fixRounds.used} / ${rail.fixRounds.cap}`));
-  if (rail.failureClass || rail.fingerprint) row("Failure", escapeHtml([rail.failureClass, rail.fingerprint].filter(Boolean).join(" · ")));
+  if (!job.finished && (rail.failureClass || rail.fingerprint)) row("Failure", escapeHtml([rail.failureClass, rail.fingerprint].filter(Boolean).join(" · ")));
   const facts = rows.length > 0 ? `<dl class="side-facts">${rows.join("")}</dl>` : "";
   return `<aside class="job-side" aria-label="Job facts">
-<section class="side-card"><h2>Changes so far</h2>${changes}</section>
+${files.length === 0 && job.finished ? "" : `<section class="side-card"><h2>Changes so far</h2>${changes}</section>`}
 <section class="side-card"><h2>What happens next</h2><p>${escapeHtml(nextSentence(job))}</p></section>
 <p class="links side-links">${links.join("")}</p>
 ${facts}
@@ -1492,7 +1526,7 @@ function statsHtml(stats: StatsDocument): string {
             return `<li><span class="mono">${escapeHtml(row.repo)} / ${escapeHtml(row.jobId)}</span> ${row.total}<ul>${reasons}</ul></li>`;
           })
           .join("")}</ul><p class="meta">${stats.interventions.total} ${stats.interventions.total === 1 ? "intervention" : "interventions"}</p>`;
-  return `<header class="list-head"><h2>Stats</h2><nav class="tabs" aria-label="Window">${windows}</nav><p class="meta">Since ${timeHtml(stats.since, "local")}</p></header>
+  return `<header class="list-head"><h2>Stats</h2><nav class="range-links" aria-label="Window">${windows}</nav><p class="meta">Since ${timeHtml(stats.since, "local")}</p></header>
 <div class="stat-grid">
 <section class="stat"><h3>Spend</h3><p class="stat-num">${escapeHtml(formatDollars(stats.spend.usd))}</p><p class="meta">Today ${escapeHtml(stats.spend.day)} / ${escapeHtml(cap)}</p><p class="meta">This window ${escapeHtml(formatDollars(stats.windowUsd))}</p></section>
 <section class="stat"><h3>Runs</h3><p class="stat-num">${stats.runs.finished}</p><p class="meta">${stats.runs.started} started · ${stats.runs.finished} finished · ${stats.runs.failed} failed</p>${classRows}</section>

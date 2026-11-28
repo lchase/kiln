@@ -103,7 +103,7 @@ describe("sidebar", () => {
     assert.match(notifyBtn, /class="icon icon-bell-off"/);
 
     const links = side.match(/<a class="nav-link"[\s\S]*?<\/a>/g) ?? [];
-    const labels = ["Pipeline", "Repos", "History", "Stats", "Today", "Triggers", "Settings"];
+    const labels = ["Pipeline", "By repo", "History", "Stats", "Today", "Triggers", "Settings"];
     assert.equal(links.length, labels.length);
     for (const label of labels) {
       const link = links.find((item) => item.includes(`>${label}</span>`));

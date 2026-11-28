@@ -702,6 +702,38 @@ describe("progress segments", () => {
   });
 });
 
+describe("pipeline board done column", () => {
+  it("lists finished jobs newest first and carries the show-more control", () => {
+    const plan = workflowStepPlan("feature");
+    const done = (jobId: string, startedAt: string) =>
+      job({ jobId, state: "done", startedAt, steps: plan.map((id) => ({ id, phase: "done" as const })) });
+    const jobs = [done("OLD-1", "2026-11-01T10:00:00.000Z"), done("NEW-1", "2026-11-09T10:00:00.000Z"), done("MID-1", "2026-11-05T10:00:00.000Z")];
+    const html = renderApp({
+      css: "",
+      section: "pipeline",
+      board: buildBoard(jobs, []),
+      attention: buildAttention(jobs),
+      page: { csrf: "token", repos: [{ name: "web", path: "/repos/web" }], workflows: ["feature"] },
+    });
+    const at = (id: string) => html.indexOf(`id="job-${id}"`);
+    assert.ok(at("NEW-1") > 0 && at("NEW-1") < at("MID-1") && at("MID-1") < at("OLD-1"));
+    assert.match(html, /<button type="button" class="btn done-more" id="done-more" hidden>/);
+  });
+});
+
+describe("job list filter box", () => {
+  it("is on History and the per-repo lists, not on the board", () => {
+    const plan = workflowStepPlan("feature");
+    const jobs = [job({ jobId: "WEB-1", state: "done", steps: plan.map((id) => ({ id, phase: "done" as const })) })];
+    const page = { csrf: "token", repos: [{ name: "web", path: "/repos/web" }], workflows: ["feature"] };
+    const render = (section: "history" | "repos" | "pipeline") =>
+      renderApp({ css: "", section, board: buildBoard(jobs, []), attention: buildAttention(jobs), page });
+    assert.match(render("history"), /<input type="search" id="job-filter"/);
+    assert.match(render("repos"), /<input type="search" id="job-filter"/);
+    assert.doesNotMatch(render("pipeline"), /id="job-filter"/);
+  });
+});
+
 describe("job page", () => {
   const page = { csrf: "token", repos: [{ name: "web", path: "/repos/web" }], workflows: ["feature"], now: Date.parse("2026-11-09T04:12:00.000Z") };
   const render = (status: StatusJobView, events: KilnEvent[], activity?: ActivityFeed, extra: Partial<Parameters<typeof jobDetail>[0]> = {}) => {
@@ -849,6 +881,17 @@ describe("job page", () => {
     assert.match(main, /action="\/api\/jobs\/SAMPLE-1\/remove"/);
     assert.doesNotMatch(main, /class="step-section open"/);
     assert.match(sideOf(main), /Nothing\. This job is finished\./);
+  });
+
+  it("keeps a finished job's page to its outcome: no empty changes card, no stale failure, no card for a step that did no agent work", () => {
+    const plan = workflowStepPlan("feature");
+    const status = job({ jobId: "SAMPLE-1", state: "done", steps: plan.map((id) => ({ id, phase: "done" as const })) });
+    const main = mainOf(render(status, loopEvents()));
+    assert.doesNotMatch(sideOf(main), /Changes so far/);
+    assert.doesNotMatch(sideOf(main), /<dt>Failure<\/dt>/);
+    assert.doesNotMatch(main, /<section class="step-section"[^>]*data-phase="land"/);
+    assert.equal(main.split("prog-outcome").length - 1, 1);
+    assert.doesNotMatch(main, /<p class="reason">/);
   });
 
   it("keeps Run next, Hold, Release, Stop job, and Remove job for a queued job", () => {

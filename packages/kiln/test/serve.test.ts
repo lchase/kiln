@@ -625,7 +625,7 @@ describe("kiln serve", () => {
       assert.equal(favicon.status, 204);
       assert.equal(favicon.body, "");
       assert.match(homePage.body, /Needs a hand/);
-      assert.match(homePage.body, /\(0\) Kiln/);
+      assert.match(homePage.body, /<title>Kiln<\/title>/);
       assert.doesNotMatch(homePage.body, new RegExp(TOKEN));
 
       const jobs = await text(`${server.url}/api/jobs`);
@@ -970,7 +970,7 @@ describe("kiln serve", () => {
       try {
         const html = await text(`${server.url}/`);
         assert.equal(html.status, 200);
-        assert.match(html.body, /\(0\) Kiln/);
+        assert.match(html.body, /<title>Kiln<\/title>/);
         const repos = await text(`${server.url}/repos`);
         assert.match(repos.body, /verify: expected 1 received 0/);
         assert.match(repos.body, new RegExp(`action="/api/jobs/${id}/retry"`));
