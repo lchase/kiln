@@ -2125,7 +2125,6 @@ function document(options: {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(options.title)}</title>
 ${faviconLink(options.css, theme)}
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&family=Roboto+Mono:wght@400;500&display=swap">
 <style>
 ${options.css}
 </style>
