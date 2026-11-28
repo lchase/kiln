@@ -755,13 +755,16 @@ function jobRow(job: BoardJob, section: "repos" | "history", csrf: string, clock
     job.scheduledRetry && job.nextRetryAt
       ? `<div class="meta">retrying <time datetime="${escapeHtml(job.nextRetryAt)}" data-time="clock">${escapeHtml(formatRelative(job.nextRetryAt))}</time>${job.attemptLine ? ` · ${escapeHtml(job.attemptLine)}` : ""}</div>`
       : "";
-  const history = job.historyLine ? `<div class="meta">${escapeHtml(job.historyLine)}</div>` : "";
+  // The step list already ends in the outcome ("Merged #109"), so a finished row that draws it does not say it again
+  // in a reason line, a history line, and an inline log. A local landing keeps its history line: it names the branch.
+  const settled = job.finished && job.steps.length > 0 && stepFocus(job)?.kind === "outcome";
+  const history = job.historyLine && (!settled || /^landed locally · /.test(job.historyLine)) ? `<div class="meta">${escapeHtml(job.historyLine)}</div>` : "";
   const unsafe = job.prUrl && !safeUrl(job.prUrl) ? `<div class="branch">${escapeHtml(job.prUrl)}</div>` : "";
   const deps = dependsHtml(job);
-  const reason = `<p class="reason">${escapeHtml(job.reason)}</p>`;
+  const reason = settled ? "" : `<p class="reason">${escapeHtml(job.reason)}</p>`;
   const fix = launchFixHtml(job);
   const feedback = feedbackHtml(job);
-  const tail = job.logTail ? logDisclosure(job.logTail) : "";
+  const tail = job.logTail && !job.finished ? logDisclosure(job.logTail) : "";
   const notes = visibleNotes(job);
   const unseen = `<p class="unseen" data-unseen-for="${escapeHtml(job.jobId)}" hidden></p>`;
   const links = fileLinks(job);

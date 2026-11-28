@@ -721,6 +721,31 @@ describe("pipeline board done column", () => {
   });
 });
 
+describe("finished rows on the job lists", () => {
+  const plan = workflowStepPlan("feature");
+  const render = (jobs: StatusJobView[]) =>
+    renderApp({
+      css: "",
+      section: "history",
+      board: buildBoard(jobs, []),
+      attention: buildAttention(jobs),
+      page: { csrf: "token", repos: [{ name: "web", path: "/repos/web" }], workflows: ["feature"] },
+    });
+
+  it("say the outcome once, in the step list, not again as a reason and a history line", () => {
+    const html = render([job({ jobId: "WEB-1", state: "done", prNumber: 7, steps: plan.map((id) => ({ id, phase: "done" as const })) })]);
+    const row = html.slice(html.indexOf('id="job-WEB-1"'), html.indexOf("</article>", html.indexOf('id="job-WEB-1"')));
+    assert.match(row, /Merged #7/);
+    assert.doesNotMatch(row, /<p class="reason">/);
+    assert.doesNotMatch(row, /merged · PR #7/);
+  });
+
+  it("keep the history line when no step list is drawn to carry the outcome", () => {
+    const html = render([job({ jobId: "WEB-2", state: "done", prNumber: 7 })]);
+    assert.match(html, /merged · PR #7/);
+  });
+});
+
 describe("job list filter box", () => {
   it("is on History and the per-repo lists, not on the board", () => {
     const plan = workflowStepPlan("feature");
