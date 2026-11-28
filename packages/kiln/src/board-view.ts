@@ -20,20 +20,6 @@ export type BoardJob = JobView;
 
 const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-const PHASE_OF: Record<string, string> = {
-  spec: "spec",
-  build: "build",
-  verify: "build",
-  security: "review",
-  ux: "review",
-  ui: "review",
-  code: "review",
-  approver: "approve",
-  approve: "approve",
-  land: "land",
-  explore: "explore",
-};
-
 const PHASE_LABEL: Record<string, string> = {
   spec: "Spec",
   build: "Build",
@@ -133,7 +119,7 @@ export interface StatsDocument {
   spend: SpendSnapshot;
   windowUsd: number;
   costByRepo: { repo: string; usd: number }[];
-  costByPhase: { phase: string; usd: number }[];
+  costByWorkflow: { workflow: string; usd: number }[];
   runs: { started: number; finished: number; failed: number };
   failuresByClass: { class: string; count: number }[];
   interventions: { total: number; rows: LedgerRow[] };
@@ -421,7 +407,7 @@ export function statsFor(
   const since = windowStart(options.window, now);
   const spend = spendSnapshot(events, options.cap, now);
   const repos = new Map<string, number>();
-  const phases = new Map<string, number>();
+  const workflows = new Map<string, number>();
   const classes = new Map<string, number>();
   const repoOf = repoByJob(events);
   let started = 0;
@@ -443,8 +429,8 @@ export function statsFor(
     windowUsd += usd;
     const repo = (event.job_id && repoOf.get(event.job_id)) || "(no repo)";
     repos.set(repo, (repos.get(repo) ?? 0) + usd);
-    const phase = phaseOfRun(events, event.run_id);
-    phases.set(phase, (phases.get(phase) ?? 0) + usd);
+    const workflow = workflowOfRun(events, event.run_id);
+    workflows.set(workflow, (workflows.get(workflow) ?? 0) + usd);
   }
   const rows = ledgerRows(events, { since, now });
   return {
@@ -453,7 +439,9 @@ export function statsFor(
     spend,
     windowUsd,
     costByRepo: [...repos.entries()].map(([repo, usd]) => ({ repo, usd })).sort((a, b) => a.repo.localeCompare(b.repo)),
-    costByPhase: [...phases.entries()].map(([phase, usd]) => ({ phase, usd })).sort((a, b) => a.phase.localeCompare(b.phase)),
+    costByWorkflow: [...workflows.entries()]
+      .map(([workflow, usd]) => ({ workflow, usd }))
+      .sort((a, b) => a.workflow.localeCompare(b.workflow)),
     runs: { started, finished, failed },
     failuresByClass: [...classes.entries()]
       .map(([name, count]) => ({ class: name, count }))
@@ -639,23 +627,13 @@ function dollarCost(event: KilnEvent): number | undefined {
   return usd;
 }
 
-function phaseOfRun(events: readonly KilnEvent[], runId: string | null): string {
-  if (!runId) return "run";
-  let workflow = "";
-  let phase = "run";
+/** The workflow a run was started with. Cost is recorded per run, so this is the finest honest split. */
+function workflowOfRun(events: readonly KilnEvent[], runId: string | null): string {
+  if (!runId) return "(unknown)";
   for (const event of events) {
-    if (event.run_id !== runId) continue;
-    if (event.event === "run.started") {
-      workflow = event.properties.workflow;
-      if (workflow === "fix") phase = "fix";
-      else if (workflow === "investigation") phase = "explore";
-    }
-    if (workflow === "fix") continue;
-    if ((event.event === "phase.started" || event.event === "phase.finished") && event.step && PHASE_OF[event.step]) {
-      phase = PHASE_OF[event.step];
-    }
+    if (event.run_id === runId && event.event === "run.started") return event.properties.workflow;
   }
-  return phase;
+  return "(unknown)";
 }
 
 function repoByJob(events: readonly KilnEvent[]): Map<string, string> {

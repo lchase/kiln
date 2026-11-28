@@ -71,6 +71,20 @@
   --disabled: 0.45;
 }
 /* tokens:end */
+@font-face {
+  font-family: Roboto;
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/assets/fonts/roboto-latin.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Roboto Mono";
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url("/assets/fonts/roboto-mono-latin.woff2") format("woff2");
+}
 
 /* theme:kiln */
 /* Kiln's own warmed neutral. Surfaces are the Tailwind Stone ramp. Accent and state colors are Kiln's. */
@@ -91,6 +105,7 @@
   --changes: #e6c36a;
   --human: #ff7a45;
   --primary: #6d4aff;
+  --primary-text: #9379ff;
   --code: #d6d3d1;
   --code-bg: #1c1917;
   --on-primary: #ffffff;
@@ -130,6 +145,7 @@
   --changes: #ebcb8b;
   --human: #d08770;
   --primary: #88c0d0;
+  --primary-text: #8fc4d2;
   --code: #abbfd4;
   --code-bg: #3b4252;
   --on-primary: #2e3440;
@@ -169,6 +185,7 @@
   --changes: #fabd2f;
   --human: #fe8019;
   --primary: #fe8019;
+  --primary-text: #fe8019;
   --code: #8bab9e;
   --code-bg: #282828;
   --on-primary: #1d2021;
@@ -208,6 +225,7 @@
   --changes: #b57614;
   --human: #af3a03;
   --primary: #af3a03;
+  --primary-text: #aa3803;
   --code: #076678;
   --code-bg: #f9f5d7;
   --on-primary: #fbf1c7;
@@ -247,6 +265,7 @@
   --changes: #f9e2af;
   --human: #fab387;
   --primary: #cba6f7;
+  --primary-text: #cba6f7;
   --code: #b4befe;
   --code-bg: #11111b;
   --on-primary: #11111b;
@@ -286,6 +305,7 @@
   --changes: #eed49f;
   --human: #f5a97f;
   --primary: #c6a0f6;
+  --primary-text: #c6a0f6;
   --code: #b7bdf8;
   --code-bg: #181926;
   --on-primary: #181926;
@@ -325,6 +345,7 @@
   --changes: #e5c890;
   --human: #ef9f76;
   --primary: #ca9ee6;
+  --primary-text: #cea4e8;
   --code: #babbf1;
   --code-bg: #232634;
   --on-primary: #232634;
@@ -364,6 +385,7 @@
   --changes: #df8e1d;
   --human: #fe640b;
   --primary: #8839ef;
+  --primary-text: #712fc7;
   --code: #164fc0;
   --code-bg: #dce0e8;
   --on-primary: #eff1f5;
@@ -403,6 +425,7 @@
   --changes: #ffa23e;
   --human: #ffa23e;
   --primary: #a87ffb;
+  --primary-text: #a87ffb;
   --code: #92a9ff;
   --code-bg: #10151d;
   --on-primary: #10151d;
@@ -442,6 +465,7 @@
   --changes: #a65921;
   --human: #d07826;
   --primary: #6f4cde;
+  --primary-text: #6f4cde;
   --code: #264dcb;
   --code-bg: #f4f7fd;
   --on-primary: #ffffff;
@@ -654,6 +678,8 @@ h3 {
   color: var(--ink);
   cursor: pointer;
 }
+.d-actions .confirm.remove summary { background: transparent; border-color: transparent; color: var(--muted); }
+.d-actions .confirm.remove summary:hover { background: transparent; color: var(--ink); text-decoration: underline; }
 .d-actions button:disabled { opacity: var(--disabled); cursor: not-allowed; }
 .d-actions button[aria-busy="true"] { opacity: 1; cursor: progress; }
 .d-actions button[aria-busy="true"]::before {
@@ -866,7 +892,7 @@ h3 {
 }
 .steps .step .mark { width: var(--icon); height: var(--icon); }
 .steps .step.done { color: var(--muted); }
-.steps .step.current { color: var(--primary); font-weight: 500; }
+.steps .step.current { color: var(--primary-text); font-weight: 500; }
 .steps .step.failed { color: var(--state-failed); font-weight: 500; }
 .step-now { display: none; }
 .step-now.outcome { display: inline; color: var(--muted); font-size: var(--text-xs); line-height: var(--leading-xs); }
@@ -1105,7 +1131,7 @@ h3 {
   font-size: var(--text-xs);
   line-height: var(--leading-xs);
 }
-.run-step { color: var(--primary); font-weight: 500; }
+.run-step { color: var(--primary-text); font-weight: 500; }
 .run-meta { color: var(--muted); }
 .run-note {
   overflow: hidden;
@@ -1751,7 +1777,7 @@ button.live-summary[aria-expanded="true"] { white-space: pre-wrap; }
 .prog-note { font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--muted); }
 .prog-step.done { color: var(--muted); }
 .prog-step.done .prog-bar { background: var(--muted); }
-.prog-step.current { color: var(--primary); font-weight: 500; }
+.prog-step.current { color: var(--primary-text); font-weight: 500; }
 .prog-step.current .prog-bar { background: var(--primary); }
 .prog-step.failed { color: var(--state-failed); font-weight: 500; }
 .prog-step.failed .prog-bar { background: var(--state-failed); }
@@ -1784,7 +1810,7 @@ button.live-summary[aria-expanded="true"] { white-space: pre-wrap; }
 .step-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); padding: var(--space-3) var(--space-4); min-width: 0; }
 .step-section.open .step-head { background: var(--panel); }
 .step-head h2 { margin: 0; font-size: var(--text-sm); line-height: var(--leading-sm); font-weight: 500; color: var(--muted); }
-.step-section.open .step-head h2 { color: var(--primary); }
+.step-section.open .step-head h2 { color: var(--primary-text); }
 .step-head .verdict { margin: 0; }
 .step-section:not(.open) .step-head .meta { font-size: var(--text-xs); }
 .step-activity > summary, .job-more > summary { cursor: pointer; color: var(--code); padding: var(--space-2) var(--space-4); }
@@ -1869,7 +1895,7 @@ button.live-summary[aria-expanded="true"] { white-space: pre-wrap; }
   overflow-wrap: anywhere;
 }
 .step-row.done { color: var(--muted); }
-.step-row.current { color: var(--primary); }
+.step-row.current { color: var(--primary-text); }
 .step-row.failed { color: var(--state-failed); }
 a.step-row:hover { background: var(--card); color: var(--ink); }
 .step-row[aria-current="page"] { background: var(--card-hover); color: var(--ink); font-weight: 500; }

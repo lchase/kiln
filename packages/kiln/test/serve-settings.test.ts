@@ -533,6 +533,28 @@ describe("serve settings", () => {
     }
   });
 
+  it("serves the bundled fonts from its own origin and does not call a font host", async () => {
+    const { cwd, home } = workDir("kiln-fonts-");
+    const server = await startServe({ cwd, home });
+    try {
+      const page = await fetch(`${server.url}/`);
+      const html = await page.text();
+      assert.match(html, /@font-face/);
+      assert.doesNotMatch(html, /fonts\.googleapis\.com|fonts\.gstatic\.com/);
+      assert.match(page.headers.get("content-security-policy") ?? "", /font-src 'self'/);
+      for (const name of ["roboto-latin.woff2", "roboto-mono-latin.woff2"]) {
+        const font = await fetch(`${server.url}/assets/fonts/${name}`);
+        assert.equal(font.status, 200, name);
+        assert.equal(font.headers.get("content-type"), "font/woff2");
+        assert.equal(Buffer.from(await font.arrayBuffer()).subarray(0, 4).toString(), "wOF2");
+      }
+      const other = await fetch(`${server.url}/assets/fonts/..%2Fserve.css`);
+      assert.notEqual(other.status, 200);
+    } finally {
+      await stop(server.child);
+    }
+  });
+
   it("edits triggers, routes, jira, and the raw file without leaking the token", async () => {
     const { cwd, home, configPath } = workDir("kiln-settings-file-");
     const server = await startServe({ cwd, home });

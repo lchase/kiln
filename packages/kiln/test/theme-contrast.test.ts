@@ -23,13 +23,13 @@ function ratio(foreground: string, background: string): number {
 }
 
 describe("theme text contrast", () => {
-  it("keeps muted, faint, and code text at 4.5:1 on the page, panel, and card in every theme", () => {
+  it("keeps muted, faint, code, and accent text at 4.5:1 on the page, panel, and card in every theme", () => {
     const blocks = [...css.matchAll(/\/\* theme:([a-z0-9-]+) \*\/([\s\S]*?)\/\* theme:end \*\//g)];
     assert.ok(blocks.length > 0);
     const failures: string[] = [];
     for (const [, id, body] of blocks) {
       const token = (name: string) => new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{3,6})\\s*;`).exec(body ?? "")?.[1];
-      for (const text of ["muted", "faint", "code"]) {
+      for (const text of ["muted", "faint", "code", "primary-text"]) {
         for (const surface of ["bg", "panel", "card"]) {
           const fg = token(text);
           const bg = token(surface);

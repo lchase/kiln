@@ -76,8 +76,10 @@ describe("pipeline board", () => {
       job("gate-1", "needs-human", { canApprove: true, canReject: true, steps: steps(8) }),
       job("dead-1", "dead", { steps: steps(1, "failed") }),
     ]);
-    const columns = [...html.matchAll(/<section class="col" data-column="([^"]+)" aria-label="([^"]+)">/g)].map((match) => match[1]);
+    const columns = [...html.matchAll(/<section class="col" data-column="([^"]+)" aria-label="([^"]+)" title="([^"]+)">/g)].map((match) => match[1]);
     assert.deepEqual(columns, ["queued", "running", "needs-you", "needs-hand", "done"]);
+    assert.match(html, /data-column="needs-you" aria-label="Needs you" title="A decision is waiting for you: approve, reject, or revise\."/);
+    assert.match(html, /data-column="needs-hand" aria-label="Needs a hand" title="It stopped and needs a person to look at it, then retry\."/);
     for (const name of columns) {
       assert.match(column(html, name ?? ""), /<h2><svg class="icon col-icon [a-z-]+" viewBox="0 0 24 24" aria-hidden="true">/);
     }

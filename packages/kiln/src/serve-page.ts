@@ -450,6 +450,15 @@ function heldChip(job: JobView): string {
   return job.held ? `<span class="chip">Held</span>` : "";
 }
 
+/** One plain sentence per column, shown on hover, so "Needs you" and "Needs a hand" are not left to guesswork. */
+const COLUMN_HINT: Record<PipelineColumn, string> = {
+  queued: "Waiting for its turn to start.",
+  running: "An agent is working on it now.",
+  "needs-you": "A decision is waiting for you: approve, reject, or revise.",
+  "needs-hand": "It stopped and needs a person to look at it, then retry.",
+  done: "Finished: merged, landed, rejected, or cancelled.",
+};
+
 const COLUMN_ICON: Record<PipelineColumn, IconName> = {
   queued: "hourglass",
   running: "play",
@@ -466,7 +475,7 @@ function pipelineHtml(jobs: readonly JobView[], clock: BoardClock, csrf: string)
     counts.set(column, rows.length);
     const cards = rows.map((job) => pipeCard(job, clock, csrf, titles)).join("");
     const sub = column === "queued" ? `<span class="col-sub">in launch order</span>` : "";
-    return `<section class="col" data-column="${column}" aria-label="${escapeHtml(COLUMN_LABEL[column])}">
+    return `<section class="col" data-column="${column}" aria-label="${escapeHtml(COLUMN_LABEL[column])}" title="${escapeHtml(COLUMN_HINT[column])}">
 <header class="full"><h2>${icon(COLUMN_ICON[column], `icon col-icon ${column}`)}${escapeHtml(COLUMN_LABEL[column])}</h2><span class="count">${rows.length || ""}</span>${sub}</header>
 <div class="slim-face"><span>${escapeHtml(COLUMN_LABEL[column])}</span><span class="count">${rows.length}</span></div>
 ${cards}<p class="empty">${escapeHtml(emptyColumn(column))}</p>${column === "done" ? `<button type="button" class="btn done-more" id="done-more" hidden></button>` : ""}
@@ -755,13 +764,16 @@ function jobRow(job: BoardJob, section: "repos" | "history", csrf: string, clock
     job.scheduledRetry && job.nextRetryAt
       ? `<div class="meta">retrying <time datetime="${escapeHtml(job.nextRetryAt)}" data-time="clock">${escapeHtml(formatRelative(job.nextRetryAt))}</time>${job.attemptLine ? ` · ${escapeHtml(job.attemptLine)}` : ""}</div>`
       : "";
-  const history = job.historyLine ? `<div class="meta">${escapeHtml(job.historyLine)}</div>` : "";
+  // The step list already ends in the outcome ("Merged #109"), so a finished row that draws it does not say it again
+  // in a reason line, a history line, and an inline log. A local landing keeps its history line: it names the branch.
+  const settled = job.finished && job.steps.length > 0 && stepFocus(job)?.kind === "outcome";
+  const history = job.historyLine && (!settled || /^landed locally · /.test(job.historyLine)) ? `<div class="meta">${escapeHtml(job.historyLine)}</div>` : "";
   const unsafe = job.prUrl && !safeUrl(job.prUrl) ? `<div class="branch">${escapeHtml(job.prUrl)}</div>` : "";
   const deps = dependsHtml(job);
-  const reason = `<p class="reason">${escapeHtml(job.reason)}</p>`;
+  const reason = settled ? "" : `<p class="reason">${escapeHtml(job.reason)}</p>`;
   const fix = launchFixHtml(job);
   const feedback = feedbackHtml(job);
-  const tail = job.logTail ? logDisclosure(job.logTail) : "";
+  const tail = job.logTail && !job.finished ? logDisclosure(job.logTail) : "";
   const notes = visibleNotes(job);
   const unseen = `<p class="unseen" data-unseen-for="${escapeHtml(job.jobId)}" hidden></p>`;
   const links = fileLinks(job);
@@ -1509,8 +1521,8 @@ function statsHtml(stats: StatsDocument): string {
     stats.costByRepo.map((row) => [row.repo, formatDollars(row.usd)]),
     "No recorded cost in this window.",
   );
-  const phaseRows = tableRows(
-    stats.costByPhase.map((row) => [row.phase, formatDollars(row.usd)]),
+  const workflowRows = tableRows(
+    stats.costByWorkflow.map((row) => [row.workflow, formatDollars(row.usd)]),
     "No recorded cost in this window.",
   );
   const classRows = tableRows(
@@ -1533,7 +1545,7 @@ function statsHtml(stats: StatsDocument): string {
 <section class="stat"><h3>Interventions</h3>${interventions}</section>
 </div>
 <section class="stat"><h3>Cost by repo</h3>${repoRows}</section>
-<section class="stat"><h3>Cost by phase</h3>${phaseRows}</section>`;
+<section class="stat"><h3>Cost by workflow</h3>${workflowRows}</section>`;
 }
 
 function reportHtml(report: DayReport): string {
@@ -2122,7 +2134,6 @@ function document(options: {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(options.title)}</title>
 ${faviconLink(options.css, theme)}
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&family=Roboto+Mono:wght@400;500&display=swap">
 <style>
 ${options.css}
 </style>
