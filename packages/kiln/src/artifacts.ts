@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { redact } from "./redact.js";
 import { STEP_NAME, planOf } from "./step-result.js";
@@ -113,16 +113,26 @@ function artifactsDir(runDir: string): string | undefined {
 }
 
 /**
- * Parses one artifact file. It opens without following a final symlink, then checks the type and size on the open
- * handle and reads from that same handle, so the file cannot be swapped between the check and the read.
+ * Parses one artifact file. It opens without following a final symlink and without blocking (a FIFO would otherwise
+ * stall the server until something wrote to it), checks the type and size on the open handle, and reads from that
+ * same handle, so the file cannot be swapped between the check and the read. The read is bounded, so a file that
+ * grows past the limit is rejected instead of loaded.
  */
 function readJson(path: string): unknown {
   let fd: number | undefined;
   try {
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return undefined;
-    return JSON.parse(readFileSync(fd, "utf8"));
+    const buffer = Buffer.alloc(Math.min(stat.size, MAX_FILE_BYTES) + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const read = readSync(fd, buffer, total, buffer.length - total, null);
+      if (read === 0) break;
+      total += read;
+    }
+    if (total > MAX_FILE_BYTES) return undefined;
+    return JSON.parse(buffer.toString("utf8", 0, total));
   } catch {
     return undefined;
   } finally {
