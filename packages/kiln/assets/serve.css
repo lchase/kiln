@@ -1829,6 +1829,49 @@ button.live-summary[aria-expanded="true"] { white-space: pre-wrap; }
 .job-head .job-meta > * { min-width: 0; overflow-wrap: anywhere; }
 .job-head .reason, .job-head .ask, .job-head .links { margin: 0; }
 .job-head .d-actions { margin: 0; }
+/* Pipeline as a list: a band for what needs you, then lanes of rows. Columns are the other view. */
+.head-tools { display: flex; align-items: center; gap: var(--space-3); }
+.pipeline-list { display: flex; flex-direction: column; }
+.pl-calm { display: flex; align-items: center; gap: var(--space-3); margin: 0 0 var(--space-6); padding: var(--space-4) var(--space-5); border: var(--hairline) solid var(--line); border-radius: var(--radius-lg); color: var(--muted); }
+.pl-calm .icon { color: var(--state-done); }
+.pl-ask {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-5); align-items: center;
+  margin: 0 0 var(--space-6); padding: var(--space-5);
+  border: var(--hairline) solid color-mix(in srgb, var(--state-needs-you) 60%, var(--line));
+  background: color-mix(in srgb, var(--state-needs-you) 9%, var(--panel)); border-radius: var(--radius-lg);
+}
+.pl-ask-kind { display: flex; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-2); color: var(--state-needs-you); font-size: var(--text-sm); font-weight: 500; }
+.pl-ask h3 { margin: 0 0 var(--space-1); font-size: var(--text-lg); line-height: var(--leading-lg); font-weight: 500; text-transform: none; letter-spacing: normal; }
+.pl-ask-line { margin: 0; color: var(--muted); font-size: var(--text-sm); line-height: var(--leading-sm); }
+.pl-ask .ph-chain { margin-top: var(--space-3); }
+.pl-ask .btn.primary { display: inline-flex; align-items: center; justify-content: center; height: var(--hit); padding: 0 var(--space-5); font-size: var(--text-md); }
+.pl-lane { margin: 0 0 var(--space-6); }
+.pl-lane > h3 { display: flex; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-2); color: var(--muted); font-size: var(--text-sm); font-weight: 500; text-transform: none; letter-spacing: normal; }
+.pl-lane.needs-hand > h3 { color: var(--state-needs-hand); }
+.pl-count { color: var(--faint); font: var(--text-xs)/var(--leading-xs) var(--font-mono); }
+.pl-lane-act { margin-left: auto; }
+.pl-row:not(.pl-ask) {
+  display: grid; grid-template-columns: var(--icon) minmax(0, 1fr) 4.5rem 6rem; gap: var(--space-4); align-items: center;
+  padding: var(--space-3) var(--space-2); border-top: var(--hairline) solid var(--line);
+}
+.pl-lane > .pl-row:last-of-type { border-bottom: var(--hairline) solid var(--line); }
+.pl-row:not(.pl-ask):hover { background: color-mix(in srgb, var(--card) 55%, transparent); }
+.pl-row[hidden], .pl-lane[hidden], .pl-row.beyond { display: none; }
+.pl-main { min-width: 0; }
+.pl-title { display: block; overflow: hidden; color: var(--ink); font-size: var(--text-md); line-height: var(--leading-md); text-overflow: ellipsis; white-space: nowrap; }
+.pl-ask .pl-title { overflow: visible; font-size: inherit; line-height: inherit; white-space: normal; }
+.pl-state { display: block; color: var(--muted); font-size: var(--text-sm); line-height: var(--leading-sm); }
+.pl-state b { color: var(--ink); font-weight: 500; }
+.pl-bad { color: var(--state-needs-hand); }
+.pl-note { display: block; overflow: hidden; color: var(--faint); font: var(--text-xs)/var(--leading-xs) var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.pl-main .ph-chain { margin-top: var(--space-3); }
+.pl-cost { color: var(--muted); font: var(--text-xs)/var(--leading-xs) var(--font-mono); text-align: right; }
+.pl-act { justify-self: end; }
+.pl-icon.running { color: var(--state-running); }
+.pl-icon.queued { color: var(--state-queued); }
+.pl-icon.needs-hand { color: var(--state-needs-hand); }
+.pl-icon.done, .pl-icon.merged { color: var(--state-done); }
+.pl-row.done .pl-title { color: var(--muted); }
 /* Phase chain on the job page: a named pill per step, parallel steps grouped in a dashed box. */
 .ph-chain { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) 0; margin: 0; padding: 0; list-style: none; }
 .ph-pill {

@@ -3,6 +3,9 @@
   var NOTIFY_KEY = "kiln-notify";
   var body = document.body;
   var board = document.getElementById("board");
+  // The Pipeline is columns or a list, chosen by a cookie the server reads. The list swaps its whole body on a refresh.
+  var listMode = Boolean(board && board.classList.contains("pipeline-list"));
+  var boardHtml = board ? board.innerHTML : "";
   var count = Number(body.getAttribute("data-needs-you") || "0");
   function titleFor(n) { return n > 0 ? "(" + n + ") Kiln" : "Kiln"; }
   document.title = titleFor(count);
@@ -30,6 +33,7 @@
   try { workflow = localStorage.getItem("kiln-workflow") || ""; } catch (err) { workflow = ""; }
   // The Done column shows the newest few; the rest sit behind "Show N more".
   var DONE_LIMIT = 6;
+  var LIST_DONE_LIMIT = 3;
   var doneAll = false;
   try { doneAll = localStorage.getItem("kiln-done-all") === "on"; } catch (err) { doneAll = false; }
 
@@ -91,7 +95,7 @@
   // arms a button and a second click within a few seconds acts. Jobs go one at a time through the same routes the
   // per-job buttons use, then the page reloads and shows what happened.
   function retryIds() {
-    var cards = document.querySelectorAll('.board .col[data-column="needs-hand"] .card:not([hidden])');
+    var cards = document.querySelectorAll('.board .col[data-column="needs-hand"] .card:not([hidden]), .pipeline-list .pl-row[data-column="needs-hand"]:not([hidden])');
     var ids = [];
     for (var i = 0; i < cards.length; i++) {
       if (cards[i].querySelector("form.retry") && cards[i].getAttribute("data-job")) ids.push(cards[i].getAttribute("data-job"));
@@ -174,7 +178,7 @@
   }
 
   function applyRepo() {
-    var cards = document.querySelectorAll(".board .card");
+    var cards = document.querySelectorAll(".board .card, .pipeline-list .pl-row");
     for (var i = 0; i < cards.length; i++) {
       var cardRepo = cards[i].getAttribute("data-repo") || "";
       var cardWorkflow = cards[i].getAttribute("data-workflow") || "";
@@ -182,18 +186,27 @@
       var hideWorkflow = Boolean(workflow) && cardWorkflow !== workflow;
       cards[i].hidden = hideRepo || hideWorkflow;
     }
-    var doneCards = document.querySelectorAll('.board .col[data-column="done"] .card');
+    var doneCards = document.querySelectorAll('.board .col[data-column="done"] .card, .pipeline-list .pl-row[data-column="done"]');
+    var doneLimit = listMode ? LIST_DONE_LIMIT : DONE_LIMIT;
     var shown = 0;
     for (var d = 0; d < doneCards.length; d++) {
       if (doneCards[d].hidden) { doneCards[d].classList.remove("beyond"); continue; }
       shown += 1;
-      doneCards[d].classList.toggle("beyond", !doneAll && shown > DONE_LIMIT);
+      doneCards[d].classList.toggle("beyond", !doneAll && shown > doneLimit);
     }
     var more = document.getElementById("done-more");
     if (more) {
-      more.hidden = shown <= DONE_LIMIT;
-      more.textContent = doneAll ? "Show fewer" : "Show " + (shown - DONE_LIMIT) + " more";
+      more.hidden = shown <= doneLimit;
+      more.textContent = doneAll ? "Show fewer" : "Show " + (shown - doneLimit) + " more";
       more.setAttribute("aria-pressed", doneAll ? "true" : "false");
+    }
+    // In the list, each lane shows how many of its rows pass the filters, and a lane with none disappears.
+    var lanes = document.querySelectorAll(".pipeline-list .pl-lane");
+    for (var l = 0; l < lanes.length; l++) {
+      var visibleRows = lanes[l].querySelectorAll(".pl-row:not([hidden])").length;
+      var laneCount = lanes[l].querySelector("[data-pl-count]");
+      if (laneCount) laneCount.textContent = String(visibleRows);
+      lanes[l].hidden = visibleRows === 0;
     }
     var chips = document.querySelectorAll(".repo-f");
     for (var j = 0; j < chips.length; j++) {
@@ -2674,6 +2687,13 @@
       loadFs(next, false);
       return;
     }
+    var viewButton = target.closest("#board-view button[data-view]");
+    if (viewButton) {
+      var chosen = viewButton.getAttribute("data-view") === "list" ? "list" : "columns";
+      try { document.cookie = "kiln-board=" + chosen + "; path=/; max-age=31536000; SameSite=Lax"; } catch (err) { /* cookies off */ }
+      location.reload();
+      return;
+    }
     if (target.closest("#nav-toggle")) {
       setNavCollapsed(!navCollapsed());
       return;
@@ -2812,7 +2832,7 @@
     return tag === "input" || tag === "textarea" || tag === "select" || Boolean(el.isContentEditable);
   }
   function jobLinks() {
-    return Array.prototype.slice.call(document.querySelectorAll(".board .card:not([hidden]):not(.beyond) .job-title, .job:not([hidden]) .job-title"));
+    return Array.prototype.slice.call(document.querySelectorAll(".board .card:not([hidden]):not(.beyond) .job-title, .pipeline-list .pl-row:not([hidden]):not(.beyond) .pl-title, .job:not([hidden]) .job-title"));
   }
   function showShortcuts(open) {
     var panel = document.getElementById("shortcuts");
@@ -2981,7 +3001,8 @@
   function swapBoard(rev) {
     if (swapping || !board || typeof DOMParser === "undefined") return;
     swapping = true;
-    fetch("/", { cache: "no-store", headers: { Accept: "text/html" } })
+    // Ask for this tab's own view, so a change of view in another tab cannot swap in the other one's markup.
+    fetch("/" + (listMode ? "?view=list" : "?view=columns"), { cache: "no-store", headers: { Accept: "text/html" } })
       .then(function (response) {
         if (!response.ok) throw new Error("status");
         return response.text();
@@ -2992,7 +3013,11 @@
         var next = new DOMParser().parseFromString(html, "text/html");
         var nextBoard = next.getElementById("board");
         if (!nextBoard) return;
-        var columns = nextBoard.querySelectorAll(".col");
+        if (listMode && nextBoard.innerHTML !== boardHtml) {
+          board.innerHTML = nextBoard.innerHTML;
+          boardHtml = nextBoard.innerHTML;
+        }
+        var columns = listMode ? [] : nextBoard.querySelectorAll(".col");
         for (var i = 0; i < columns.length; i++) {
           var col = board.querySelector('.col[data-column="' + columns[i].getAttribute("data-column") + '"]');
           if (!col) continue;
@@ -3048,7 +3073,7 @@
             return;
           }
           swapBoard(rev);
-        } else if (onBoard && board && board.querySelector('.col[data-column="running"] .card')) {
+        } else if (onBoard && board && board.querySelector('.col[data-column="running"] .card, .pl-row[data-column="running"]')) {
           // Running cards carry elapsed time and the newest note, so they refresh each poll.
           swapBoard(rev);
         }

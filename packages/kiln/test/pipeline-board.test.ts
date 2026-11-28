@@ -377,3 +377,104 @@ describe("done metrics", () => {
     assert.deepEqual(doneMetrics({ jobId: "j1", costUsd: null }, []), {});
   });
 });
+
+describe("pipeline list view", () => {
+  const list = (jobs: StatusJobView[], plans: Record<string, string[][]> = {}, view: "list" | "columns" | "unset" = "list") =>
+    renderApp({
+      css: "",
+      section: "pipeline",
+      board: buildBoard(jobs, []),
+      attention: buildAttention(jobs),
+      page: { csrf: "tok", repos: [], workflows: ["feature"], stallTimeoutMs: stall, now },
+      ...(view !== "unset" ? { boardView: view } : {}),
+      phasePlans: plans,
+    });
+  const gate = () => job("gate-1", "needs-human", { canApprove: true, canReject: true, steps: steps(8), gates: [{ stepId: "approve", prompt: "Approve?", choices: ["approve", "reject"], artifacts: [], reviews: [] }] });
+  const everything = () => [
+    gate(),
+    job("dead-1", "dead", { steps: steps(1, "failed") }),
+    job("run-1", "running", { steps: steps(3), stallActivityAt: new Date(now - 10_000).toISOString(), latestNote: "Edit a.ts", latestNoteAt: new Date(now - 10_000).toISOString() }),
+    job("q-1", "queued", { queuePosition: 1, queueReason: "ready" }),
+    job("done-1", "done", { prNumber: 3 }),
+  ];
+  const lane = (html: string, name: string) => {
+    const at = html.indexOf(`data-lane="${name}"`);
+    assert.ok(at >= 0, `missing lane ${name}`);
+    return html.slice(at, html.indexOf("</section>", at));
+  };
+
+  it("stays on columns unless the list is asked for, and the switch says which view is on", () => {
+    for (const view of ["unset", "columns"] as const) {
+      const html = list(everything(), {}, view);
+      assert.match(html, /<div class="board" id="board">/);
+      assert.doesNotMatch(html, /pipeline-list" id="board"/);
+      assert.match(html, /<button type="button" data-view="columns" aria-pressed="true">Columns<\/button>/);
+      assert.match(html, /id="compact"/);
+    }
+    const html = list(everything());
+    assert.match(html, /<div class="seg board-view" id="board-view" role="group" aria-label="Board view"><button type="button" data-view="list" aria-pressed="true">List<\/button><button type="button" data-view="columns" aria-pressed="false">Columns<\/button><\/div>/);
+    assert.doesNotMatch(html, /id="compact"/);
+  });
+
+  it("draws a band for what needs you, then Needs a hand, Running, Queued, and Finished in that order", () => {
+    const html = list(everything());
+    assert.match(html, /<div class="pipeline-list" id="board">/);
+    const band = html.slice(html.indexOf('class="pl-row pl-ask needs-you"'), html.indexOf("</section>", html.indexOf('class="pl-row pl-ask needs-you"')));
+    assert.match(band, /Needs you/);
+    assert.match(band, /<a class="pl-title" href="\/jobs\/gate-1">Title gate-1<\/a>/);
+    assert.match(band, /Waiting for your decision on the build/);
+    assert.match(band, /<a class="btn primary" href="\/jobs\/gate-1">Review<\/a>/);
+    assert.match(band, /<ol class="ph-chain"/);
+    const order = ["needs-hand", "running", "queued", "done"].map((name) => html.indexOf(`data-lane="${name}"`));
+    assert.deepEqual(order, [...order].sort((a, b) => a - b));
+    assert.ok(order.every((at) => at > html.indexOf("pl-ask")));
+    assert.match(html, /<span>Needs a hand<\/span><span class="pl-count" data-pl-count>1<\/span>/);
+    assert.match(html, /<span>Finished<\/span><span class="pl-count" data-pl-count>1<\/span>/);
+  });
+
+  it("says nothing needs you with one calm line, and draws no empty lane", () => {
+    const html = list([job("q-1", "queued", { queuePosition: 1, queueReason: "ready" })]);
+    assert.match(html, /<p class="pl-calm"><svg[^]*?<\/svg><span>Nothing needs you right now\.<\/span><\/p>/);
+    assert.doesNotMatch(html, /pl-ask|data-lane="running"|data-lane="needs-hand"|data-lane="done"/);
+    assert.doesNotMatch(html, /id="done-more"/);
+    assert.match(list([]), /<p class="empty">No jobs\.<\/p>/);
+  });
+
+  it("puts the phase chain on running and stuck rows, with the reviews that run together grouped, and on no other row", () => {
+    const html = list(everything());
+    const running = lane(html, "running");
+    assert.match(running, /<ol class="ph-chain"/);
+    assert.match(running, /<li class="ph-par" role="group"/);
+    assert.match(running, /<b>Security<\/b> step 4 of 9/);
+    assert.match(running, /<span class="pl-note">Edit a\.ts<\/span>/);
+    assert.match(lane(html, "needs-hand"), /<ol class="ph-chain"/);
+    assert.doesNotMatch(lane(html, "queued"), /ph-chain/);
+    assert.doesNotMatch(lane(html, "done"), /ph-chain/);
+    // A plan from the run folder decides the groups. Without a reviewer in it, no group is drawn.
+    const flat = list(everything(), { "run-1": NINE.map((id) => [id]) });
+    assert.doesNotMatch(lane(flat, "running"), /ph-par/);
+  });
+
+  it("gives a stuck row Retry with the CSRF token, and puts Retry all once, in its lane", () => {
+    const html = list(everything());
+    const hand = lane(html, "needs-hand");
+    assert.match(hand, /<form method="post" action="\/api\/jobs\/dead-1\/retry" class="act retry"><input type="hidden" name="csrf" value="tok"><button type="submit">Retry<\/button><\/form>/);
+    assert.equal(html.split('id="retry-all"').length - 1, 1);
+    assert.match(hand, /<button type="button" class="btn" id="retry-all" hidden><\/button>/);
+  });
+
+  it("says a queued job's place and why, and a finished job's outcome with a cap button", () => {
+    const html = list(everything());
+    assert.match(lane(html, "queued"), /<span class="queue-pos"><span class="sr-only">Position <\/span>1<\/span> <span class="queue-why">Next up<\/span>/);
+    assert.match(lane(html, "done"), /<span class="outcome-word done">Merged #3<\/span>/);
+    assert.equal(html.split('id="done-more"').length - 1, 1);
+  });
+
+  it("gives every row what the filters, keys, and refresh read", () => {
+    const html = list(everything());
+    for (const [id, column] of [["gate-1", "needs-you"], ["dead-1", "needs-hand"], ["run-1", "running"], ["q-1", "queued"], ["done-1", "done"]]) {
+      assert.match(html, new RegExp(`class="pl-row [^"]*" id="job-${id}" data-job="${id}" data-state="[^"]*" data-repo="web" data-workflow="feature" data-column="${column}"`), id);
+    }
+    assert.equal(html.split('id="board"').length - 1, 1);
+  });
+});

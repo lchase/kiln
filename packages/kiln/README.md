@@ -289,8 +289,11 @@ On startup, `kiln serve` prints the kiln version from this package, the `@lchase
 Before each request and each tick, serve stats the kiln config and reloads it when the mtime or size changed. `kiln repo add`, a sandbox mode change, and `maxAttempts` apply on the next request or tick. Leave serve running. When the file does not parse, serve keeps the last good config and shows one monospace line on the board with the config path and the validation message. That line goes away when the file is valid again. Secret redaction uses the reloaded config.
 
 `/` is the Pipeline board, the one place to follow work. It has five columns: Queued, Running, Needs you, Needs a
-hand, and Done. The header line counts them (`2 running, 2 need you, 1 needs a hand`), with a pulsing dot while
-something runs. Every card has its title, which links to the job page, the repo with a small icon in that repo's
+hand, and Done. A List | Columns switch at the top right shows the same jobs as a list instead: a band for each job that
+needs you, then Needs a hand, Running, Queued, and the newest three Finished, with the phase chain on every job in
+flight. The choice is saved in a `kiln-board` cookie; columns are the default, and `GET /?view=list` or
+`GET /?view=columns` asks for one explicitly. The header line counts them (`2 running, 2 need you, 1 needs a hand`),
+with a pulsing dot while something runs. Every card has its title, which links to the job page, the repo with a small icon in that repo's
 color, and the workflow in words. No card has a colored edge: the column, the step track, and the words carry the
 state.
 

@@ -425,6 +425,21 @@ describe("pipeline board style", () => {
     assert.match(poll, /\.col\[data-column="running"\] \.card/);
     assert.equal(poll.split("location.reload()").length - 1, 1, "only other sections reload");
   });
+
+  it("applies the filters, the Finished cap, Retry all, the keys, and the refresh to list rows too", () => {
+    assert.match(script, /var listMode = Boolean\(board && board\.classList\.contains\("pipeline-list"\)\);/);
+    assert.match(script, /querySelectorAll\("\.board \.card, \.pipeline-list \.pl-row"\)/);
+    assert.match(script, /var LIST_DONE_LIMIT = 3;/);
+    assert.match(script, /var doneLimit = listMode \? LIST_DONE_LIMIT : DONE_LIMIT;/);
+    assert.match(script, /\.pipeline-list \.pl-row\[data-column="needs-hand"\]:not\(\[hidden\]\)/);
+    assert.match(script, /\.pipeline-list \.pl-row:not\(\[hidden\]\):not\(\.beyond\) \.pl-title/);
+    assert.match(script, /lanes\[l\]\.hidden = visibleRows === 0;/);
+    const start = script.indexOf("function swapBoard(");
+    const swap = script.slice(start, script.indexOf("\n  function poll()", start));
+    assert.match(swap, /fetch\("\/" \+ \(listMode \? "\?view=list" : "\?view=columns"\)/);
+    assert.match(swap, /if \(listMode && nextBoard\.innerHTML !== boardHtml\)/);
+    assert.match(script, /document\.cookie = "kiln-board=" \+ chosen \+ "; path=\/; max-age=31536000; SameSite=Lax"/);
+  });
 });
 
 describe("job page style", () => {
