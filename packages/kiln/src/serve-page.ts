@@ -219,6 +219,7 @@ const SHORTCUTS_PANEL = `<aside class="shortcuts" id="shortcuts" role="dialog" a
 <div><dt><kbd>g</kbd> <kbd>h</kbd></dt><dd>Go to History</dd></div>
 <div><dt><kbd>g</kbd> <kbd>t</kbd></dt><dd>Go to Triggers</dd></div>
 <div><dt><kbd>g</kbd> <kbd>s</kbd></dt><dd>Go to Settings</dd></div>
+<div><dt><kbd>[</kbd></dt><dd>Collapse or expand the sidebar</dd></div>
 <div><dt><kbd>?</kbd></dt><dd>Show or hide this list</dd></div>
 <div><dt><kbd>Esc</kbd></dt><dd>Close this list or clear the filter</dd></div>
 </dl>
@@ -233,10 +234,10 @@ export function renderApp(model: AppModel): string {
   const capNote = page.spend?.blocked ? `<span class="cap" id="cap-note">cap hit</span>` : `<span class="cap" id="cap-note" hidden>cap hit</span>`;
   const body = `<div class="shell">
 <aside class="nav" aria-label="Kiln">
-<div class="brand"><span class="logo" aria-hidden="true">${kilnMark("currentColor")}</span><div><h1>Kiln</h1>${version}</div></div>
+<div class="brand"><span class="logo" aria-hidden="true">${kilnMark("currentColor")}</span><div class="brand-text"><h1>Kiln</h1>${version}</div><button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="true" aria-label="Collapse sidebar" title="Collapse sidebar ([)">${icon("panel-left-close", "icon nav-toggle-close")}${icon("panel-left-open", "icon nav-toggle-open")}</button></div>
 <div class="nav-scroll">
 ${navHtml(model)}
-<button class="add" type="button" id="add-job">Add job</button>
+<button class="add" type="button" id="add-job" title="Add job">${icon("plus", "icon add-icon")}<span class="add-text">Add job</span></button>
 </div>
 <footer class="side-foot">
 <div class="runstate" id="runstate">
@@ -249,7 +250,7 @@ ${navHtml(model)}
 <button class="tool-link" type="button" id="notify" data-state="ask" aria-pressed="false">${icon("bell", "icon icon-bell")}${icon("bell-off", "icon icon-bell-off")}<span id="notify-label">Notify me</span></button>
 <p class="notify-note" id="notify-note" hidden></p>
 </div>
-<button class="tool-link" type="button" id="show-shortcuts"><span class="kbd" aria-hidden="true">?</span><span>Shortcuts</span></button>
+<button class="tool-link" type="button" id="show-shortcuts"><span class="kbd" aria-hidden="true">?</span><span class="tool-text">Shortcuts</span></button>
 </footer>
 </aside>
 <div class="workspace">
@@ -318,12 +319,12 @@ function navHtml(model: AppModel): string {
     const current = model.section === section ? ` aria-current="page"` : "";
     const count = badge !== undefined && badge > 0 ? `<span class="badge">${badge}</span>` : "";
     const extra = id === "open-settings" ? ` id="open-settings"` : "";
-    return `<a class="nav-link" href="${href}"${current}${extra}><span class="nav-label">${icon(glyph)}${escapeHtml(label)}</span>${count}</a>`;
+    return `<a class="nav-link" href="${href}" title="${escapeHtml(label)}"${current}${extra}><span class="nav-label">${icon(glyph)}<span class="nav-text">${escapeHtml(label)}</span></span>${count}</a>`;
   };
   const repos = board.repos
     .map((group) => {
       const current = model.section === "repos" && model.repo === group.repo ? ` aria-current="page"` : "";
-      return `<a class="nav-sub" href="/repos/${encodeURIComponent(group.repo)}"${current}>${escapeHtml(group.repo)}<span class="badge">${group.jobs.length}</span></a>`;
+      return `<a class="nav-sub" href="/repos/${encodeURIComponent(group.repo)}" title="${escapeHtml(group.repo)}"${current}>${escapeHtml(group.repo)}<span class="badge">${group.jobs.length}</span></a>`;
     })
     .join("");
   return `<nav class="side" aria-label="Sections">
@@ -2222,6 +2223,7 @@ function document(options: {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(options.title)}</title>
 ${faviconLink(options.css, theme)}
+${options.live ? `<script>try{if(localStorage.getItem("kiln-nav")==="collapsed")document.documentElement.setAttribute("data-nav","collapsed")}catch(e){}</script>` : ""}
 <style>
 ${options.css}
 </style>

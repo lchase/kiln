@@ -702,7 +702,7 @@ describe("kiln serve", () => {
       );
       assert.match(landing.body, /<title>\(1\) Kiln<\/title>/);
       const nav = landing.body.slice(landing.body.indexOf('<nav class="side"'), landing.body.indexOf("</nav>"));
-      assert.match(nav, /<a class="nav-link" href="\/" aria-current="page"><span class="nav-label">[^]*?Pipeline<\/span><span class="badge">1<\/span><\/a>/);
+      assert.match(nav, /<a class="nav-link" href="\/" title="Pipeline" aria-current="page"><span class="nav-label">[^]*?<span class="nav-text">Pipeline<\/span><\/span><span class="badge">1<\/span><\/a>/);
       assert.match(nav, /href="\/report"/);
       assert.doesNotMatch(nav, /href="\/inbox"|href="\/hand"/);
       for (const old of ["/inbox", "/hand"]) {
