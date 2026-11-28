@@ -109,6 +109,20 @@ describe("readRunArtifacts", () => {
     assert.doesNotMatch(set.start[0]?.body ?? "", /count|empty/);
   });
 
+  it("reads nothing when the artifacts folder, or the run folder, is a symlink to somewhere else", () => {
+    const real = run([{ id: "build", kind: "agent" }], { "build.json": { status: "READY", summary: "outside" } });
+    // The artifacts folder is a symlink to a real folder full of valid artifacts.
+    const viaFolder = mkdtempSync(join(tmpdir(), "kiln-artifacts-"));
+    keep.push(viaFolder);
+    symlinkSync(join(real, "artifacts"), join(viaFolder, "artifacts"));
+    assert.deepEqual(readRunArtifacts(viaFolder), EMPTY_ARTIFACTS);
+    // The run folder itself is a symlink: its real path is elsewhere, so it still reads the real run's own artifacts.
+    const viaRun = join(mkdtempSync(join(tmpdir(), "kiln-artifacts-")), "linked-run");
+    keep.push(join(viaRun, ".."));
+    symlinkSync(real, viaRun);
+    assert.equal(readRunArtifacts(viaRun).start[0]?.name, "build");
+  });
+
   it("clips a very large body", () => {
     const set = readRunArtifacts(run([{ id: "build", kind: "agent" }], { "build.json": { status: "READY", summary: "x".repeat(60_000) } }));
     assert.ok((set.start[0]?.body.length ?? 0) < 20_100);

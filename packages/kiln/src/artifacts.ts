@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { redact } from "./redact.js";
 import { STEP_NAME, planOf } from "./step-result.js";
@@ -65,8 +65,8 @@ interface Found {
 
 export function readRunArtifacts(runDir: string | undefined): ArtifactSet {
   if (!runDir) return EMPTY_ARTIFACTS;
-  const dir = join(runDir, "artifacts");
-  const found = readFound(dir);
+  const dir = artifactsDir(runDir);
+  const found = dir ? readFound(dir) : [];
   if (found.length === 0) return EMPTY_ARTIFACTS;
   const plan = planIndex(runDir);
   const entries = new Map<Found, ArtifactEntry>(found.map((item) => [item, describe(item.name, plan.stepOf.get(item.name) ?? item.name, item.value)]));
@@ -98,6 +98,38 @@ export function readRunArtifacts(runDir: string | undefined): ArtifactSet {
   };
 }
 
+/**
+ * `<runDir>/artifacts`, only when it is a real directory directly inside the real run folder. A symlinked folder
+ * (or a symlink anywhere in that path) could point the page at files that are not the run's, so it reads nothing.
+ */
+function artifactsDir(runDir: string): string | undefined {
+  const dir = join(runDir, "artifacts");
+  try {
+    if (!lstatSync(dir).isDirectory()) return undefined;
+    return realpathSync(dir) === join(realpathSync(runDir), "artifacts") ? dir : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Parses one artifact file. It opens without following a final symlink, then checks the type and size on the open
+ * handle and reads from that same handle, so the file cannot be swapped between the check and the read.
+ */
+function readJson(path: string): unknown {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return undefined;
+    return JSON.parse(readFileSync(fd, "utf8"));
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 function readFound(dir: string): Found[] {
   let names: string[];
   try {
@@ -111,16 +143,9 @@ function readFound(dir: string): Found[] {
     const name = match?.[1];
     if (!match || !name || SKIPPED.has(name) || !STEP_NAME.test(name)) continue;
     if (found.length >= MAX_FILES) break;
-    const path = join(dir, file);
-    try {
-      const stat = lstatSync(path);
-      if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
-      const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-      found.push({ name, ...(match[2] !== undefined ? { round: Number(match[2]) } : {}), value: value as Record<string, unknown> });
-    } catch {
-      continue;
-    }
+    const value = readJson(join(dir, file));
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    found.push({ name, ...(match[2] !== undefined ? { round: Number(match[2]) } : {}), value: value as Record<string, unknown> });
   }
   return found;
 }
