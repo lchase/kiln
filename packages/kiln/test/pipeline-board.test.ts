@@ -82,9 +82,9 @@ describe("pipeline board", () => {
       assert.match(column(html, name ?? ""), /<h2><svg class="icon col-icon [a-z-]+" viewBox="0 0 24 24" aria-hidden="true">/);
     }
     assert.match(column(html, "queued"), /<span class="col-sub">in launch order<\/span>/);
-    assert.match(html, /<p class="board-status" id="board-status"><span class="board-pulse" aria-hidden="true"><\/span><span>1 running, 1 needs you, 1 needs a hand<\/span><\/p>/);
+    assert.match(html, /<p class="board-status" id="board-status" role="status"><span class="board-pulse" aria-hidden="true"><\/span><span>1 running, 1 needs you, 1 needs a hand<\/span><\/p>/);
     const idle = render([job("q-1", "queued", { queuePosition: 1, queueReason: "ready" })]);
-    assert.match(idle, /<p class="board-status" id="board-status"><span>0 running, 0 need you, 0 need a hand<\/span><\/p>/);
+    assert.match(idle, /<p class="board-status" id="board-status" role="status"><span>0 running, 0 need you, 0 need a hand<\/span><\/p>/);
   });
 
   it("draws a running card with one sweeping segment, step N of M, and the newest note", () => {

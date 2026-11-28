@@ -411,7 +411,7 @@ describe("pipeline board style", () => {
     assert.match(swap, /fetch\("\/"/);
     assert.match(swap, /if \(actionPending \|\| boardFocused\(\)\) return;/);
     assert.match(swap, /document\.getElementById\(fresh\[c\]\.id\)/);
-    assert.match(swap, /document\.title = "\(" \+ n \+ "\) Kiln";/);
+    assert.match(swap, /document\.title = titleFor\(n\);/);
     assert.match(swap, /note\(n\);/);
     assert.match(swap, /applyRepo\(\);/);
     assert.match(swap, /paintLiveness\(\);/);
