@@ -1107,6 +1107,10 @@ h3 {
   padding: var(--space-2) var(--space-3);
 }
 .job[hidden], .state-group[hidden] { display: none; }
+.bulk { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-2); }
+.bulk-status:empty { display: none; }
+.bulk-status { margin: 0; }
+.col-bulk { width: 100%; margin: var(--space-2) 0; }
 .done-more { width: 100%; margin-top: var(--space-2); }
 .card.done .job-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card .icon { flex: none; }

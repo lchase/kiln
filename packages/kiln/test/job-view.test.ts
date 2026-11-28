@@ -759,6 +759,40 @@ describe("keyboard shortcuts panel", () => {
   });
 });
 
+describe("cleanup buttons", () => {
+  const plan = workflowStepPlan("feature");
+  const done = (jobId: string, extra: Partial<StatusJobView> = {}) =>
+    job({ jobId, state: "done", steps: plan.map((id) => ({ id, phase: "done" as const })), ...extra });
+  const render = (section: "history" | "repos" | "pipeline", jobs: StatusJobView[]) =>
+    renderApp({
+      css: "",
+      section,
+      board: buildBoard(jobs, []),
+      attention: buildAttention(jobs),
+      page: { csrf: "token", repos: [{ name: "web", path: "/repos/web" }], workflows: ["feature"] },
+    });
+
+  it("puts Remove finished on the job lists and marks only removable rows", () => {
+    const jobs = [done("OK-1"), done("HELD-1", { dependents: ["OK-1"] })];
+    for (const section of ["history", "repos"] as const) {
+      const html = render(section, jobs);
+      assert.match(html, /<button type="button" class="btn" id="remove-finished" hidden><\/button>/, section);
+      assert.match(html, /<p class="meta bulk-status" id="bulk-status" role="status"><\/p>/, section);
+      assert.match(html, /id="job-OK-1"[^>]*data-removable="true"/, section);
+      assert.doesNotMatch(html, /id="job-HELD-1"[^>]*data-removable/, section);
+    }
+  });
+
+  it("puts Retry all only in the Needs a hand column on the board", () => {
+    const html = render("pipeline", [job({ jobId: "DEAD-1", state: "failed" })]);
+    assert.equal(html.split('id="retry-all"').length - 1, 1);
+    const hand = html.slice(html.indexOf('data-column="needs-hand"'), html.indexOf("</section>", html.indexOf('data-column="needs-hand"')));
+    assert.match(hand, /id="retry-all"/);
+    assert.match(html, /id="bulk-status"/);
+    assert.doesNotMatch(html, /id="remove-finished"/);
+  });
+});
+
 describe("job list filter box", () => {
   it("is on History and the per-repo lists, not on the board", () => {
     const plan = workflowStepPlan("feature");
