@@ -488,6 +488,8 @@ describe("collapsible sidebar", () => {
     const block = wide.slice(0, wide.indexOf("\n}\n"));
     assert.match(block, /html\[data-nav="collapsed"\] \{ --nav: var\(--nav-rail\); \}/);
     assert.match(block, /html\[data-nav="collapsed"\] :is\(\.nav-sub, \.spend-row, \.notify-note\) \{ display: none; \}/);
+    // The Add job button is not a flex box by default, so the rail has to make it one for its icon to centre.
+    assert.match(block, /html\[data-nav="collapsed"\] \.add \{ display: flex; align-items: center; justify-content: center; padding: 0; \}/);
     assert.match(css, /--nav-rail:\s*3\.5rem;/);
     const narrow = css.slice(css.indexOf("@media (max-width: 960px) {"));
     assert.match(narrow.slice(0, narrow.indexOf("\n}\n")), /\.nav-toggle \{ display: none; \}/);
