@@ -30,7 +30,7 @@
   --radius-lg: 6px;
   --radius-full: 50%;
   --nav-width: 232px;
-  --rail-width: 280px;
+  --rail-width: 26rem;
   --nav: var(--nav-width);
   --rail: var(--rail-width);
   --drawer-width: 560px;
@@ -1819,6 +1819,7 @@ button.live-summary[aria-expanded="true"] { white-space: pre-wrap; }
 .prog-outcome { margin: var(--space-2) 0 0; color: var(--muted); font-size: var(--text-sm); line-height: var(--leading-sm); }
 .job-body { display: grid; grid-template-columns: minmax(0, 1fr) var(--rail); gap: var(--space-5); align-items: start; }
 .job-main, .job-side { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
+.job-side { position: sticky; top: var(--space-4); max-height: calc(100vh - var(--space-6)); overflow-y: auto; }
 .now-card, .mid-card {
   display: flex;
   flex-direction: column;
@@ -1879,6 +1880,50 @@ button.live-summary[aria-expanded="true"] { white-space: pre-wrap; }
 .job-more { border: var(--hairline) solid var(--line); border-radius: var(--radius-lg); min-width: 0; }
 .job-more > :not(summary) { margin-left: var(--space-4); margin-right: var(--space-4); }
 .job-more .text { overflow-wrap: anywhere; white-space: pre-wrap; }
+/* Artifacts column on the job page: what each step produced, grouped by round. */
+.artifacts { border: var(--hairline) solid var(--line); border-radius: var(--radius-lg); background: var(--panel); }
+.artifacts > header { padding: var(--space-4); }
+.artifacts > header h2 { margin: 0 0 var(--space-1); font-size: var(--text-md); line-height: var(--leading-md); font-weight: 500; }
+.artifacts > header .meta { margin: 0; }
+.art-group {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3);
+  margin: 0; padding: var(--space-3) var(--space-4);
+  border-top: var(--hairline) solid var(--line-strong); background: var(--bg);
+  color: var(--muted); font-size: var(--text-xs); line-height: var(--leading-xs); font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+summary.art-group { cursor: pointer; list-style: none; }
+summary.art-group::-webkit-details-marker { display: none; }
+.art-group { flex-wrap: wrap; row-gap: var(--space-1); }
+.art-group > span:first-child { white-space: nowrap; }
+.art-group .art-chip { text-transform: none; letter-spacing: normal; white-space: normal; text-align: right; }
+.art-tag { margin-left: var(--space-2); color: var(--state-done); font-weight: 400; text-transform: none; letter-spacing: normal; }
+.art { border-top: var(--hairline) solid var(--line); }
+.art > summary { display: block; cursor: pointer; padding: var(--space-3) var(--space-4); }
+.art > summary:hover { background: color-mix(in srgb, var(--card) 55%, transparent); }
+.art[open] > summary { background: color-mix(in srgb, var(--card) 40%, transparent); }
+.art-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); }
+.art-name { color: var(--ink); font-weight: 500; }
+.art-chip { color: var(--muted); font: var(--text-xs)/var(--leading-xs) var(--font-mono); white-space: nowrap; }
+.art-chip.pass { color: var(--state-done); }
+.art-chip.bad { color: var(--state-failed); }
+.art-chip.warn { color: var(--changes); }
+.art-detail { color: var(--faint); }
+.art-line {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  margin-top: var(--space-1); color: var(--muted); font-size: var(--text-sm); line-height: var(--leading-sm);
+}
+.art[open] > summary .art-line { display: none; }
+.art-body { padding: var(--space-2) var(--space-4) var(--space-4); font-size: var(--text-sm); line-height: var(--leading-sm); overflow-wrap: anywhere; }
+.art-body .meta { margin: var(--space-3) 0 0; }
+.art-text { margin: 0; white-space: pre-wrap; color: var(--ink); font: var(--text-xs)/var(--leading-xs) var(--font-mono); }
+.art-md > :first-child { margin-top: 0; }
+.art-md > :last-child { margin-bottom: 0; }
+.art-md h1, .art-md h2, .art-md h3 { margin: var(--space-4) 0 var(--space-2); color: var(--ink); font-size: var(--text-sm); line-height: var(--leading-sm); font-weight: 500; text-transform: none; letter-spacing: normal; }
+.art-md p, .art-md ul, .art-md ol { margin: 0 0 var(--space-3); }
+.art-md ul, .art-md ol { padding-left: var(--space-5); }
+.art-md pre { margin: 0 0 var(--space-3); white-space: pre-wrap; font: var(--text-xs)/var(--leading-xs) var(--font-mono); }
+.art-md code { font-family: var(--font-mono); font-size: var(--text-xs); }
 .side-card {
   display: flex;
   flex-direction: column;
@@ -1972,6 +2017,7 @@ a.step-row:hover { background: var(--card); color: var(--ink); }
   .nav { position: relative; height: auto; overflow: visible; border-right: 0; border-bottom: var(--hairline) solid var(--line); }
   .nav-scroll { overflow: visible; }
   .job-body { grid-template-columns: 1fr; }
+  .job-side { position: static; max-height: none; overflow: visible; }
   .step-page { grid-template-columns: 1fr; }
   .d-actions .revise input { min-width: 0; width: 100%; }
   .board-scroll { overflow-x: visible; }

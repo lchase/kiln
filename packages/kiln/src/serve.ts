@@ -1,4 +1,5 @@
 import { parseActivityCursor, readRunActivity, type ActivityFeed } from "./activity.js";
+import { readRunArtifacts, type ArtifactSet } from "./artifacts.js";
 import { fork } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -525,7 +526,8 @@ async function handle(
       running,
       ...(job.logTail ? { logText: job.logTail } : {}),
     });
-    sendHtml(res, 200, renderShell(state, css, csrf, "job", { detail, ...(tab ? { tab } : {}), activity }), secrets);
+    const artifacts = readRunArtifacts(runDirOf(config, job));
+    sendHtml(res, 200, renderShell(state, css, csrf, "job", { detail, ...(tab ? { tab } : {}), activity, artifacts }), secrets);
     return;
   }
 
@@ -1137,6 +1139,7 @@ function renderShell(
     detail?: ReturnType<typeof detailDocument>;
     tab?: "overview" | "live" | "changes" | "timeline";
     activity?: ActivityFeed;
+    artifacts?: ArtifactSet;
     step?: StepPage;
     settingsSection?: SettingsSectionId;
   } = {},
@@ -1154,7 +1157,7 @@ function renderShell(
     ...(extra.repo ? { repo: extra.repo } : {}),
     ...(section === "stats" && extra.window ? { stats: statsDocument(state, extra.window) } : {}),
     ...(section === "report" ? { report: reportDocument(state) } : {}),
-    ...(extra.detail ? { detail: extra.detail, ...(extra.tab ? { tab: extra.tab } : {}), ...(extra.activity ? { activity: extra.activity } : {}), ...(extra.step ? { step: extra.step } : {}) } : {}),
+    ...(extra.detail ? { detail: extra.detail, ...(extra.tab ? { tab: extra.tab } : {}), ...(extra.activity ? { activity: extra.activity } : {}), ...(extra.artifacts ? { artifacts: extra.artifacts } : {}), ...(extra.step ? { step: extra.step } : {}) } : {}),
     ...(section === "settings"
       ? { settingsSection: extra.settingsSection ?? "repos", settingsFacts: settingsFacts(state.config) }
       : {}),

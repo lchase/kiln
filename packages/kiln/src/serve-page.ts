@@ -7,6 +7,7 @@ import {
   type BoardDocument,
   type BoardJob,
   type DayReport,
+  type DiffFile,
   type JobDetail,
   type StatsDocument,
 } from "./board-view.js";
@@ -40,6 +41,7 @@ import {
   type StepMark,
 } from "./job-view.js";
 import type { ActivityEvent, ActivityFeed } from "./activity.js";
+import { EMPTY_ARTIFACTS, type ArtifactEntry, type ArtifactSet } from "./artifacts.js";
 import { icon, type IconName } from "./icons.js";
 import { DEFAULT_SANDBOX_DOMAINS } from "./sandbox.js";
 import { renderMarkdown } from "./markdown.js";
@@ -136,6 +138,8 @@ export interface AppModel {
   detail?: JobDetail;
   tab?: "overview" | "live" | "changes" | "timeline";
   activity?: ActivityFeed;
+  /** What the run's steps wrote, for the job page's Artifacts column. */
+  artifacts?: ArtifactSet;
   /** Set on the step page. `section` is still "job". */
   step?: StepPage;
   triggers?: TriggerRow[];
@@ -350,7 +354,7 @@ function mainHtml(model: AppModel, page: ServePageOptions): string {
     return `${error}<main class="main detail">${stepPageHtml(model.detail, model.step, clockOf(page), model.activity)}</main>`;
   }
   if (model.section === "job" && model.detail) {
-    return `${error}<main class="main detail">${detailHtml(model.detail, model.tab, page.csrf, clockOf(page), model.activity)}</main>`;
+    return `${error}<main class="main detail">${detailHtml(model.detail, model.tab, page.csrf, clockOf(page), model.activity, model.artifacts)}</main>`;
   }
   if (model.section === "triggers") {
     return `${error}<main class="main">${triggersHtml(model.triggers ?? [])}</main>`;
@@ -1063,6 +1067,7 @@ function detailHtml(
   csrf: string,
   clock: BoardClock,
   activity?: ActivityFeed,
+  artifacts?: ArtifactSet,
 ): string {
   const job = detail.job;
   const target: JobTarget | undefined = tab === "live" || tab === "changes" || tab === "timeline" ? tab : undefined;
@@ -1094,7 +1099,7 @@ ${result}
 <details class="job-more" id="changes"${target === "changes" ? " open" : ""}><summary>Diff</summary>${changesHtml(detail)}</details>
 <details class="job-more" id="timeline"${target === "timeline" ? " open" : ""}><summary>Event history</summary>${timelineHtml(detail)}</details>
 </div>
-${sideHtml(detail)}
+${sideHtml(detail, artifacts)}
 </div>
 </div>`;
 }
@@ -1448,16 +1453,69 @@ function nextSentence(job: JobView): string {
   return `${left.join(", then ")}.`;
 }
 
-function sideHtml(detail: JobDetail): string {
+/** The label a step shows in the step track, else the artifact's name made readable. */
+function artifactLabel(job: JobView, entry: ArtifactEntry): string {
+  if (entry.kind === "ask") return "The ask";
+  const step = job.steps.find((item) => item.id === entry.stepId) ?? job.phases.find((item) => item.id === entry.stepId);
+  if (step?.label) return step.label;
+  const name = entry.stepId.replace(/[-_]+/g, " ");
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function artifactEntryHtml(job: JobView, entry: ArtifactEntry, open: boolean): string {
+  const label = escapeHtml(artifactLabel(job, entry));
+  const detail = entry.detail ? ` <span class="art-detail">${escapeHtml(entry.detail)}</span>` : "";
+  const body = entry.format === "markdown" ? `<div class="art-md">${renderMarkdown(entry.body)}</div>` : `<pre class="art-text">${escapeHtml(entry.body)}</pre>`;
+  return `<details class="art"${open ? " open" : ""}><summary><span class="art-head"><span class="art-name">${label}</span><span class="art-chip ${entry.tone}">${escapeHtml(entry.chip)}${detail}</span></span><span class="art-line">${escapeHtml(entry.preview)}</span></summary><div class="art-body">${body}</div></details>`;
+}
+
+/** What went wrong in a round, in a few words: `Verify failed and Code asked for changes`, else `All passed`. */
+function roundRollup(job: JobView, entries: readonly ArtifactEntry[]): { text: string; tone: string } {
+  const bad = entries.filter((entry) => entry.tone === "bad").map((entry) => `${artifactLabel(job, entry)} failed`);
+  const warn = entries.filter((entry) => entry.tone === "warn").map((entry) => `${artifactLabel(job, entry)} asked for changes`);
+  const issues = [...bad, ...warn];
+  if (issues.length > 0) return { text: issues.slice(0, 2).join(" and ") + (issues.length > 2 ? " and more" : ""), tone: bad.length > 0 ? "bad" : "warn" };
+  if (entries.some((entry) => entry.tone === "pass")) return { text: "All passed", tone: "pass" };
+  return { text: "", tone: "neutral" };
+}
+
+/**
+ * The Artifacts column: the ask and spec, the net diff, then each round with what its steps produced. It shows
+ * only what exists, because the workflow decides which steps and artifacts there are.
+ */
+function artifactsHtml(job: JobView, set: ArtifactSet, files: readonly DiffFile[]): string {
+  const sections: string[] = [];
+  if (set.start.length > 0) {
+    const head = set.rounds.length > 0 ? `<h3 class="art-group">Start</h3>` : "";
+    sections.push(`<section class="art-section">${head}${set.start.map((entry) => artifactEntryHtml(job, entry, false)).join("")}</section>`);
+  }
+  if (files.length > 0) {
+    const added = files.reduce((total, file) => total + file.added, 0);
+    const removed = files.reduce((total, file) => total + file.removed, 0);
+    const list = `<ul class="file-list">${files
+      .map((file) => `<li><span class="mono file-path">${escapeHtml(file.path)}</span><span class="mono file-count">+${file.added} -${file.removed}</span></li>`)
+      .join("")}</ul><a href="#changes">Open the diff</a>`;
+    const chip = `<span class="art-chip neutral"><span class="added">+${added}</span> <span class="removed">-${removed}</span> <span class="art-detail">in ${files.length} ${files.length === 1 ? "file" : "files"}</span></span>`;
+    const preview = files.slice(0, 3).map((file) => file.path).join(", ");
+    sections.push(`<section class="art-section"><h3 class="art-group">Changes</h3><details class="art"><summary><span class="art-head"><span class="art-name">Files changed</span>${chip}</span><span class="art-line">${escapeHtml(preview)}</span></summary><div class="art-body">${list}<p class="meta">The net result after every round, compared with the base.</p></div></details></section>`);
+  }
+  for (const round of set.rounds) {
+    const roll = roundRollup(job, round.entries);
+    const rollHtml = roll.text ? `<span class="art-chip ${roll.tone}">${escapeHtml(roll.text)}</span>` : "";
+    const tag = round.latest ? ` <span class="art-tag">latest</span>` : "";
+    const entries = round.entries
+      .map((entry) => artifactEntryHtml(job, entry, entry.tone === "bad" || entry.tone === "warn" || (round.latest && entry.kind === "approver")))
+      .join("");
+    sections.push(`<details class="art-round"${round.latest ? " open" : ""}><summary class="art-group"><span>Round ${round.round}${tag}</span>${rollHtml}</summary>${entries}</details>`);
+  }
+  if (sections.length === 0) return "";
+  return `<section class="artifacts" aria-label="Artifacts"><header><h2>Artifacts</h2><p class="meta">Each step's output, grouped by round. Open one to read it here.</p></header>${sections.join("")}</section>`;
+}
+
+function sideHtml(detail: JobDetail, artifacts: ArtifactSet = EMPTY_ARTIFACTS): string {
   const job = detail.job;
   const id = encodeURIComponent(job.jobId);
   const files = detail.changes.files ?? [];
-  const changes =
-    files.length > 0
-      ? `<ul class="file-list">${files
-          .map((file) => `<li><span class="mono file-path">${escapeHtml(file.path)}</span><span class="mono file-count">+${file.added} -${file.removed}</span></li>`)
-          .join("")}</ul><a href="#changes">Open the diff</a>`
-      : `<p class="empty">No changes yet.</p>`;
   const links: string[] = [];
   if (job.spec) links.push(fileLink(`/jobs/${id}/spec`, "file-text", "Spec"));
   if (job.log) links.push(fileLink(`/jobs/${id}/log`, "scroll-text", "Raw log"));
@@ -1473,7 +1531,7 @@ function sideHtml(detail: JobDetail): string {
   if (!job.finished && (rail.failureClass || rail.fingerprint)) row("Failure", escapeHtml([rail.failureClass, rail.fingerprint].filter(Boolean).join(" · ")));
   const facts = rows.length > 0 ? `<dl class="side-facts">${rows.join("")}</dl>` : "";
   return `<aside class="job-side" aria-label="Job facts">
-${files.length === 0 && job.finished ? "" : `<section class="side-card"><h2>Changes so far</h2>${changes}</section>`}
+${artifactsHtml(job, artifacts, files)}
 <section class="side-card"><h2>What happens next</h2><p>${escapeHtml(nextSentence(job))}</p></section>
 <p class="links side-links">${links.join("")}</p>
 ${facts}
