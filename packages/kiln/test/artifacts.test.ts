@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -121,6 +122,22 @@ describe("readRunArtifacts", () => {
     keep.push(join(viaRun, ".."));
     symlinkSync(real, viaRun);
     assert.equal(readRunArtifacts(viaRun).start[0]?.name, "build");
+  });
+
+  it("skips a FIFO instead of blocking on it", { skip: process.platform === "win32" }, () => {
+    const dir = run([{ id: "build", kind: "agent" }], { "build.json": { status: "READY", summary: "real" } });
+    execFileSync("mkfifo", [join(dir, "artifacts", "stuck.json")]);
+    const started = Date.now();
+    const set = readRunArtifacts(dir);
+    assert.ok(Date.now() - started < 2000, "returned promptly");
+    assert.deepEqual(set.start.map((entry) => entry.name), ["build"]);
+  });
+
+  it("rejects a file over the size limit and reads one at the limit's edge", () => {
+    const big = run([{ id: "build", kind: "agent" }], { "build.json": JSON.stringify({ status: "READY", summary: "x".repeat(600 * 1024) }) });
+    assert.deepEqual(readRunArtifacts(big), EMPTY_ARTIFACTS);
+    const small = run([{ id: "build", kind: "agent" }], { "build.json": { status: "READY", summary: "ok" } });
+    assert.equal(readRunArtifacts(small).start[0]?.name, "build");
   });
 
   it("clips a very large body", () => {
