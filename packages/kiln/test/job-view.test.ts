@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { buildAttention } from "../src/attention.js";
 import { QUIET_AFTER_MS, activityLiveness, progressSegments, projectJob, stepFocus, type JobView, type PipelineColumn, type StepMark } from "../src/job-view.js";
 import type { ActivityFeed } from "../src/activity.js";
+import type { ArtifactEntry, ArtifactSet } from "../src/artifacts.js";
 import { buildBoard, jobDetail } from "../src/board-view.js";
 import { renderApp } from "../src/serve-page.js";
 import { renderMarkdown } from "../src/markdown.js";
@@ -887,9 +888,49 @@ describe("job page", () => {
     assert.doesNotMatch(main, /\/approve"|\/reject"|\/revise"|\/retry"/);
   });
 
-  it("says No changes yet without a diff", () => {
+  it("shows no Artifacts column and no placeholder when the run has produced nothing yet", () => {
     const html = render(featureJob("build"), loopEvents(), loopFeed);
-    assert.match(sideOf(html), /No changes yet\./);
+    assert.doesNotMatch(sideOf(html), /No changes yet/);
+    assert.doesNotMatch(sideOf(html), /class="artifacts"/);
+  });
+
+  it("shows the Artifacts column with Start, Changes, and each round, newest first", () => {
+    const entry = (name: string, kind: ArtifactEntry["kind"], chip: string, tone: ArtifactEntry["tone"], extra: Partial<ArtifactEntry> = {}): ArtifactEntry => ({
+      name,
+      stepId: name === "decision" ? "approver" : name,
+      kind,
+      chip,
+      tone,
+      preview: `${name} preview`,
+      format: "markdown",
+      body: `## ${name} heading\n\n- point one`,
+      ...extra,
+    });
+    const set: ArtifactSet = {
+      start: [entry("input", "ask", "Ticket", "neutral"), entry("spec", "spec", "Design and 3 criteria", "neutral")],
+      rounds: [
+        { round: 2, latest: true, entries: [entry("verify", "verify", "PASS", "pass", { detail: "9 passed", format: "text", body: "ok <b>" }), entry("code", "review", "PASS", "pass"), entry("decision", "approver", "APPROVE", "pass")] },
+        { round: 1, latest: false, entries: [entry("verify", "verify", "FAIL", "bad", { detail: "exit 1" }), entry("code", "review", "CHANGES", "warn", { detail: "1 must fix" })] },
+      ],
+    };
+    const status = { ...featureJob("approve"), state: "needs-human" as const };
+    const detail = jobDetail({ job: status, events: loopEvents(), maxFixRounds: 2, diffFiles: [{ path: "src/a.ts", added: 84, removed: 12 }] });
+    const html = renderApp({ css: "", section: "job", board: buildBoard([status], loopEvents()), attention: buildAttention([status]), page, detail, artifacts: set });
+    const side = sideOf(html);
+    assert.match(side, /<section class="artifacts" aria-label="Artifacts">/);
+    // Start first, then Changes, then rounds newest first.
+    const at = (text: string) => side.indexOf(text);
+    assert.ok(at("Start") > 0 && at("Start") < at("Changes") && at("Changes") < at("Round 2") && at("Round 2") < at("Round 1"));
+    assert.match(side, /<details class="art-round" open><summary class="art-group"><span>Round 2 <span class="art-tag">latest<\/span><\/span>/);
+    assert.match(side, /<details class="art-round"><summary class="art-group"><span>Round 1<\/span><span class="art-chip bad">Verify failed and Code asked for changes<\/span>/);
+    assert.match(side, /<span class="art-chip pass">All passed<\/span>/);
+    // Markdown is rendered, text is escaped, the net diff is one entry, and failed entries open themselves.
+    assert.match(side, /<div class="art-md"><h2>input heading<\/h2>/);
+    assert.match(side, /<pre class="art-text">ok &lt;b&gt;<\/pre>/);
+    assert.match(side, /Files changed[\s\S]*src\/a\.ts[\s\S]*\+84 -12/);
+    assert.match(side, /<details class="art" open><summary><span class="art-head"><span class="art-name">Code<\/span><span class="art-chip warn">CHANGES/);
+    assert.match(side, /<details class="art" open><summary><span class="art-head"><span class="art-name">Approver<\/span><span class="art-chip pass">APPROVE/);
+    assert.doesNotMatch(side, /No changes yet/);
   });
 
   it("shows the decision with verdicts and the three gate actions for a needs-you job", () => {
