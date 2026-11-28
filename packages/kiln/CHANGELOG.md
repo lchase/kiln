@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.0](https://github.com/lchase/kiln/compare/kiln-v0.26.0...kiln-v0.27.0) (2026-11-28)
+
+
+### Features
+
+* a List view for the Pipeline, with a switch to the columns ([#124](https://github.com/lchase/kiln/issues/124)) ([e072b20](https://github.com/lchase/kiln/commit/e072b2044ece8258250df0a68b536a76cd2d6074))
+
 ## [0.26.0](https://github.com/lchase/kiln/compare/kiln-v0.25.1...kiln-v0.26.0) (2026-11-28)
 
 
