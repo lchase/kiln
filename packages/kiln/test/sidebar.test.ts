@@ -8,7 +8,7 @@ import { ICON_LUCIDE, ICONS } from "../src/icons.js";
 import { packageRoot } from "../src/paths.js";
 import { formatSpend, type SpendSnapshot } from "../src/rails.js";
 import type { StatusJobView, StatusState } from "../src/report.js";
-import { renderConsole } from "../src/serve-page.js";
+import { renderConsole, renderMessagePage } from "../src/serve-page.js";
 
 const css = readFileSync(join(packageRoot(), "assets", "serve.css"), "utf8");
 const script = readFileSync(join(packageRoot(), "assets", "serve.js"), "utf8");
@@ -94,7 +94,7 @@ describe("sidebar", () => {
     assert.match(foot, /id="notify-label">Notify me</);
     assert.match(foot, /id="notify-note" hidden>/);
     assert.doesNotMatch(foot, /id="add-job"/);
-    assert.match(side, /id="add-job">Add job</);
+    assert.match(side, /id="add-job" title="Add job">[^]*?<span class="add-text">Add job<\/span>/);
     const pauseBtn = foot.slice(foot.indexOf('id="pause-toggle"'), foot.indexOf("</button>"));
     assert.match(pauseBtn, /class="icon icon-pause"/);
     assert.match(pauseBtn, /class="icon icon-play"/);
@@ -111,7 +111,7 @@ describe("sidebar", () => {
       assert.match(link, /<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">/);
     }
     const pipeline = links.find((item) => item.includes(">Pipeline</span>"));
-    assert.match(pipeline ?? "", /href="\/" aria-current="page"/);
+    assert.match(pipeline ?? "", /href="\/" title="Pipeline" aria-current="page"/);
     assert.match(pipeline ?? "", /M9 3v18/);
     const subs = side.match(/<a class="nav-sub"[\s\S]*?<\/a>/g) ?? [];
     assert.deepEqual(
@@ -128,8 +128,8 @@ describe("sidebar", () => {
     assert.match(pipeline ?? "", /<span class="badge">1<\/span>/);
     assert.match(html, /<title>\(1\) Kiln<\/title>/);
     const repos = sidebar(board({ section: "repos", spend }));
-    assert.match(repos, /href="\/repos" aria-current="page"/);
-    assert.doesNotMatch(repos, /href="\/" aria-current="page"/);
+    assert.match(repos, /href="\/repos" title="By repo" aria-current="page"/);
+    assert.doesNotMatch(repos, /href="\/" title="Pipeline" aria-current="page"/);
   });
 
   it("keeps pause and a cap hit in the footer when the factory is paused", () => {
@@ -461,5 +461,42 @@ describe("notify control", () => {
     assert.equal(page.toggle.textContent, "");
     assert.equal(page.spend.textContent, "today 2026-11-09  $1.50 / $4.00");
     assert.equal(page.capNote.hidden, true);
+  });
+});
+
+describe("collapsible sidebar", () => {
+  it("has a toggle, a tooltip and wrapped text on every nav item, and an icon on Add job", () => {
+    const html = board();
+    const side = html.slice(html.indexOf('<nav class="side"'), html.indexOf("</nav>"));
+    assert.match(html, /<button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="true" aria-label="Collapse sidebar" title="Collapse sidebar \(\[\)">/);
+    for (const label of ["Pipeline", "By repo", "History", "Stats", "Today", "Triggers", "Settings"]) {
+      assert.match(side, new RegExp(`title="${label}"[^>]*><span class="nav-label"><svg[^]*?</svg><span class="nav-text">${label}</span>`), label);
+    }
+    assert.match(html, /<button class="add" type="button" id="add-job" title="Add job"><svg class="icon add-icon"[^]*?<\/svg><span class="add-text">Add job<\/span>/);
+    assert.match(html, /<span class="tool-text">Shortcuts<\/span>/);
+    assert.match(html, /<div><dt><kbd>\[<\/kbd><\/dt><dd>Collapse or expand the sidebar<\/dd><\/div>/);
+  });
+
+  it("applies the saved choice before paint on app pages, and keeps scripts off error pages", () => {
+    const head = (html: string) => html.slice(0, html.indexOf("</head>"));
+    assert.match(head(board()), /<script>try\{if\(localStorage\.getItem\("kiln-nav"\)==="collapsed"\)document\.documentElement\.setAttribute\("data-nav","collapsed"\)\}catch\(e\)\{\}<\/script>/);
+    assert.doesNotMatch(renderMessagePage("", "Not found", "Not found."), /<script>/);
+  });
+
+  it("styles the collapsed rail on wide windows only, and hides the toggle when the sidebar stacks", () => {
+    const wide = css.slice(css.indexOf("@media (min-width: 961px) {\n  html[data-nav=\"collapsed\"]"));
+    const block = wide.slice(0, wide.indexOf("\n}\n"));
+    assert.match(block, /html\[data-nav="collapsed"\] \{ --nav: var\(--nav-rail\); \}/);
+    assert.match(block, /html\[data-nav="collapsed"\] :is\(\.nav-sub, \.spend-row, \.notify-note\) \{ display: none; \}/);
+    assert.match(css, /--nav-rail:\s*3\.5rem;/);
+    const narrow = css.slice(css.indexOf("@media (max-width: 960px) {"));
+    assert.match(narrow.slice(0, narrow.indexOf("\n}\n")), /\.nav-toggle \{ display: none; \}/);
+  });
+
+  it("toggles, remembers, and relabels in the script, and binds [ to the same toggle", () => {
+    assert.match(script, /localStorage\.setItem\("kiln-nav", collapsed \? "collapsed" : "open"\)/);
+    assert.match(script, /toggle\.setAttribute\("aria-expanded", collapsed \? "false" : "true"\)/);
+    assert.match(script, /if \(target\.closest\("#nav-toggle"\)\) \{\s*setNavCollapsed\(!navCollapsed\(\)\);/);
+    assert.match(script, /if \(event\.key === "\["\) \{ event\.preventDefault\(\); setNavCollapsed\(!navCollapsed\(\)\); return true; \}/);
   });
 });

@@ -2674,6 +2674,10 @@
       loadFs(next, false);
       return;
     }
+    if (target.closest("#nav-toggle")) {
+      setNavCollapsed(!navCollapsed());
+      return;
+    }
     if (target.closest("#show-shortcuts")) {
       showShortcuts(true);
       return;
@@ -2779,6 +2783,27 @@
     if (card) openJob(card.getAttribute("data-job") || "");
   });
 
+  // The sidebar collapses to an icon rail. The head script in serve-page.ts applies the saved choice before paint.
+  function navCollapsed() {
+    return document.documentElement.getAttribute("data-nav") === "collapsed";
+  }
+  function syncNavToggle() {
+    var toggle = document.getElementById("nav-toggle");
+    if (!toggle) return;
+    var collapsed = navCollapsed();
+    var label = collapsed ? "Expand sidebar" : "Collapse sidebar";
+    toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    toggle.setAttribute("aria-label", label);
+    toggle.setAttribute("title", label + " ([)");
+  }
+  function setNavCollapsed(collapsed) {
+    if (collapsed) document.documentElement.setAttribute("data-nav", "collapsed");
+    else document.documentElement.removeAttribute("data-nav");
+    try { localStorage.setItem("kiln-nav", collapsed ? "collapsed" : "open"); } catch (err) { /* private mode */ }
+    syncNavToggle();
+  }
+  syncNavToggle();
+
   // Keyboard shortcuts. The list in the Shortcuts panel (SHORTCUTS_PANEL in serve-page.ts) must match.
   var chordUntil = 0;
   function typingTarget(el) {
@@ -2809,6 +2834,7 @@
     if (typingTarget(event.target) || body.classList.contains("open")) return false;
     if (event.key === "?") { event.preventDefault(); showShortcuts(!panelOpen); return true; }
     if (panelOpen) return false;
+    if (event.key === "[") { event.preventDefault(); setNavCollapsed(!navCollapsed()); return true; }
     var now = Date.now();
     if (chordUntil > now) {
       chordUntil = 0;

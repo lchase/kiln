@@ -30,6 +30,7 @@
   --radius-lg: 6px;
   --radius-full: 50%;
   --nav-width: 232px;
+  --nav-rail: 3.5rem;
   --rail-width: 26rem;
   --nav: var(--nav-width);
   --rail: var(--rail-width);
@@ -628,6 +629,38 @@ h3 {
 .nav-link[aria-current="page"], .nav-sub[aria-current="page"] {
   background: var(--card-hover);
   color: var(--ink);
+}
+/* Sidebar collapse: a toggle in the header shrinks the sidebar to an icon rail on wide windows. */
+.nav-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: var(--control-h); height: var(--control-h); margin-left: auto; padding: 0;
+  border: 0; border-radius: var(--radius-md); background: none; color: var(--muted); cursor: pointer;
+}
+.nav-toggle:hover { background: var(--card); color: var(--ink); }
+.nav-toggle .nav-toggle-open, .add .add-icon { display: none; }
+@media (min-width: 961px) {
+  html[data-nav="collapsed"] { --nav: var(--nav-rail); }
+  html[data-nav="collapsed"] .nav { padding-left: var(--space-2); padding-right: var(--space-2); }
+  html[data-nav="collapsed"] .brand { flex-direction: column; gap: var(--space-2); padding: 0; }
+  html[data-nav="collapsed"] .nav-toggle { margin: 0; }
+  html[data-nav="collapsed"] .nav-toggle .nav-toggle-close { display: none; }
+  html[data-nav="collapsed"] .nav-toggle .nav-toggle-open { display: block; }
+  html[data-nav="collapsed"] :is(.brand-text, .nav-text, .add-text, .tool-text, #run-label, #pause-label, #notify-label) {
+    position: absolute; width: var(--hairline); height: var(--hairline); margin: calc(var(--hairline) * -1); padding: 0;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+  html[data-nav="collapsed"] :is(.nav-sub, .spend-row, .notify-note) { display: none; }
+  html[data-nav="collapsed"] .nav-link { position: relative; justify-content: center; }
+  html[data-nav="collapsed"] .nav-link .badge {
+    position: absolute; top: 0; right: 0; min-width: var(--space-4); height: var(--space-4);
+    padding: 0 var(--space-1); line-height: var(--space-4);
+  }
+  html[data-nav="collapsed"] .add { justify-content: center; padding: 0; }
+  html[data-nav="collapsed"] .add .add-icon { display: block; }
+  html[data-nav="collapsed"] .runstate { flex-direction: column; padding: 0; gap: var(--space-2); }
+  html[data-nav="collapsed"] .pause { margin: 0; }
+  html[data-nav="collapsed"] .tool-link { justify-content: center; padding-left: 0; padding-right: 0; }
+  html[data-nav="collapsed"] .tool-link .kbd { margin-right: 0; }
 }
 ::placeholder { color: var(--faint); opacity: 1; }
 .meta, .hint, .empty { text-wrap: pretty; }
@@ -2013,6 +2046,7 @@ a.step-row:hover { background: var(--card); color: var(--ink); }
 .step-result .text { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 
 @media (max-width: 960px) {
+  .nav-toggle { display: none; }
   .shell { grid-template-columns: 1fr; }
   .nav { position: relative; height: auto; overflow: visible; border-right: 0; border-bottom: var(--hairline) solid var(--line); }
   .nav-scroll { overflow: visible; }
