@@ -42,6 +42,7 @@ import {
 } from "./job-view.js";
 import type { ActivityEvent, ActivityFeed } from "./activity.js";
 import { EMPTY_ARTIFACTS, type ArtifactEntry, type ArtifactSet } from "./artifacts.js";
+import { phaseGroups, type PhaseNode } from "./phase-groups.js";
 import { icon, type IconName } from "./icons.js";
 import { DEFAULT_SANDBOX_DOMAINS } from "./sandbox.js";
 import { renderMarkdown } from "./markdown.js";
@@ -140,6 +141,8 @@ export interface AppModel {
   activity?: ActivityFeed;
   /** What the run's steps wrote, for the job page's Artifacts column. */
   artifacts?: ArtifactSet;
+  /** The run's step ids grouped by what runs at the same time, for the phase chain. Missing means the old grouping. */
+  phasePlan?: string[][];
   /** Set on the step page. `section` is still "job". */
   step?: StepPage;
   triggers?: TriggerRow[];
@@ -354,7 +357,7 @@ function mainHtml(model: AppModel, page: ServePageOptions): string {
     return `${error}<main class="main detail">${stepPageHtml(model.detail, model.step, clockOf(page), model.activity)}</main>`;
   }
   if (model.section === "job" && model.detail) {
-    return `${error}<main class="main detail">${detailHtml(model.detail, model.tab, page.csrf, clockOf(page), model.activity, model.artifacts)}</main>`;
+    return `${error}<main class="main detail">${detailHtml(model.detail, model.tab, page.csrf, clockOf(page), model.activity, model.artifacts, model.phasePlan)}</main>`;
   }
   if (model.section === "triggers") {
     return `${error}<main class="main">${triggersHtml(model.triggers ?? [])}</main>`;
@@ -1068,6 +1071,7 @@ function detailHtml(
   clock: BoardClock,
   activity?: ActivityFeed,
   artifacts?: ArtifactSet,
+  phasePlan?: readonly (readonly string[])[],
 ): string {
   const job = detail.job;
   const target: JobTarget | undefined = tab === "live" || tab === "changes" || tab === "timeline" ? tab : undefined;
@@ -1090,7 +1094,7 @@ ${ask}${reason}${launchFixHtml(job)}
 <p class="unseen" data-unseen-for="${escapeHtml(job.jobId)}" hidden></p>
 ${actionsHtml(job, "job", csrf, { gate: !deciding, retry: false })}
 </header>
-${progressRowHtml(job, startedPhaseIds(job, feed))}
+${progressRowHtml(job, startedPhaseIds(job, feed), phasePlan)}
 <div class="job-body">
 <div class="job-main">
 ${middle}
@@ -1257,25 +1261,48 @@ function jobMetaHtml(job: JobView): string {
   return `<div class="job-meta">${bits.join("")}</div>`;
 }
 
-function progressRowHtml(job: JobView, started: ReadonlySet<string>): string {
-  const segments = progressSegments(job);
-  if (segments.length === 0) return "";
-  const items = segments
-    .map((segment) => {
-      // The Reviews segment opens the first review that has started.
-      const target = segment.id === "reviews" ? job.steps.find((step) => isReviewStep(step.id) && started.has(step.id))?.id : started.has(segment.id) ? segment.id : undefined;
-      const name = target ? `<a href="${stepHref(job, target)}">${escapeHtml(segment.label)}</a>` : escapeHtml(segment.label);
-      const cls = stepClass(segment.status);
-      const current = !job.finished && (segment.status === "running" || segment.status === "failed") ? ` aria-current="step"` : "";
-      const mark = segment.status === "done" ? icon("check", "icon mark") : "";
-      const failed = segment.status === "failed" ? `<span class="prog-note">failed</span>` : "";
-      const duration = segment.durationMs !== undefined ? `<span class="prog-note">${escapeHtml(formatDuration(segment.durationMs))}</span>` : "";
-      return `<li class="prog-step ${cls}"${current}><span class="prog-bar" aria-hidden="true"></span><span class="prog-name">${mark}${name}</span>${failed}${duration}</li>`;
-    })
-    .join("");
+/** What a screen reader hears after a step's name, since the icon carries the state for everyone else. */
+const PILL_WORD: Record<string, string> = { done: "done", failed: "failed", current: "in progress", human: "waiting for you", upcoming: "not started" };
+
+/** One step as a pill: a check when done, an x when failed, a dot while it runs, dimmed before it starts. */
+function phasePillHtml(job: JobView, node: PhaseNode, started: ReadonlySet<string>): string {
+  const waiting = job.column === "needs-you" && node.status === "running";
+  const active = !job.finished;
+  const state =
+    node.status === "done" || node.status === "skipped"
+      ? "done"
+      : node.status === "failed"
+        ? "failed"
+        : node.status === "running" && active
+          ? waiting
+            ? "human"
+            : "current"
+          : "upcoming";
+  const mark = state === "done" ? icon("circle-check", "icon ph-mark") : state === "failed" ? icon("circle-x", "icon ph-mark") : `<span class="ph-dot" aria-hidden="true"></span>`;
+  const label = started.has(node.id) ? `<a href="${stepHref(job, node.id)}">${escapeHtml(node.label)}</a>` : escapeHtml(node.label);
+  const current = active && (state === "current" || state === "human" || state === "failed") ? ` aria-current="step"` : "";
+  const title = node.durationMs !== undefined ? `${node.label}, ${formatDuration(node.durationMs)}` : node.label;
+  return `<li class="ph-pill ${state}"${current} title="${escapeHtml(title)}">${mark}<span class="ph-name">${label}<span class="sr-only"> (${PILL_WORD[state]})</span></span></li>`;
+}
+
+/**
+ * The job page's progress row: a named pill for each step, in run order. Steps that run at the same time sit together
+ * in one dashed group. A group that has not started is one quiet pill, so the row stays one line until it runs.
+ */
+function progressRowHtml(job: JobView, started: ReadonlySet<string>, plan?: readonly (readonly string[])[]): string {
+  const groups = phaseGroups(job, plan);
+  if (groups.length === 0) return "";
+  const items = groups.map((group) => {
+    if (group.length === 1) return phasePillHtml(job, group[0] as PhaseNode, started);
+    if (group.every((node) => node.status === "pending")) {
+      const name = group.every((node) => isReviewStep(node.id)) ? "Reviews" : "In parallel";
+      return `<li class="ph-pill upcoming" title="${escapeHtml(group.map((node) => node.label).join(", "))}"><span class="ph-dot" aria-hidden="true"></span><span class="ph-name">${name} <span class="ph-count">${group.length}</span><span class="sr-only"> (not started)</span></span></li>`;
+    }
+    return `<li class="ph-par" role="group" aria-label="Run at the same time" title="These run at the same time"><ol class="ph-parlist">${group.map((node) => phasePillHtml(job, node, started)).join("")}</ol></li>`;
+  });
   const focus = stepFocus(job);
   const outcome = focus?.kind === "outcome" ? `<p class="prog-outcome">${escapeHtml(focus.label)}</p>` : "";
-  return `<section class="job-progress" aria-label="Progress"><ol class="prog">${items}</ol>${outcome}</section>`;
+  return `<section class="job-progress" aria-label="Progress"><ol class="ph-chain">${items.join(`<li class="ph-sep" aria-hidden="true"></li>`)}</ol>${outcome}</section>`;
 }
 
 function currentStepLabel(job: JobView): string | undefined {

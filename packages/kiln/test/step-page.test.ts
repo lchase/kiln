@@ -353,10 +353,16 @@ describe("step page", () => {
     const progress = slice(main, 'aria-label="Progress"', "</section>");
     assert.match(progress, /<a href="\/jobs\/SAMPLE-1\/steps\/spec">Spec<\/a>/);
     assert.match(progress, /<a href="\/jobs\/SAMPLE-1\/steps\/verify">Verify<\/a>/);
-    // Reviews opens the first started review in plan order.
-    assert.match(progress, /<a href="\/jobs\/SAMPLE-1\/steps\/security">Reviews<\/a>/);
+    // Each review is its own pill. A started one links to its step, one that has not started is plain text.
+    for (const [step, label] of [["security", "Security"], ["ux", "UX"]]) {
+      assert.match(progress, new RegExp(`<a href="/jobs/SAMPLE-1/steps/${step}">${label}</a>`), label);
+    }
+    for (const label of ["UI", "Code"]) {
+      assert.match(progress, new RegExp(`<span class="ph-name">${label}<span class="sr-only">`), label);
+      assert.doesNotMatch(progress, new RegExp(`>${label}</a>`), label);
+    }
     for (const label of ["Approver", "Your decision", "Land"]) {
-      assert.match(progress, new RegExp(`<span class="prog-name">${label}</span>`), label);
+      assert.match(progress, new RegExp(`<span class="ph-name">${label}<span class="sr-only">`), label);
     }
     assert.match(main, /<h2 id="step-ux"><a href="\/jobs\/SAMPLE-1\/steps\/ux">UX<\/a><\/h2>/);
     assert.match(main, /<h2 id="step-spec"><a href="\/jobs\/SAMPLE-1\/steps\/spec">Spec<\/a><\/h2>/);

@@ -63,7 +63,6 @@
   --switch-knob: 18px;
   --prose-max: 220px;
   --log-max-height: 280px;
-  --seg-min: 72px;
   --step-nav: 280px;
   --settings-nav-min: 180px;
   --settings-nav-max: 220px;
@@ -1797,25 +1796,30 @@ button.live-summary[aria-expanded="true"] { white-space: pre-wrap; }
 .job-head .job-meta > * { min-width: 0; overflow-wrap: anywhere; }
 .job-head .reason, .job-head .ask, .job-head .links { margin: 0; }
 .job-head .d-actions { margin: 0; }
-.prog {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(var(--seg-min), 1fr));
-  gap: var(--space-1);
-  list-style: none;
-  margin: 0;
-  padding: 0;
+/* Phase chain on the job page: a named pill per step, parallel steps grouped in a dashed box. */
+.ph-chain { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) 0; margin: 0; padding: 0; list-style: none; }
+.ph-pill {
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  padding: var(--space-2xs) var(--space-3) var(--space-2xs) var(--space-2);
+  border: var(--hairline) solid transparent; border-radius: var(--control-h);
+  color: var(--faint); font-size: var(--text-xs); line-height: var(--leading-xs); white-space: nowrap;
 }
-.prog-step { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; color: var(--faint); }
-.prog-bar { height: var(--space-1); border-radius: var(--radius-sm); background: var(--line); }
-.prog-name { display: inline-flex; align-items: center; gap: var(--space-1); min-width: 0; overflow-wrap: anywhere; }
-.prog-name .mark { width: var(--icon); height: var(--icon); flex: none; }
-.prog-note { font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--muted); }
-.prog-step.done { color: var(--muted); }
-.prog-step.done .prog-bar { background: var(--muted); }
-.prog-step.current { color: var(--primary-text); font-weight: 500; }
-.prog-step.current .prog-bar { background: var(--primary); }
-.prog-step.failed { color: var(--state-failed); font-weight: 500; }
-.prog-step.failed .prog-bar { background: var(--state-failed); }
+.ph-mark { width: calc(var(--icon) - var(--space-2xs)); height: calc(var(--icon) - var(--space-2xs)); }
+.ph-dot { width: var(--space-2); height: var(--space-2); border-radius: var(--radius-full); border: var(--hairline) solid var(--faint); }
+.ph-name a { color: inherit; text-decoration: none; }
+.ph-name a:hover { color: var(--code); }
+.ph-count { color: var(--faint); font-family: var(--font-mono); }
+.ph-pill.done { border-color: color-mix(in srgb, var(--state-done) 45%, var(--line)); color: var(--ink); }
+.ph-pill.done .ph-mark { color: var(--state-done); }
+.ph-pill.current { border-color: color-mix(in srgb, var(--primary) 70%, var(--line)); background: color-mix(in srgb, var(--primary) 14%, var(--panel)); color: var(--primary-text); }
+.ph-pill.current .ph-dot { border-color: var(--primary-text); background: var(--primary-text); }
+.ph-pill.human { border-color: color-mix(in srgb, var(--state-needs-you) 70%, var(--line)); background: color-mix(in srgb, var(--state-needs-you) 14%, var(--panel)); color: var(--state-needs-you); }
+.ph-pill.human .ph-dot { border-color: var(--state-needs-you); background: var(--state-needs-you); }
+.ph-pill.failed { border-color: color-mix(in srgb, var(--state-failed) 60%, var(--line)); color: var(--state-failed); }
+.ph-pill.failed .ph-mark { color: var(--state-failed); }
+.ph-par { padding: var(--space-1); border: var(--hairline) dashed var(--line-strong); border-radius: var(--radius-lg); list-style: none; }
+.ph-parlist { display: grid; grid-template-columns: repeat(2, auto); gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
+.ph-sep { flex: none; width: var(--space-3); height: var(--hairline); background: var(--line-strong); list-style: none; }
 .prog-outcome { margin: var(--space-2) 0 0; color: var(--muted); font-size: var(--text-sm); line-height: var(--leading-sm); }
 .job-body { display: grid; grid-template-columns: minmax(0, 1fr) var(--rail); gap: var(--space-5); align-items: start; }
 .job-main, .job-side { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
@@ -1945,8 +1949,8 @@ summary.art-group::-webkit-details-marker { display: none; }
 .side-facts dd { margin: var(--space-2xs) 0 0; overflow-wrap: anywhere; }
 .title-link { color: var(--ink); }
 .title-link:hover { color: var(--code); }
-.step-head h2 a, .prog-name a { color: inherit; }
-.step-head h2 a:hover, .prog-name a:hover { color: var(--code); }
+.step-head h2 a { color: inherit; }
+.step-head h2 a:hover { color: var(--code); }
 
 /* Step page: the job header, the step list as navigation, and one step. */
 .step-page { display: grid; grid-template-columns: var(--step-nav) minmax(0, 1fr); gap: var(--space-5); align-items: start; min-width: 0; }

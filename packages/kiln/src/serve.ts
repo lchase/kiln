@@ -1,5 +1,6 @@
 import { parseActivityCursor, readRunActivity, type ActivityFeed } from "./activity.js";
 import { readRunArtifacts, type ArtifactSet } from "./artifacts.js";
+import { groupsFromPlan } from "./phase-groups.js";
 import { fork } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -59,7 +60,7 @@ import {
   renderTextPage,
 } from "./serve-page.js";
 import { startedPhaseIds } from "./job-view.js";
-import { STEP_NAME, readStepResult } from "./step-result.js";
+import { STEP_NAME, planOf, readStepResult } from "./step-result.js";
 import { isPaused, pauseFactory, resumeFactory, spendFor } from "./rails.js";
 import { readSettings, saveSettings, settingsStatus } from "./settings.js";
 import type { TickReply, TickRequest } from "./tick-worker.js";
@@ -526,8 +527,10 @@ async function handle(
       running,
       ...(job.logTail ? { logText: job.logTail } : {}),
     });
-    const artifacts = readRunArtifacts(runDirOf(config, job));
-    sendHtml(res, 200, renderShell(state, css, csrf, "job", { detail, ...(tab ? { tab } : {}), activity, artifacts }), secrets);
+    const runDir = runDirOf(config, job);
+    const artifacts = readRunArtifacts(runDir);
+    const phasePlan = runDir ? groupsFromPlan(planOf(runDir)) : [];
+    sendHtml(res, 200, renderShell(state, css, csrf, "job", { detail, ...(tab ? { tab } : {}), activity, artifacts, phasePlan }), secrets);
     return;
   }
 
@@ -1140,6 +1143,7 @@ function renderShell(
     tab?: "overview" | "live" | "changes" | "timeline";
     activity?: ActivityFeed;
     artifacts?: ArtifactSet;
+    phasePlan?: string[][];
     step?: StepPage;
     settingsSection?: SettingsSectionId;
   } = {},
@@ -1157,7 +1161,7 @@ function renderShell(
     ...(extra.repo ? { repo: extra.repo } : {}),
     ...(section === "stats" && extra.window ? { stats: statsDocument(state, extra.window) } : {}),
     ...(section === "report" ? { report: reportDocument(state) } : {}),
-    ...(extra.detail ? { detail: extra.detail, ...(extra.tab ? { tab: extra.tab } : {}), ...(extra.activity ? { activity: extra.activity } : {}), ...(extra.artifacts ? { artifacts: extra.artifacts } : {}), ...(extra.step ? { step: extra.step } : {}) } : {}),
+    ...(extra.detail ? { detail: extra.detail, ...(extra.tab ? { tab: extra.tab } : {}), ...(extra.activity ? { activity: extra.activity } : {}), ...(extra.artifacts ? { artifacts: extra.artifacts } : {}), ...(extra.phasePlan ? { phasePlan: extra.phasePlan } : {}), ...(extra.step ? { step: extra.step } : {}) } : {}),
     ...(section === "settings"
       ? { settingsSection: extra.settingsSection ?? "repos", settingsFacts: settingsFacts(state.config) }
       : {}),

@@ -4,6 +4,7 @@ import { buildAttention } from "../src/attention.js";
 import { QUIET_AFTER_MS, activityLiveness, progressSegments, projectJob, stepFocus, type JobView, type PipelineColumn, type StepMark } from "../src/job-view.js";
 import type { ActivityFeed } from "../src/activity.js";
 import type { ArtifactEntry, ArtifactSet } from "../src/artifacts.js";
+import { groupsFromPlan } from "../src/phase-groups.js";
 import { buildBoard, jobDetail } from "../src/board-view.js";
 import { renderApp } from "../src/serve-page.js";
 import { renderMarkdown } from "../src/markdown.js";
@@ -568,7 +569,7 @@ describe("step list", () => {
     assert.equal(track.split('title="Your decision"').length - 1, 1);
     assert.equal(track.split('title="Approve"').length - 1, 0);
     assert.doesNotMatch(track, /Revise/);
-    const lists = { page: between(jobHtml, 'class="prog"') };
+    const lists = { page: between(jobHtml, 'class="ph-chain"') };
     for (const [name, html] of Object.entries(lists)) {
       assert.equal(count(html, "Approver"), 1, `${name} Approver`);
       assert.equal(count(html, "Your decision"), 1, `${name} Your decision`);
@@ -747,6 +748,87 @@ describe("finished rows on the job lists", () => {
   });
 });
 
+describe("phase chain", () => {
+  const plan = workflowStepPlan("feature");
+  const planGroups = groupsFromPlan([
+    { kind: "agent", id: "spec", needs: ["input"], produces: "spec" },
+    {
+      kind: "loop",
+      body: [
+        { id: "build", needs: ["spec", "verify", "security"], produces: "build" },
+        { id: "verify", needs: ["build"], produces: "verify" },
+        ...["security", "ux", "ui", "code"].map((id) => ({ id, needs: ["spec", "build", "verify"], produces: id })),
+      ],
+    },
+    { id: "approver", needs: ["rounds"], produces: "decision" },
+    { id: "approve", needs: ["decision"], produces: "approval" },
+    { id: "land", needs: ["approval"] },
+  ]);
+  const phases = (by: Record<string, "done" | "current" | "pending" | "failed">) => plan.map((id) => ({ id, phase: by[id] ?? ("pending" as const) }));
+  const chain = (status: StatusJobView, withPlan = true) => {
+    const detail = jobDetail({ job: status, events: [], maxFixRounds: 2 });
+    const html = renderApp({
+      css: "",
+      section: "job",
+      board: buildBoard([status], []),
+      attention: buildAttention([status]),
+      page: { csrf: "token", repos: [{ name: "web", path: "/repos/web" }], workflows: ["feature"] },
+      detail,
+      ...(withPlan ? { phasePlan: planGroups } : {}),
+    });
+    const at = html.indexOf('aria-label="Progress"');
+    return html.slice(at, html.indexOf("</section>", at));
+  };
+  const pill = (html: string, name: string) => html.match(new RegExp(`<li class="ph-pill [^"]*"[^>]*title="${name}[^"]*">[^]*?</li>`))?.[0] ?? "";
+  const doneUpTo = { spec: "done", build: "done", verify: "done" } as const;
+
+  it("puts the reviews that run together in one group between Verify and Approver, each with its own state", () => {
+    const html = chain(job({ jobId: "SAMPLE-1", state: "running", steps: phases({ ...doneUpTo, security: "done", ux: "current", ui: "current" }) }));
+    const group = html.slice(html.indexOf('<li class="ph-par"'), html.indexOf("</ol></li>", html.indexOf('<li class="ph-par"')));
+    assert.match(html, /<li class="ph-par" role="group" aria-label="Run at the same time" title="These run at the same time">/);
+    assert.ok(html.indexOf("Verify") < html.indexOf('<li class="ph-par"') && html.indexOf('<li class="ph-par"') < html.indexOf("Approver"));
+    assert.match(pill(group, "Security"), /class="ph-pill done"[^]*ph-mark[^]*\(done\)/);
+    assert.match(pill(group, "UX"), /class="ph-pill current" aria-current="step"/);
+    assert.match(pill(group, "UI"), /class="ph-pill current" aria-current="step"/);
+    assert.match(pill(group, "Code"), /class="ph-pill upcoming"/);
+    assert.equal((html.match(/aria-current="step"/g) ?? []).length, 2);
+  });
+
+  it("shows a failed reviewer with a circle-x while the others keep their state", () => {
+    const html = chain(job({ jobId: "SAMPLE-1", state: "failed", steps: phases({ ...doneUpTo, security: "done", ux: "done", ui: "done", code: "failed" }) }));
+    assert.match(pill(html, "Code"), /class="ph-pill failed" aria-current="step"[^]*ph-mark/);
+    assert.match(pill(html, "UI"), /class="ph-pill done"/);
+    assert.match(html, /\(failed\)/);
+  });
+
+  it("highlights the step that waits on you, and only that one", () => {
+    const html = chain(
+      job({ jobId: "SAMPLE-1", state: "needs-human", canApprove: true, steps: phases({ ...doneUpTo, security: "done", ux: "done", ui: "done", code: "done", approver: "done", approve: "current" }) }),
+    );
+    assert.match(pill(html, "Your decision"), /class="ph-pill human" aria-current="step"/);
+    assert.match(pill(html, "Your decision"), /\(waiting for you\)/);
+    assert.equal((html.match(/class="ph-pill human"/g) ?? []).length, 1);
+  });
+
+  it("collapses a group that has not started into one quiet pill, so the row stays short", () => {
+    const html = chain(job({ jobId: "SAMPLE-1", state: "running", steps: phases({ spec: "done", build: "current" }) }));
+    assert.doesNotMatch(html, /ph-par/);
+    assert.match(html, /<li class="ph-pill upcoming" title="Security, UX, UI, Code">[^]*Reviews <span class="ph-count">4<\/span>/);
+  });
+
+  it("marks no pill as current for a finished job, and says the outcome under the chain", () => {
+    const html = chain(job({ jobId: "SAMPLE-1", state: "done", prNumber: 88, steps: plan.map((id) => ({ id, phase: "done" as const })) }));
+    assert.doesNotMatch(html, /aria-current|ph-pill current|ph-pill human/);
+    assert.equal((html.match(/ph-pill done/g) ?? []).length, 10);
+    assert.match(html, /<p class="prog-outcome">Merged #88<\/p>/);
+  });
+
+  it("groups the reviews without a plan too, as a queued job with no run folder has none", () => {
+    const html = chain(job({ jobId: "SAMPLE-1", state: "running", steps: phases({ ...doneUpTo, security: "current" }) }), false);
+    assert.match(html, /<li class="ph-par" role="group"/);
+  });
+});
+
 describe("keyboard shortcuts panel", () => {
   it("is on every page, hidden, listing the keys serve.js handles, with a sidebar button to open it", () => {
     const jobs = [job({ jobId: "WEB-1", state: "done", steps: workflowStepPlan("feature").map((id) => ({ id, phase: "done" as const })) })];
@@ -872,8 +954,10 @@ describe("job page", () => {
     const outside = main.slice(0, progressAt) + main.slice(main.indexOf("</section>", progressAt), main.indexOf('aria-label="Job facts"'));
     for (const label of ["Spec", "Build"]) assert.equal(outside.split(`>${label}<`).length - 1, 1, label);
     assert.doesNotMatch(main, /pending/i);
-    assert.match(section(main, "Progress"), /class="prog-step upcoming"><span class="prog-bar" aria-hidden="true"><\/span><span class="prog-name">Verify<\/span><\/li>/);
-    assert.match(section(main, "Progress"), /class="prog-step done"><span class="prog-bar" aria-hidden="true"><\/span><span class="prog-name"><svg[^]*?<\/svg><a href="\/jobs\/SAMPLE-1\/steps\/spec">Spec<\/a><\/span><span class="prog-note">1m<\/span>/);
+    assert.match(section(main, "Progress"), /<li class="ph-pill upcoming" title="Verify"><span class="ph-dot" aria-hidden="true"><\/span><span class="ph-name">Verify<span class="sr-only"> \(not started\)<\/span><\/span><\/li>/);
+    assert.match(section(main, "Progress"), /<li class="ph-pill done" title="Spec, 1m"><svg class="icon ph-mark"[^]*?<\/svg><span class="ph-name"><a href="\/jobs\/SAMPLE-1\/steps\/spec">Spec<\/a><span class="sr-only"> \(done\)<\/span><\/span><\/li>/);
+    // The reviews have not started, so they are one quiet pill with a count, not four.
+    assert.match(section(main, "Progress"), /<li class="ph-pill upcoming" title="Security, UX, UI, Code">[^]*?Reviews <span class="ph-count">4<\/span>/);
 
     const side = sideOf(html);
     assert.match(side, /src\/a\.ts<\/span><span class="mono file-count">\+84 -12</);
