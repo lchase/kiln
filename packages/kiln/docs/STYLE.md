@@ -19,7 +19,7 @@ Spacing is a 4px grid:
 | `--space-8` | 64px | Page end |
 | `--hairline` | 1px | Borders |
 
-Radii stay tight. `--radius-sm` is 2px (buttons and small controls). `--radius-md` is 4px (inputs, tags, chips, filter chips, and count badges). `--radius-lg` is 6px (cards and columns). `--radius-full` is circles. There is no pill radius.
+Radii stay tight. `--radius-sm` is 2px (buttons and small controls). `--radius-md` is 4px (inputs, tags, chips, filter chips, and count badges). `--radius-lg` is 6px (cards and columns). `--radius-full` is circles. There is no pill radius, except the job page's phase pills (see Job page), which are a step indicator and not a chip.
 
 Icon size is `--icon` (16px, on the 4px grid). Stroke is `--icon-stroke` (2, Lucide's unitless stroke in a 24 viewBox). Both live in the shared token block.
 
@@ -84,7 +84,7 @@ the icon: the color only helps the eye group cards.
 
 - A tag (workflow name), a status, a filter chip (Repo, Workflow, All), and a count badge are rectangles. Radius is `--radius-md`. Horizontal padding is `--space-2`.
 - Filter chips keep the control height (`--control-h`). Tags and badges use `--badge`.
-- Do not use a pill radius. Do not round one chip and leave the next square.
+- Do not use a pill radius on a chip. Do not round one chip and leave the next square. The job page's phase pills are the one exception: they are steps, not tags.
 
 ## Steps
 
@@ -171,10 +171,17 @@ the icon: the color only helps the eye group cards.
 
 1. Header: back link, title, state chip, then one meta line (repo, workflow, started, `attempt N of M`, cost, short
    job id, branch and pull request when present). Stop job, Remove job, Run next, Hold, and Release sit here.
-2. Progress (`aria-label="Progress"`): one segment per step. The four reviews (security, UX, UI, code) are one
-   segment named Reviews. A done segment has a check and its duration. Upcoming segments print no status word.
-   Below the row, a job with an outcome (see Steps) says it in one `p.prog-outcome` line, `--muted`. A finished job
-   has no current segment.
+2. Progress (`aria-label="Progress"`): the phase chain, one named pill per step in run order, joined by short lines.
+   A done step has a `circle-check` in `--state-done`, a failed step a `circle-x` in `--state-failed`, a running step a
+   filled dot in `--primary` (or `--state-needs-you` while the job waits on you), and a step that has not started is
+   dimmed with a hollow dot. Steps that run at the same time sit together in one dashed `--radius-lg` group, two
+   columns wide, each pill with its own state. They are side by side in one plan container (the top level or one loop
+   body) and none needs another's output, read from the run's `workflow.json`. A group that has not started is one
+   dimmed pill with a count (`Reviews 4`), so the row stays one line until the group runs. A queued job has no run
+   folder, so its four reviews are the one group. A done or failed pill's `title` gives its duration, and a started
+   step links to its step page. The pill's corner radius is `--control-h` and its tall padding is `--space-2xs`. It is the one pill
+   shape in the app. Below the row, a job with an outcome (see Steps) says it in one `p.prog-outcome` line, `--muted`.
+   A finished job has no current pill.
 3. One middle card, picked by state: "Now" while the job runs (the step, last activity, the newest note, the
    running command), "Your decision" while it waits on you (the approver's and each review's verdict, then Approve,
    Reject, and Revise with a note), or "What went wrong" when it failed or needs a hand (the failure and Retry). A
